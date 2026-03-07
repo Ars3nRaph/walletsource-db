@@ -194,7 +194,6 @@ export class CalibrationWorker {
     let avoidRugged = 0;
 
     // Recall LONG: wallets LONG that succeeded / total succeeded
-    let longWallets = 0;
     let longSucceeded = 0;
     let totalSucceeded = 0;
 
@@ -230,10 +229,6 @@ export class CalibrationWorker {
         if (strategy === 'LONG') {
           longSucceeded++;
         }
-      }
-
-      if (strategy === 'LONG') {
-        longWallets++;
       }
     }
 
