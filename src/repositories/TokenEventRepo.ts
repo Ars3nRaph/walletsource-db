@@ -78,6 +78,7 @@ export class TokenEventRepo {
     verdict: 'RUG_NO_PAIR' | 'RUG_METRICS' | 'SUCCESS' | 'NEUTRAL'
   ): Promise<number | null> {
     try {
+      // Try PERCENTILE_CONT (native PostgreSQL)
       const result = await this.pool.query<{ median: number | null }>(
         `SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY fdv_at_check) as median
          FROM token_events
@@ -89,12 +90,44 @@ export class TokenEventRepo {
       logger.debug({ creator_wallet: creatorWallet, verdict, median }, 'Median FDV calculated');
       return median;
     } catch (error) {
-      logger.error({ error, creatorWallet, verdict }, 'Failed to get median FDV');
-      throw new WalletSourceError(
-        ErrorCode.DB_QUERY_FAILED,
-        `Failed to get median FDV for creator ${creatorWallet}`,
-        { error }
-      );
+      // Fallback for pg-mem: manual median calculation
+      logger.debug({ creatorWallet, verdict }, 'PERCENTILE_CONT failed, using manual median calculation');
+
+      try {
+        const result = await this.pool.query<{ fdv_at_check: number }>(
+          `SELECT fdv_at_check
+           FROM token_events
+           WHERE creator_wallet = $1 AND verdict = $2 AND fdv_at_check IS NOT NULL
+           ORDER BY fdv_at_check ASC`,
+          [creatorWallet, verdict]
+        );
+
+        if (result.rows.length === 0) {
+          return null;
+        }
+
+        const fdvValues = result.rows.map(row => row.fdv_at_check);
+        const mid = Math.floor(fdvValues.length / 2);
+
+        let median: number;
+        if (fdvValues.length % 2 === 0) {
+          // Even number of values: average of two middle values
+          median = (fdvValues[mid - 1] + fdvValues[mid]) / 2;
+        } else {
+          // Odd number of values: middle value
+          median = fdvValues[mid];
+        }
+
+        logger.debug({ creator_wallet: creatorWallet, verdict, median, count: fdvValues.length }, 'Manual median calculated');
+        return median;
+      } catch (fallbackError) {
+        logger.error({ error: fallbackError, creatorWallet, verdict }, 'Failed to get median FDV (fallback)');
+        throw new WalletSourceError(
+          ErrorCode.DB_QUERY_FAILED,
+          `Failed to get median FDV for creator ${creatorWallet}`,
+          { error: fallbackError }
+        );
+      }
     }
   }
 
@@ -111,6 +144,30 @@ export class TokenEventRepo {
       throw new WalletSourceError(
         ErrorCode.DB_QUERY_FAILED,
         `Failed to get token event for ${tokenAddress}`,
+        { error }
+      );
+    }
+  }
+
+  async updatePExit(
+    tokenAddress: string,
+    pExitV1: number,
+    pExitV2: number
+  ): Promise<void> {
+    try {
+      await this.pool.query(
+        `UPDATE token_events
+         SET p_exit_v1 = $1, p_exit_v2 = $2
+         WHERE token_address = $3`,
+        [pExitV1, pExitV2, tokenAddress]
+      );
+
+      logger.debug({ token_address: tokenAddress, p_exit_v1: pExitV1, p_exit_v2: pExitV2 }, 'P_exit updated');
+    } catch (error) {
+      logger.error({ error, tokenAddress }, 'Failed to update P_exit');
+      throw new WalletSourceError(
+        ErrorCode.DB_QUERY_FAILED,
+        `Failed to update P_exit for ${tokenAddress}`,
         { error }
       );
     }
