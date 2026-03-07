@@ -62,7 +62,7 @@ CREATE TABLE token_events (
   creator_wallet TEXT NOT NULL REFERENCES wallet_profiles(wallet_address) ON DELETE CASCADE,
   detected_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   checked_at TIMESTAMP,
-  verdict TEXT CHECK (verdict IN ('RUG_NO_PAIR', 'RUG_METRICS', 'SUCCESS', 'NEUTRAL')),
+  verdict TEXT,
   fdv_at_check REAL,
   liquidity_at_check REAL,
   price_change_5m REAL,

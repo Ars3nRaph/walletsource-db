@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install)",
+      "Bash(npm run lint)",
+      "Bash(npm test)",
+      "Bash(for file in *.test.ts)",
+      "Bash(do sed -i 's/pool = db\\\\.adapters\\\\.createPg\\(\\)\\\\.Pool\\(\\) as unknown as Pool;/pool = new \\(db.adapters.createPg\\(\\).Pool\\)\\(\\) as unknown as Pool;/g' \"$file\")",
+      "Bash(done)",
+      "Bash(find . -type f -name \"*.ts\" -exec sed -i 's/NOW\\(\\)/CURRENT_TIMESTAMP/g' {} +)",
+      "Bash(find src -type f -name \"*.ts\" -exec sed -i 's/NOW\\(\\)/CURRENT_TIMESTAMP/g' {} +)",
+      "Read(//c/Users/arsen/Documents/**)",
+      "Bash(sed -i 's/NOW\\(\\)/CURRENT_TIMESTAMP/g' src/db/schema.sql)",
+      "Bash(git add src/db/)",
+      "Bash(git commit:*)",
+      "Bash(git add src/utils/)",
+      "Bash(git add src/repositories/)",
+      "Bash(npm test -- tests/repositories/WalletRepo.test.ts)",
+      "Bash(npm test -- tests/debug-rug-rate.test.ts)"
+    ]
+  }
+}

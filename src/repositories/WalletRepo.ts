@@ -92,8 +92,8 @@ export class WalletRepo {
         `UPDATE wallet_profiles
          SET rug_count = rug_count + 1,
              rug_rate = CASE
-               WHEN (rug_count + 1 + survival_count + neutral_count) = 0 THEN 0
-               ELSE (rug_count + 1)::REAL / (rug_count + 1 + survival_count + neutral_count)
+               WHEN (rug_count + survival_count + neutral_count) = 0 THEN 0
+               ELSE rug_count::REAL / (rug_count + survival_count + neutral_count)
              END,
              last_seen_at = CURRENT_TIMESTAMP
          WHERE wallet_address = $1`,
@@ -117,8 +117,8 @@ export class WalletRepo {
         `UPDATE wallet_profiles
          SET survival_count = survival_count + 1,
              rug_rate = CASE
-               WHEN (rug_count + survival_count + 1 + neutral_count) = 0 THEN 0
-               ELSE rug_count::REAL / (rug_count + survival_count + 1 + neutral_count)
+               WHEN (rug_count + survival_count + neutral_count) = 0 THEN 0
+               ELSE rug_count::REAL / (rug_count + survival_count + neutral_count)
              END,
              last_seen_at = CURRENT_TIMESTAMP
          WHERE wallet_address = $1`,
@@ -142,8 +142,8 @@ export class WalletRepo {
         `UPDATE wallet_profiles
          SET neutral_count = neutral_count + 1,
              rug_rate = CASE
-               WHEN (rug_count + survival_count + neutral_count + 1) = 0 THEN 0
-               ELSE rug_count::REAL / (rug_count + survival_count + neutral_count + 1)
+               WHEN (rug_count + survival_count + neutral_count) = 0 THEN 0
+               ELSE rug_count::REAL / (rug_count + survival_count + neutral_count)
              END,
              last_seen_at = CURRENT_TIMESTAMP
          WHERE wallet_address = $1`,

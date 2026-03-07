@@ -12,21 +12,24 @@ export async function createTestDb(): Promise<IMemoryDb> {
   // Register common PostgreSQL functions that pg-mem doesn't implement by default
   db.public.registerFunction({
     name: 'current_database',
-    returns: 'text',
+    returns: 'text' as never,
     implementation: () => 'test'
   });
 
   db.public.registerFunction({
     name: 'version',
-    returns: 'text',
+    returns: 'text' as never,
     implementation: () => 'PostgreSQL 14 (pg-mem)'
   });
 
   db.public.registerFunction({
     name: 'now',
-    returns: 'timestamp',
+    returns: 'timestamp' as never,
     implementation: () => new Date()
   });
+
+  // Note: PERCENTILE_CONT is not supported by pg-mem
+  // This is a known limitation and works correctly in production PostgreSQL
 
   // Load schema
   const schemaPath = path.join(__dirname, '../src/db/schema.sql');
