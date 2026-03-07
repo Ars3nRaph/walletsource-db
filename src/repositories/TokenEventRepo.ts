@@ -4,7 +4,7 @@ import { ErrorCode, WalletSourceError } from '../types/errors.js';
 import { logger } from '../utils/logger.js';
 
 export class TokenEventRepo {
-  constructor(private pool: Pool) {}
+  constructor(public pool: Pool) {}
 
   async recordEvent(tokenAddress: string, creatorWallet: string): Promise<TokenEvent> {
     try {
