@@ -4,6 +4,7 @@ import { DexScreenerClient } from '../api/DexScreenerClient.js';
 import { TokenEventRepo } from '../repositories/TokenEventRepo.js';
 import { WalletRepo } from '../repositories/WalletRepo.js';
 import { MonitoringRepo } from '../repositories/MonitoringRepo.js';
+import { TaintScorer } from '../scoring/TaintScorer.js';
 
 const SCAN_INTERVAL_MS = 60 * 1000; // 60 seconds
 const REQUEST_DELAY_MS = 300;
@@ -24,6 +25,7 @@ export class RugScannerWorker {
   private walletRepo: WalletRepo;
   private monitoringRepo: MonitoringRepo;
   private dexScreenerClient: DexScreenerClient;
+  private taintScorer: TaintScorer;
   private intervalId: NodeJS.Timeout | null = null;
   private isRunning = false;
 
@@ -32,6 +34,7 @@ export class RugScannerWorker {
     this.walletRepo = new WalletRepo(pool);
     this.monitoringRepo = new MonitoringRepo(pool);
     this.dexScreenerClient = new DexScreenerClient();
+    this.taintScorer = new TaintScorer(pool);
   }
 
   async start(): Promise<void> {
@@ -104,9 +107,9 @@ export class RugScannerWorker {
           // Update wallet counters
           await this.updateWalletCounters(queueItem.creator_wallet, verdict);
 
-          // TODO: Phase 3 - If RUG, propagate taint
+          // Phase 3 - If RUG, propagate taint
           if (verdict === 'RUG_NO_PAIR' || verdict === 'RUG_METRICS') {
-            logger.debug({ token: queueItem.token_address, wallet: queueItem.creator_wallet }, 'TODO: Propagate taint (Phase 3)');
+            await this.taintScorer.propagate(queueItem.token_address, queueItem.creator_wallet, verdict);
           }
 
           // Mark as processed

@@ -186,6 +186,26 @@ export class WalletRepo {
     }
   }
 
+  async updateTaintScore(walletAddress: string, taintScore: number): Promise<void> {
+    try {
+      await this.pool.query(
+        `UPDATE wallet_profiles
+         SET taint_score = $1, last_seen_at = CURRENT_TIMESTAMP
+         WHERE wallet_address = $2`,
+        [taintScore, walletAddress]
+      );
+
+      logger.debug({ wallet_address: walletAddress, taintScore }, 'Taint score updated');
+    } catch (error) {
+      logger.error({ error, walletAddress }, 'Failed to update taint score');
+      throw new WalletSourceError(
+        ErrorCode.DB_QUERY_FAILED,
+        `Failed to update taint score for ${walletAddress}`,
+        { error }
+      );
+    }
+  }
+
   async updateCartel(walletAddress: string, cartelId: string | null): Promise<void> {
     try {
       await this.pool.query(
