@@ -113,3 +113,14 @@ export interface HeliusTransaction {
   timestamp: number;
   nativeTransfers: HeliusNativeTransfer[];
 }
+
+// Profile Vector (7 features)
+export interface ProfileVector {
+  rug_rate: number;
+  taint_score: number;
+  avg_token_lifespan: number; // hours
+  cartel_rug_rate: number;
+  ancestry_depth: number;
+  funding_diversity: number; // unique sources / total funding txs
+  token_frequency: number; // tokens launched per day
+}

@@ -4,7 +4,9 @@ import { DexScreenerClient } from '../api/DexScreenerClient.js';
 import { TokenEventRepo } from '../repositories/TokenEventRepo.js';
 import { WalletRepo } from '../repositories/WalletRepo.js';
 import { MonitoringRepo } from '../repositories/MonitoringRepo.js';
+import { CartelRepo } from '../repositories/CartelRepo.js';
 import { TaintScorer } from '../scoring/TaintScorer.js';
+import { computeToxicity, computeRiskScore, getStrategy } from '../scoring/SigmoidScorer.js';
 
 const SCAN_INTERVAL_MS = 60 * 1000; // 60 seconds
 const REQUEST_DELAY_MS = 300;
@@ -24,6 +26,7 @@ export class RugScannerWorker {
   private tokenRepo: TokenEventRepo;
   private walletRepo: WalletRepo;
   private monitoringRepo: MonitoringRepo;
+  private cartelRepo: CartelRepo;
   private dexScreenerClient: DexScreenerClient;
   private taintScorer: TaintScorer;
   private intervalId: NodeJS.Timeout | null = null;
@@ -33,6 +36,7 @@ export class RugScannerWorker {
     this.tokenRepo = new TokenEventRepo(pool);
     this.walletRepo = new WalletRepo(pool);
     this.monitoringRepo = new MonitoringRepo(pool);
+    this.cartelRepo = new CartelRepo(pool);
     this.dexScreenerClient = new DexScreenerClient();
     this.taintScorer = new TaintScorer(pool);
   }
@@ -112,6 +116,9 @@ export class RugScannerWorker {
             await this.taintScorer.propagate(queueItem.token_address, queueItem.creator_wallet, verdict);
           }
 
+          // Phase 4 - Update wallet scores with sigmoid functions
+          await this.updateWalletScores(queueItem.creator_wallet);
+
           // Mark as processed
           await this.monitoringRepo.markProcessed(queueItem.token_address);
 
@@ -181,6 +188,50 @@ export class RugScannerWorker {
       case 'NEUTRAL':
         await this.walletRepo.incrementNeutral(walletAddress);
         break;
+    }
+  }
+
+  /**
+   * Update wallet sigmoid scores after verdict.
+   * Phase 4: toxicity_score, risk_score, strategy
+   */
+  private async updateWalletScores(walletAddress: string): Promise<void> {
+    try {
+      // Get updated wallet data (with new rug_count/taint_score)
+      const wallet = await this.walletRepo.getByAddress(walletAddress);
+      if (!wallet) {
+        logger.warn({ wallet: walletAddress }, 'Wallet not found for score update');
+        return;
+      }
+
+      // Compute toxicity score from taint
+      const toxicityScore = computeToxicity(wallet.taint_score);
+
+      // Get cartel info if wallet belongs to one
+      let cartelRugRate = 0;
+      if (wallet.cartel_id) {
+        const cartel = await this.cartelRepo.getById(wallet.cartel_id);
+        cartelRugRate = cartel?.avg_rug_rate ?? 0;
+      }
+
+      // Compute risk score
+      const riskScore = computeRiskScore(wallet.rug_rate, toxicityScore, cartelRugRate);
+
+      // Determine strategy
+      const strategy = getStrategy(riskScore);
+
+      // Update wallet with new scores
+      await this.walletRepo.updateScores(walletAddress, wallet.taint_score, toxicityScore, riskScore);
+      await this.walletRepo.updateStrategy(walletAddress, strategy);
+
+      logger.debug({
+        wallet: walletAddress,
+        toxicityScore,
+        riskScore,
+        strategy
+      }, 'Wallet scores updated');
+    } catch (error) {
+      logger.error({ error, wallet: walletAddress }, 'Failed to update wallet scores');
     }
   }
 
