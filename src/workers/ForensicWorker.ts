@@ -5,6 +5,8 @@ import { ErrorCode, WalletSourceError } from '../types/errors.js';
 import { WalletRepo } from '../repositories/WalletRepo.js';
 import { TokenEventRepo } from '../repositories/TokenEventRepo.js';
 import { MonitoringRepo } from '../repositories/MonitoringRepo.js';
+import { AncestryRepo } from '../repositories/AncestryRepo.js';
+import { HeliusClient } from '../api/HeliusClient.js';
 
 const PUMP_FUN_PROGRAM_ID = process.env.PUMP_FUN_PROGRAM_ID || '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 const MONITORING_DELAY_MINUTES = 15;
@@ -23,6 +25,8 @@ export class ForensicWorker {
   private walletRepo: WalletRepo;
   private tokenRepo: TokenEventRepo;
   private monitoringRepo: MonitoringRepo;
+  private ancestryRepo: AncestryRepo;
+  private heliusClient: HeliusClient;
   private reconnectAttempts = 0;
   private reconnectTimeout: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
@@ -31,6 +35,8 @@ export class ForensicWorker {
     this.walletRepo = new WalletRepo(pool);
     this.tokenRepo = new TokenEventRepo(pool);
     this.monitoringRepo = new MonitoringRepo(pool);
+    this.ancestryRepo = new AncestryRepo(pool);
+    this.heliusClient = new HeliusClient();
   }
 
   async start(): Promise<void> {
@@ -183,9 +189,14 @@ export class ForensicWorker {
 
       // Ensure wallet exists in database
       const existingWallet = await this.walletRepo.getByAddress(creatorWallet);
-      if (!existingWallet) {
+      const isNewWallet = !existingWallet;
+
+      if (isNewWallet) {
         await this.walletRepo.upsertWallet(creatorWallet);
         logger.info({ wallet: creatorWallet }, 'New wallet created');
+
+        // Phase 7: Build ancestry on-the-fly for new wallets
+        await this.buildWalletAncestry(creatorWallet);
       }
 
       // Record token event
@@ -198,6 +209,98 @@ export class ForensicWorker {
       logger.info({ token: tokenMint, checkAt }, 'Token enqueued for monitoring');
     } catch (error) {
       logger.error({ error, signature: txData.signature }, 'Failed to process new token');
+    }
+  }
+
+  /**
+   * Build wallet ancestry on-the-fly using Helius API.
+   * Discovers funding sources (parent wallets) and creates links in wallet_ancestry.
+   * Section 8.3 of PRD.
+   */
+  private async buildWalletAncestry(childWallet: string, currentDepth = 0): Promise<void> {
+    const MAX_DEPTH = 3;
+    const MIN_FUNDING_AMOUNT_SOL = 0.01;
+    const MIN_CONFIDENCE = 0.7;
+
+    // Stop recursion at max depth
+    if (currentDepth >= MAX_DEPTH) {
+      return;
+    }
+
+    try {
+      // Fetch wallet transactions from Helius
+      const transactions = await this.heliusClient.getWalletTransactions(childWallet);
+
+      // Find incoming native SOL transfers (funding sources)
+      const fundingSources = new Map<string, { amount: number; txHash: string }>();
+
+      for (const tx of transactions) {
+        if (!tx.nativeTransfers || tx.nativeTransfers.length === 0) {
+          continue;
+        }
+
+        for (const transfer of tx.nativeTransfers) {
+          // Check if this is an incoming transfer to childWallet
+          if (transfer.toUserAccount === childWallet && transfer.fromUserAccount !== childWallet) {
+            const amountSOL = transfer.amount / 1e9; // Convert lamports to SOL
+
+            if (amountSOL >= MIN_FUNDING_AMOUNT_SOL) {
+              const existing = fundingSources.get(transfer.fromUserAccount);
+              if (!existing || amountSOL > existing.amount) {
+                fundingSources.set(transfer.fromUserAccount, {
+                  amount: amountSOL,
+                  txHash: tx.signature
+                });
+              }
+            }
+          }
+        }
+      }
+
+      logger.debug({
+        wallet: childWallet,
+        depth: currentDepth,
+        fundingSources: fundingSources.size
+      }, 'Funding sources discovered');
+
+      // Create ancestry links for each funding source
+      for (const [parentWallet, { amount, txHash }] of fundingSources.entries()) {
+        // Ensure parent wallet exists
+        const parentExists = await this.walletRepo.getByAddress(parentWallet);
+        if (!parentExists) {
+          await this.walletRepo.upsertWallet(parentWallet);
+        }
+
+        // Calculate confidence (simple heuristic: larger amounts = higher confidence)
+        // Max confidence at 1 SOL+, min at 0.01 SOL
+        const confidence = Math.min(1.0, 0.5 + (amount / 2.0));
+
+        // Add ancestry link
+        await this.ancestryRepo.addLink(
+          parentWallet,
+          childWallet,
+          txHash,
+          amount,
+          currentDepth,
+          confidence
+        );
+
+        logger.debug({
+          parent: parentWallet,
+          child: childWallet,
+          amount,
+          depth: currentDepth,
+          confidence
+        }, 'Ancestry link created');
+
+        // Recursively build ancestry for parent if high confidence
+        if (confidence >= MIN_CONFIDENCE && currentDepth + 1 < MAX_DEPTH) {
+          await this.buildWalletAncestry(parentWallet, currentDepth + 1);
+        }
+      }
+    } catch (error) {
+      logger.error({ error, wallet: childWallet, depth: currentDepth }, 'Failed to build wallet ancestry');
+      // Don't throw - ancestry is best-effort, don't block token detection
     }
   }
 
