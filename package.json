@@ -5,7 +5,8 @@
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run copy-assets",
+    "copy-assets": "node -e \"require('fs').cpSync('src/db/schema.sql', 'dist/src/db/schema.sql')\"",
     "start": "node dist/src/index.js",
     "start:dev": "tsx --watch src/index.ts",
     "validate": "node dist/src/validate.js",
