@@ -1,10 +1,11 @@
--- WalletSourceDB v3.0 — Schema PostgreSQL
--- 7 tables: wallet_profiles, wallet_ancestry, token_events, cartel_groups, taint_log, monitoring_queue, calibration_log
+-- WalletSourceDB v4.0 — Schema PostgreSQL
+-- 8 tables: wallet_profiles, wallet_ancestry, token_events, token_snapshots, cartel_groups, taint_log, monitoring_queue, calibration_log
 
 -- Drop tables if they exist (for idempotent schema loading)
 DROP TABLE IF EXISTS calibration_log CASCADE;
 DROP TABLE IF EXISTS monitoring_queue CASCADE;
 DROP TABLE IF EXISTS taint_log CASCADE;
+DROP TABLE IF EXISTS token_snapshots CASCADE;
 DROP TABLE IF EXISTS token_events CASCADE;
 DROP TABLE IF EXISTS wallet_ancestry CASCADE;
 DROP TABLE IF EXISTS cartel_groups CASCADE;
@@ -37,7 +38,11 @@ CREATE TABLE wallet_profiles (
   risk_score REAL NOT NULL DEFAULT 0.5 CHECK (risk_score BETWEEN 0 AND 1),
   cartel_id TEXT REFERENCES cartel_groups(cartel_id) ON DELETE SET NULL,
   profile_vector TEXT NOT NULL DEFAULT '{}',
-  strategy TEXT NOT NULL DEFAULT 'WATCH' CHECK (strategy IN ('RIDE', 'FADE', 'WATCH', 'AVOID'))
+  strategy TEXT NOT NULL DEFAULT 'WATCH' CHECK (strategy IN ('RIDE', 'FADE', 'WATCH', 'AVOID')),
+  -- v4.0 Playbook columns
+  rugger_playbook JSONB,
+  playbook_confidence REAL CHECK (playbook_confidence BETWEEN 0 AND 1),
+  playbook_updated_at TIMESTAMP
 );
 
 -- 3. wallet_ancestry (depends on wallet_profiles)
@@ -88,6 +93,26 @@ CREATE TABLE token_events (
 
 CREATE INDEX idx_token_creator ON token_events(creator_wallet);
 CREATE INDEX idx_token_verdict ON token_events(verdict);
+
+-- 4b. token_snapshots (depends on token_events) — v4.0 NEW
+CREATE TABLE token_snapshots (
+  id SERIAL PRIMARY KEY,
+  token_address TEXT NOT NULL REFERENCES token_events(token_address) ON DELETE CASCADE,
+  snapshot_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  fdv REAL,
+  liquidity_usd REAL,
+  price_usd REAL,
+  price_change_5m REAL,
+  volume_5m REAL,
+  buy_count_5m INTEGER,
+  sell_count_5m INTEGER,
+  txns_5m_buys INTEGER,
+  txns_5m_sells INTEGER
+);
+
+CREATE INDEX idx_snapshot_token ON token_snapshots(token_address);
+CREATE INDEX idx_snapshot_time ON token_snapshots(snapshot_at);
+CREATE INDEX idx_snapshot_token_time ON token_snapshots(token_address, snapshot_at);
 
 -- 5. taint_log (depends on wallet_profiles and token_events)
 CREATE TABLE taint_log (

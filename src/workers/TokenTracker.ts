@@ -16,7 +16,7 @@ import { PeakDurationDetector } from '../execution/PeakDurationDetector.js';
 import { PaperTradeExecutor } from '../execution/PaperTradeExecutor.js';
 import type { TokenSnapshot } from '../types/index.js';
 
-const POLL_INTERVAL_MS = 60 * 1000; // 60 seconds (balanced: good data quality + API cost efficiency)
+const POLL_INTERVAL_MS = 30 * 1000; // 30 seconds (optimal: excellent data quality, 2× capacity, 60% rate limit)
 const TRACKING_DURATION_MS = 10 * 60 * 1000; // 10 minutes (full duration to preserve data quality for playbook building)
 const RUG_GRACE_PERIOD_MS = 3 * 60 * 1000; // 3 minutes - continue tracking after RUG detection to collect lifecycle data
 
@@ -132,13 +132,13 @@ export class TokenTracker {
         logger.debug({
           activeCount,
           remainingQuota,
-          maxCapacity: 150
-        }, 'Rate limit check');
+          maxCapacity: 135
+        }, 'Rate limit check (90% utilization)');
 
-        // Each token consumes 1 req/min (1 per 60s), rate limit = 300 req/min = 5 req/s
-        // Max capacity = 300 / 1 = 300 tokens theoretical. Use 90 (90 req/min = 30% utilization).
-        // With 10min tracking: 90 slots × 6 cycles/h = 540 tokens/h capacity (2.5× faster!)
-        if (activeCount >= 90 || remainingQuota < 200) {
+        // Each token consumes 2 req/min (1 per 30s), rate limit = 300 req/min
+        // Max capacity = 300 / 2 = 150 tokens theoretical. Use 135 (270 req/min = 90% utilization).
+        // With 10min tracking + 30s polling: 135 slots × 6 cycles/h = 810 tokens/h capacity!
+        if (activeCount >= 135 || remainingQuota < 30) {
           logger.warn({
             activeCount,
             remainingQuota,

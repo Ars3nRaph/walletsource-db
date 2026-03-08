@@ -1,0 +1,20 @@
+{
+  "name": "walletsource-dashboard",
+  "version": "4.0.0",
+  "description": "WalletSourceDB v4.0 Web Dashboard API Server",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "pg": "^8.11.3",
+    "dotenv": "^16.4.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
