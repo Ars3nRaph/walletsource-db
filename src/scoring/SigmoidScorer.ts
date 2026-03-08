@@ -91,19 +91,19 @@ export function computeRiskScore(
 
 /**
  * Map risk score to trading strategy.
- * Ranges from PRD section 7.3:
- * - [0.00-0.25]: LONG
- * - [0.25-0.50]: WATCH
- * - [0.50-0.75]: SHORT
- * - [0.75-1.00]: AVOID
+ * Ranges from PRD section 7.3 (v4.0 updated):
+ * - [0.00-0.25]: RIDE (exploit predictable ruggers)
+ * - [0.25-0.50]: WATCH (insufficient data)
+ * - [0.50-0.75]: FADE (short predictable dumps)
+ * - [0.75-1.00]: AVOID (too risky/unpredictable)
  *
  * @param riskScore - Risk score (0-1)
  * @returns Trading strategy
  */
-export function getStrategy(riskScore: number): 'LONG' | 'WATCH' | 'SHORT' | 'AVOID' {
-  if (riskScore < 0.25) return 'LONG';
+export function getStrategy(riskScore: number): 'RIDE' | 'WATCH' | 'FADE' | 'AVOID' {
+  if (riskScore < 0.25) return 'RIDE';
   if (riskScore < 0.50) return 'WATCH';
-  if (riskScore < 0.75) return 'SHORT';
+  if (riskScore < 0.75) return 'FADE';
   return 'AVOID';
 }
 

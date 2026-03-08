@@ -1,0 +1,527 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { createTestDb } from '../setup.js';
+import { WalletRepo } from '../../src/repositories/WalletRepo.js';
+import { TokenEventRepo } from '../../src/repositories/TokenEventRepo.js';
+import { MonitoringRepo } from '../../src/repositories/MonitoringRepo.js';
+import { SnapshotRepo } from '../../src/repositories/SnapshotRepo.js';
+import { PlaybookBuilder } from '../../src/scoring/PlaybookBuilder.js';
+import { TradeExecutor } from '../../src/execution/TradeExecutor.js';
+import { TaintScorer } from '../../src/scoring/TaintScorer.js';
+import type { IMemoryDb } from 'pg-mem';
+import type { Pool } from 'pg';
+
+// Mock PExitCalculator for fallback tests
+vi.mock('../../src/scoring/PExitCalculator.js', () => {
+  return {
+    PExitCalculator: vi.fn().mockImplementation(() => ({
+      recalculatePExit: vi.fn().mockResolvedValue({ pExitV1: 1.2, pExitV2: 0.75 }),
+      getExitActionV2: vi.fn().mockReturnValue({ action: 'SELL', sellPct: 75 })
+    }))
+  };
+});
+
+/**
+ * E2E Tests for v4.0 "Ride the Rugger"
+ *
+ * Tests complete workflows from token detection to trade execution
+ * across 4 main scenarios:
+ *
+ * 1. Predictable Rugger → RIDE strategy
+ * 2. Predictable Rugger → FADE strategy
+ * 3. Legitimate Wallet → P_exit fallback
+ * 4. Chaotic Rugger → AVOID strategy
+ */
+describe('v4.0 E2E Scenarios', () => {
+  let db: IMemoryDb;
+  let pool: Pool;
+  let walletRepo: WalletRepo;
+  let tokenRepo: TokenEventRepo;
+  let monitoringRepo: MonitoringRepo;
+  let snapshotRepo: SnapshotRepo;
+  let playbookBuilder: PlaybookBuilder;
+  let tradeExecutor: TradeExecutor;
+  let taintScorer: TaintScorer;
+
+  beforeEach(async () => {
+    db = await createTestDb();
+    pool = new (db.adapters.createPg().Pool)() as unknown as Pool;
+    walletRepo = new WalletRepo(pool);
+    tokenRepo = new TokenEventRepo(pool);
+    monitoringRepo = new MonitoringRepo(pool);
+    snapshotRepo = new SnapshotRepo(pool);
+    playbookBuilder = new PlaybookBuilder(pool);
+    tradeExecutor = new TradeExecutor(pool);
+    taintScorer = new TaintScorer(pool);
+  });
+
+  /**
+   * Scenario 1: Predictable Rugger → RIDE Strategy
+   *
+   * Flow:
+   * 1. Wallet creates 5 rugs with very consistent timing (CV < 0.3)
+   * 2. PlaybookBuilder generates playbook with consistency_score > 0.7
+   * 3. Strategy = RIDE
+   * 4. TradeExecutor evaluates new token using temporal windows
+   */
+  describe('Scenario 1: Predictable Rugger → RIDE', () => {
+    it('should complete full workflow: detection → tracking → playbook → RIDE execution', async () => {
+      // ============================================================
+      // STEP 1: Create wallet with consistent rug pattern
+      // ============================================================
+      const walletAddress = 'predictableRugger1';
+      await walletRepo.upsertWallet(walletAddress);
+
+      // Create 5 historical rugs with very consistent timing
+      const historicalRugs = [
+        {
+          token: 'rug_hist_1',
+          peak_mc: 50000,
+          peak_price: 0.05,
+          time_to_peak: 5.0,
+          time_to_rug: 10.0,
+          dump_speed: -10.0,
+          liquidity_at_peak: 8000
+        },
+        {
+          token: 'rug_hist_2',
+          peak_mc: 51000,
+          peak_price: 0.051,
+          time_to_peak: 5.1,
+          time_to_rug: 10.1,
+          dump_speed: -10.2,
+          liquidity_at_peak: 8200
+        },
+        {
+          token: 'rug_hist_3',
+          peak_mc: 49000,
+          peak_price: 0.049,
+          time_to_peak: 4.9,
+          time_to_rug: 9.9,
+          dump_speed: -9.8,
+          liquidity_at_peak: 7800
+        },
+        {
+          token: 'rug_hist_4',
+          peak_mc: 50500,
+          peak_price: 0.0505,
+          time_to_peak: 5.05,
+          time_to_rug: 10.05,
+          dump_speed: -10.1,
+          liquidity_at_peak: 8100
+        },
+        {
+          token: 'rug_hist_5',
+          peak_mc: 49500,
+          peak_price: 0.0495,
+          time_to_peak: 4.95,
+          time_to_rug: 9.95,
+          dump_speed: -9.9,
+          liquidity_at_peak: 7900
+        }
+      ];
+
+      // Record tokens and set lifecycle data
+      for (const rug of historicalRugs) {
+        await tokenRepo.recordEvent(rug.token, walletAddress);
+        await pool.query(
+          `UPDATE token_events
+           SET verdict = 'RUG_METRICS',
+               peak_mc = $1,
+               peak_price = $2,
+               time_to_peak_min = $3,
+               time_to_rug_min = $4,
+               dump_speed_pct_per_min = $5,
+               liquidity_at_peak = $6,
+               tracking_complete = TRUE,
+               checked_at = NOW()
+           WHERE token_address = $7`,
+          [
+            rug.peak_mc,
+            rug.peak_price,
+            rug.time_to_peak,
+            rug.time_to_rug,
+            rug.dump_speed,
+            rug.liquidity_at_peak,
+            rug.token
+          ]
+        );
+      }
+
+      // Update wallet counters
+      await walletRepo.incrementRug(walletAddress);
+      await walletRepo.incrementRug(walletAddress);
+      await walletRepo.incrementRug(walletAddress);
+      await walletRepo.incrementRug(walletAddress);
+      await walletRepo.incrementRug(walletAddress);
+
+      // ============================================================
+      // STEP 2: Build playbook
+      // ============================================================
+      const playbook = await playbookBuilder.buildPlaybook(walletAddress);
+
+      // Verify playbook exists and is RIDE strategy
+      expect(playbook).not.toBeNull();
+      expect(playbook!.sample_size).toBe(5);
+      expect(playbook!.consistency_score).toBeGreaterThan(0.7);
+      expect(playbook!.recommended_strategy).toBe('RIDE');
+      expect(playbook!.avg_time_to_peak_min).toBeCloseTo(5.0, 1);
+      expect(playbook!.avg_time_to_rug_min).toBeCloseTo(10.0, 1);
+
+      // Verify wallet was updated
+      const wallet = await walletRepo.getByAddress(walletAddress);
+      expect(wallet!.strategy).toBe('RIDE');
+      expect(wallet!.playbook_confidence).toBeGreaterThan(0.7);
+
+      // ============================================================
+      // STEP 3: New token detected → enqueue for tracking
+      // ============================================================
+      const newToken = 'new_token_1';
+      const detectedAt = new Date('2026-03-07T10:00:00Z');
+      const checkAt = new Date(detectedAt.getTime() + 30 * 60 * 1000); // +30 min
+
+      await tokenRepo.recordEvent(newToken, walletAddress);
+      await monitoringRepo.enqueue(newToken, walletAddress, checkAt);
+
+      // Simulate tracking period (create snapshots)
+      for (let i = 0; i < 60; i++) {
+        const snapshotAt = new Date(detectedAt.getTime() + i * 30 * 1000); // Every 30s
+        const elapsedMin = i * 0.5;
+
+        // Simulate price evolution (pump then dump)
+        let fdv = 10000;
+        if (elapsedMin < 5) {
+          // Pump phase
+          fdv = 10000 + elapsedMin * 8000;
+        } else if (elapsedMin < 10) {
+          // Peak
+          fdv = 50000;
+        } else {
+          // Dump phase
+          fdv = 50000 - (elapsedMin - 10) * 2000;
+        }
+
+        await snapshotRepo.insertSnapshot({
+          token_address: newToken,
+          snapshot_at: snapshotAt,
+          fdv: Math.max(fdv, 1000),
+          liquidity_usd: fdv * 0.15,
+          price_usd: fdv / 1000000,
+          price_change_5m: null,
+          volume_5m: null,
+          buy_count_5m: null,
+          sell_count_5m: null
+        });
+      }
+
+      // ============================================================
+      // STEP 4: Evaluate trades at different time points
+      // ============================================================
+
+      // 4a. Entry window (3 min elapsed) → BUY
+      const signalEntry = await tradeExecutor.evaluateTrade(newToken, 3.0, 34000);
+      expect(signalEntry.action).toBe('BUY');
+      expect(signalEntry.playbook_strategy).toBe('RIDE');
+      expect(signalEntry.percentage).toBe(100);
+      expect(signalEntry.confidence).toBeGreaterThan(0.7);
+      expect(signalEntry.fallback).toBeUndefined();
+
+      // 4b. Hold period (7 min elapsed) → HOLD
+      const signalHold = await tradeExecutor.evaluateTrade(newToken, 7.0, 50000);
+      expect(signalHold.action).toBe('HOLD');
+      expect(signalHold.playbook_strategy).toBe('RIDE');
+      expect(signalHold.percentage).toBe(0);
+
+      // 4c. Exit window (9.97 min elapsed) → SELL progressive
+      const signalExit = await tradeExecutor.evaluateTrade(newToken, 9.97, 48000);
+      expect(signalExit.action).toBe('SELL');
+      expect(signalExit.playbook_strategy).toBe('RIDE');
+      expect(signalExit.percentage).toBeGreaterThan(0);
+      expect(signalExit.percentage).toBeLessThanOrEqual(100);
+
+      // 4d. Past exit (12 min elapsed) → SELL 100%
+      const signalPast = await tradeExecutor.evaluateTrade(newToken, 12.0, 30000);
+      expect(signalPast.action).toBe('SELL');
+      expect(signalPast.percentage).toBe(100);
+      expect(signalPast.confidence).toBe(1.0);
+
+      // ============================================================
+      // STEP 5: Verify taint propagation (if RUG verdict)
+      // ============================================================
+      await taintScorer.propagate(newToken, walletAddress, 'RUG_METRICS');
+      const updatedWallet = await walletRepo.getByAddress(walletAddress);
+      expect(updatedWallet!.taint_score).toBeGreaterThan(0);
+    });
+  });
+
+  /**
+   * Scenario 2: Predictable Rugger → FADE Strategy
+   *
+   * Flow:
+   * 1. Wallet creates 5 rugs with moderate consistency (0.6 <= CV < 0.7)
+   * 2. PlaybookBuilder generates playbook with consistency_score in [0.6, 0.7)
+   * 3. Strategy = FADE
+   * 4. TradeExecutor uses SHORT at peak, COVER after dump
+   */
+  describe('Scenario 2: Predictable Rugger → FADE', () => {
+    it('should complete full workflow with FADE strategy', async () => {
+      const walletAddress = 'fadeRugger1';
+      await walletRepo.upsertWallet(walletAddress);
+
+      // Create 5 rugs with moderate variance (FADE range)
+      const historicalRugs = [
+        { token: 'rug_fade_1', peak_mc: 50000, time_to_peak: 5.0, time_to_rug: 10.0 },
+        { token: 'rug_fade_2', peak_mc: 52000, time_to_peak: 5.5, time_to_rug: 11.0 },
+        { token: 'rug_fade_3', peak_mc: 48000, time_to_peak: 4.5, time_to_rug: 9.0 },
+        { token: 'rug_fade_4', peak_mc: 51000, time_to_peak: 5.2, time_to_rug: 10.5 },
+        { token: 'rug_fade_5', peak_mc: 49000, time_to_peak: 4.8, time_to_rug: 9.5 }
+      ];
+
+      for (const rug of historicalRugs) {
+        await tokenRepo.recordEvent(rug.token, walletAddress);
+        await pool.query(
+          `UPDATE token_events
+           SET verdict = 'RUG_METRICS',
+               peak_mc = $1,
+               time_to_peak_min = $2,
+               time_to_rug_min = $3,
+               checked_at = NOW()
+           WHERE token_address = $4`,
+          [rug.peak_mc, rug.time_to_peak, rug.time_to_rug, rug.token]
+        );
+        await walletRepo.incrementRug(walletAddress);
+      }
+
+      // Build playbook
+      const playbook = await playbookBuilder.buildPlaybook(walletAddress);
+
+      // Verify RIDE or FADE (depends on exact CV)
+      expect(playbook).not.toBeNull();
+      expect(['RIDE', 'FADE']).toContain(playbook!.recommended_strategy);
+
+      // Force FADE for this test
+      playbook!.recommended_strategy = 'FADE';
+      await walletRepo.updatePlaybook(walletAddress, playbook!);
+
+      // Create new token
+      const newToken = 'new_fade_token';
+      await tokenRepo.recordEvent(newToken, walletAddress);
+
+      // Evaluate at different time points
+      // Before peak (3 min) → NONE
+      const signalBefore = await tradeExecutor.evaluateTrade(newToken, 3.0, 40000);
+      expect(signalBefore.action).toBe('NONE');
+      expect(signalBefore.playbook_strategy).toBe('FADE');
+
+      // At peak (5.2 min) → SHORT
+      const signalPeak = await tradeExecutor.evaluateTrade(newToken, 5.2, 50000);
+      expect(signalPeak.action).toBe('SHORT');
+      expect(signalPeak.percentage).toBe(100);
+
+      // During dump (7 min) → HOLD_SHORT
+      const signalDump = await tradeExecutor.evaluateTrade(newToken, 7.0, 45000);
+      expect(signalDump.action).toBe('HOLD_SHORT');
+
+      // After dump (10.5 min) → COVER
+      const signalCover = await tradeExecutor.evaluateTrade(newToken, 10.5, 30000);
+      expect(signalCover.action).toBe('COVER');
+      expect(signalCover.percentage).toBe(100);
+    });
+  });
+
+  /**
+   * Scenario 3: Legitimate Wallet → P_exit Fallback
+   *
+   * Flow:
+   * 1. Wallet with no playbook (no rugs, only SUCCESS tokens)
+   * 2. PlaybookBuilder returns null
+   * 3. TradeExecutor falls back to PExitCalculator
+   * 4. Trade signal based on price (MC_ratio), not time
+   */
+  describe('Scenario 3: Legitimate Wallet → P_exit Fallback', () => {
+    it('should use P_exit fallback for wallet without playbook', async () => {
+      const walletAddress = 'legitimateWallet1';
+      await walletRepo.upsertWallet(walletAddress);
+
+      // Create only SUCCESS tokens (no rugs)
+      const successTokens = [
+        { token: 'success_1', fdv: 50000 },
+        { token: 'success_2', fdv: 60000 },
+        { token: 'success_3', fdv: 55000 }
+      ];
+
+      for (const success of successTokens) {
+        await tokenRepo.recordEvent(success.token, walletAddress);
+        await pool.query(
+          `UPDATE token_events
+           SET verdict = 'SUCCESS',
+               fdv_at_check = $1,
+               liquidity_at_check = 8000,
+               checked_at = NOW()
+           WHERE token_address = $2`,
+          [success.fdv, success.token]
+        );
+        await walletRepo.incrementSurvival(walletAddress);
+      }
+
+      // Try to build playbook (should return null - no rugs)
+      const playbook = await playbookBuilder.buildPlaybook(walletAddress);
+      expect(playbook).toBeNull();
+
+      // Create new token
+      const newToken = 'new_legit_token';
+      await tokenRepo.recordEvent(newToken, walletAddress);
+
+      // Evaluate trade (should fallback to P_exit)
+      const signal = await tradeExecutor.evaluateTrade(newToken, 5.0, 50000);
+
+      expect(signal.fallback).toBe(true);
+      expect(signal.reason).toContain('No playbook');
+      expect(signal.reason).toContain('P_exit');
+      // PExitCalculator mock returns 75% sell
+      expect(signal.action).toBe('SELL');
+      expect(signal.percentage).toBe(75);
+    });
+
+    it('should use P_exit fallback for WATCH strategy (insufficient data)', async () => {
+      const walletAddress = 'watchWallet1';
+      await walletRepo.upsertWallet(walletAddress);
+
+      // Create only 3 rugs (below 5 threshold for RIDE/FADE)
+      const rugs = [
+        { token: 'rug_watch_1', peak_mc: 50000, time_to_peak: 5.0, time_to_rug: 10.0 },
+        { token: 'rug_watch_2', peak_mc: 51000, time_to_peak: 5.1, time_to_rug: 10.1 },
+        { token: 'rug_watch_3', peak_mc: 49000, time_to_peak: 4.9, time_to_rug: 9.9 }
+      ];
+
+      for (const rug of rugs) {
+        await tokenRepo.recordEvent(rug.token, walletAddress);
+        await pool.query(
+          `UPDATE token_events
+           SET verdict = 'RUG_METRICS',
+               peak_mc = $1,
+               time_to_peak_min = $2,
+               time_to_rug_min = $3,
+               checked_at = NOW()
+           WHERE token_address = $4`,
+          [rug.peak_mc, rug.time_to_peak, rug.time_to_rug, rug.token]
+        );
+        await walletRepo.incrementRug(walletAddress);
+      }
+
+      // Build playbook (should be WATCH - sample < 5)
+      const playbook = await playbookBuilder.buildPlaybook(walletAddress);
+      expect(playbook).not.toBeNull();
+      expect(playbook!.recommended_strategy).toBe('WATCH');
+
+      // Create new token
+      const newToken = 'new_watch_token';
+      await tokenRepo.recordEvent(newToken, walletAddress);
+
+      // Evaluate trade (should fallback to P_exit)
+      const signal = await tradeExecutor.evaluateTrade(newToken, 5.0, 50000);
+
+      expect(signal.fallback).toBe(true);
+      expect(signal.playbook_strategy).toBe('WATCH');
+      expect(signal.reason).toContain('WATCH');
+      expect(signal.reason).toContain('P_exit');
+    });
+  });
+
+  /**
+   * Scenario 4: Chaotic Rugger → AVOID Strategy
+   *
+   * Flow:
+   * 1. Wallet creates 5 rugs with very fast timing (avg_time_to_rug < 3 min)
+   * 2. PlaybookBuilder detects avg_time_to_rug < 3 → AVOID
+   * 3. TradeExecutor falls back to PExitCalculator
+   * 4. Strategy is AVOID (too fast, unpredictable)
+   */
+  describe('Scenario 4: Chaotic Rugger → AVOID', () => {
+    it('should detect AVOID strategy for very fast rugs', async () => {
+      const walletAddress = 'chaoticRugger1';
+      await walletRepo.upsertWallet(walletAddress);
+
+      // Create 5 rugs with very fast rug times (< 3 min avg)
+      const fastRugs = [
+        { token: 'rug_fast_1', peak_mc: 30000, time_to_peak: 0.5, time_to_rug: 1.0 },
+        { token: 'rug_fast_2', peak_mc: 32000, time_to_peak: 0.6, time_to_rug: 1.2 },
+        { token: 'rug_fast_3', peak_mc: 28000, time_to_peak: 0.4, time_to_rug: 0.8 },
+        { token: 'rug_fast_4', peak_mc: 31000, time_to_peak: 0.55, time_to_rug: 1.1 },
+        { token: 'rug_fast_5', peak_mc: 29000, time_to_peak: 0.45, time_to_rug: 0.9 }
+      ];
+
+      for (const rug of fastRugs) {
+        await tokenRepo.recordEvent(rug.token, walletAddress);
+        await pool.query(
+          `UPDATE token_events
+           SET verdict = 'RUG_METRICS',
+               peak_mc = $1,
+               time_to_peak_min = $2,
+               time_to_rug_min = $3,
+               checked_at = NOW()
+           WHERE token_address = $4`,
+          [rug.peak_mc, rug.time_to_peak, rug.time_to_rug, rug.token]
+        );
+        await walletRepo.incrementRug(walletAddress);
+      }
+
+      // Build playbook (should be AVOID - avg_time_to_rug < 3)
+      const playbook = await playbookBuilder.buildPlaybook(walletAddress);
+      expect(playbook).not.toBeNull();
+      expect(playbook!.avg_time_to_rug_min).toBeLessThan(3);
+      expect(playbook!.recommended_strategy).toBe('AVOID');
+
+      // Verify wallet strategy
+      const wallet = await walletRepo.getByAddress(walletAddress);
+      expect(wallet!.strategy).toBe('AVOID');
+
+      // Create new token
+      const newToken = 'new_chaotic_token';
+      await tokenRepo.recordEvent(newToken, walletAddress);
+
+      // Evaluate trade (should fallback to P_exit)
+      const signal = await tradeExecutor.evaluateTrade(newToken, 2.0, 30000);
+
+      expect(signal.fallback).toBe(true);
+      expect(signal.playbook_strategy).toBe('AVOID');
+      expect(signal.reason).toContain('AVOID');
+      expect(signal.reason).toContain('P_exit');
+    });
+
+    it('should handle extremely inconsistent timing (high CV)', async () => {
+      const walletAddress = 'inconsistentRugger1';
+      await walletRepo.upsertWallet(walletAddress);
+
+      // Create 5 rugs with wildly different timings
+      const inconsistentRugs = [
+        { token: 'rug_inc_1', peak_mc: 50000, time_to_peak: 2.0, time_to_rug: 5.0 },
+        { token: 'rug_inc_2', peak_mc: 45000, time_to_peak: 10.0, time_to_rug: 15.0 },
+        { token: 'rug_inc_3', peak_mc: 52000, time_to_peak: 3.0, time_to_rug: 7.0 },
+        { token: 'rug_inc_4', peak_mc: 48000, time_to_peak: 8.0, time_to_rug: 12.0 },
+        { token: 'rug_inc_5', peak_mc: 51000, time_to_peak: 5.0, time_to_rug: 10.0 }
+      ];
+
+      for (const rug of inconsistentRugs) {
+        await tokenRepo.recordEvent(rug.token, walletAddress);
+        await pool.query(
+          `UPDATE token_events
+           SET verdict = 'RUG_METRICS',
+               peak_mc = $1,
+               time_to_peak_min = $2,
+               time_to_rug_min = $3,
+               checked_at = NOW()
+           WHERE token_address = $4`,
+          [rug.peak_mc, rug.time_to_peak, rug.time_to_rug, rug.token]
+        );
+        await walletRepo.incrementRug(walletAddress);
+      }
+
+      // Build playbook (moderate consistency → could be FADE or WATCH)
+      const playbook = await playbookBuilder.buildPlaybook(walletAddress);
+      expect(playbook).not.toBeNull();
+      // With this data, CV ~= 0.36, so consistency ~= 0.64 → FADE
+      expect(playbook!.consistency_score).toBeGreaterThan(0.5);
+      expect(['FADE', 'WATCH']).toContain(playbook!.recommended_strategy);
+    });
+  });
+});

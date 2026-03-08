@@ -80,8 +80,7 @@ export class RugScannerWorker {
           const remainingQuota = this.dexScreenerClient.getRemainingQuota();
           if (remainingQuota < 10) {
             logger.warn({ remainingQuota }, 'Rate limit low, re-enqueueing token');
-            const newCheckAt = new Date(Date.now() + REQUEUE_DELAY_MINUTES * 60 * 1000);
-            await this.monitoringRepo.reEnqueue(queueItem.token_address, newCheckAt);
+            await this.monitoringRepo.reEnqueue(queueItem.token_address, REQUEUE_DELAY_MINUTES);
             continue;
           }
 
@@ -137,8 +136,7 @@ export class RugScannerWorker {
 
           // Retry logic
           if (queueItem.retry_count < 3) {
-            const newCheckAt = new Date(Date.now() + REQUEUE_DELAY_MINUTES * 60 * 1000);
-            await this.monitoringRepo.reEnqueue(queueItem.token_address, newCheckAt);
+            await this.monitoringRepo.reEnqueue(queueItem.token_address, REQUEUE_DELAY_MINUTES);
             logger.info({ token: queueItem.token_address, retryCount: queueItem.retry_count + 1 }, 'Token re-enqueued for retry');
           } else {
             await this.monitoringRepo.markProcessed(queueItem.token_address);

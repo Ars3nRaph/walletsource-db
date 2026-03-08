@@ -15,7 +15,7 @@ export class CartelRepo {
     avgRugRate: number,
     confidenceScore: number,
     confidenceScoreV2: number,
-    autoStrategy: 'AVOID' | 'SHORT' | 'WATCH' | 'LONG'
+    autoStrategy: 'RIDE' | 'FADE' | 'WATCH' | 'AVOID'
   ): Promise<CartelGroup> {
     try {
       const result = await this.pool.query<CartelGroup>(

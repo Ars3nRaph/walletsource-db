@@ -11,8 +11,8 @@ export class RateLimiter {
   private readonly windowMs: number;
 
   private constructor() {
-    this.maxRequests = parseInt(process.env.DEXSCREENER_RATE_LIMIT || '1000', 10);
-    this.windowMs = 60 * 60 * 1000; // 1 hour
+    this.maxRequests = parseInt(process.env.DEXSCREENER_RATE_LIMIT || '300', 10);
+    this.windowMs = 60 * 1000; // 1 minute (DexScreener rate limit is per minute)
   }
 
   static getInstance(): RateLimiter {

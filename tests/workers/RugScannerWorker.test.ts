@@ -47,10 +47,9 @@ describe('RugScannerWorker - Repository Integration', () => {
     
     await walletRepo.upsertWallet(wallet);
     await tokenRepo.recordEvent(token, wallet);
-    
-    const checkAt = new Date(Date.now() + 15 * 60 * 1000);
-    await monitoringRepo.enqueue(token, wallet, checkAt);
-    
+
+    await monitoringRepo.enqueue(token, wallet, 15);
+
     // Verify enqueued
     const result = await pool.query(
       'SELECT * FROM monitoring_queue WHERE token_address = $1',
@@ -63,14 +62,13 @@ describe('RugScannerWorker - Repository Integration', () => {
   it('should mark token as processed', async () => {
     const wallet = 'creator4';
     const token = 'token456';
-    
+
     await walletRepo.upsertWallet(wallet);
     await tokenRepo.recordEvent(token, wallet);
-    const checkAt = new Date(Date.now() - 60000);
-    await monitoringRepo.enqueue(token, wallet, checkAt);
-    
+    await monitoringRepo.enqueue(token, wallet, -1); // 1 min ago
+
     await monitoringRepo.markProcessed(token);
-    
+
     const result = await pool.query(
       'SELECT * FROM monitoring_queue WHERE token_address = $1',
       [token]
@@ -81,20 +79,18 @@ describe('RugScannerWorker - Repository Integration', () => {
   it('should re-enqueue token with retry', async () => {
     const wallet = 'creator5';
     const token = 'token789';
-    
+
     await walletRepo.upsertWallet(wallet);
     await tokenRepo.recordEvent(token, wallet);
-    const checkAt = new Date(Date.now() - 60000);
-    await monitoringRepo.enqueue(token, wallet, checkAt);
-    
-    const newCheckAt = new Date(Date.now() + 5 * 60 * 1000);
-    await monitoringRepo.reEnqueue(token, newCheckAt);
-    
+    await monitoringRepo.enqueue(token, wallet, -1);
+
+    await monitoringRepo.reEnqueue(token, 5);
+
     const result = await pool.query(
       'SELECT * FROM monitoring_queue WHERE token_address = $1',
       [token]
     );
-    expect(result.rows[0].status).toBe('RETRY');
+    expect(result.rows[0].status).toBe('PENDING');
     expect(result.rows[0].retry_count).toBe(1);
   });
 });

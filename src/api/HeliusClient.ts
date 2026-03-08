@@ -2,18 +2,21 @@ import fetch, { type Response } from 'node-fetch';
 import { logger } from '../utils/logger.js';
 import { ErrorCode, WalletSourceError } from '../types/errors.js';
 import type { HeliusTransaction } from '../types/index.js';
+import { AsyncQueue } from '../utils/AsyncQueue.js';
 
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 1000;
-const HELIUS_CREDITS_PER_CALL = 5;
 const MONTHLY_CREDIT_LIMIT = 1_000_000; // Free tier
+const MAX_CONCURRENT_REQUESTS = 3; // Limit concurrent Helius API calls
 
 export class HeliusClient {
   private apiKey: string;
   private creditsUsedToday = 0;
   private lastResetDate: Date;
+  private queue: AsyncQueue;
 
   constructor() {
+    this.queue = new AsyncQueue(MAX_CONCURRENT_REQUESTS);
     const apiKey = process.env.HELIUS_API_KEY;
     if (!apiKey) {
       throw new WalletSourceError(
@@ -34,10 +37,15 @@ export class HeliusClient {
    * @returns Array of Helius transactions with native transfers
    */
   async getWalletTransactions(address: string): Promise<HeliusTransaction[]> {
-    const url = `https://api.helius.xyz/v0/addresses/${address}/transactions?api-key=${this.apiKey}&type=TRANSFER`;
+    // Use queue to limit concurrent requests (prevents API overload and improves success rate)
+    return this.queue.add(async () => {
+      // CRITICAL: Limit to 20 transactions to reduce credit consumption while ensuring we find primary funders
+      // For ancestry building, we need enough coverage to find initial funding (ruggers typically have <20 SOL transfers)
+      // With recursive calls (depth 0-2), each rugger triggers 3-6 Helius calls total
+      const url = `https://api.helius.xyz/v0/addresses/${address}/transactions?api-key=${this.apiKey}&type=TRANSFER&limit=20`;
 
-    try {
-      const response = await this.fetchWithRetry(url);
+      try {
+        const response = await this.fetchWithRetry(url);
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -46,24 +54,36 @@ export class HeliusClient {
       const transactions: HeliusTransaction[] = await response.json() as HeliusTransaction[];
 
       // Track credit usage
-      this.creditsUsedToday += HELIUS_CREDITS_PER_CALL;
+      // Helius Enhanced API: ~1 credit per API call (not per transaction)
+      // Source: https://docs.helius.dev/api-reference/enhanced-transactions-api
+      const creditsUsed = 1;
+      this.creditsUsedToday += creditsUsed;
       this.checkDailyLimit();
 
-      logger.debug({
+      logger.info({
         address,
         txCount: transactions.length,
-        creditsUsed: this.creditsUsedToday
+        creditsUsed,
+        totalCreditsToday: this.creditsUsedToday
       }, 'Helius transactions fetched');
 
-      return transactions;
-    } catch (error) {
-      logger.error({ error, address }, 'Failed to fetch Helius transactions');
-      throw new WalletSourceError(
-        ErrorCode.API_REQUEST_FAILED,
-        `Failed to fetch transactions for ${address}`,
-        { error }
-      );
-    }
+        return transactions;
+      } catch (error) {
+        logger.error({
+          address,
+          errorMessage: error instanceof Error ? error.message : String(error),
+          errorStack: error instanceof Error ? error.stack : undefined
+        }, 'Failed to fetch Helius transactions');
+        throw new WalletSourceError(
+          ErrorCode.API_REQUEST_FAILED,
+          `Failed to fetch transactions for ${address}`,
+          {
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined
+          }
+        );
+      }
+    });
   }
 
   /**

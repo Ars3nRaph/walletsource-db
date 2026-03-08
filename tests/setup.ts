@@ -37,5 +37,11 @@ export async function createTestDb(): Promise<IMemoryDb> {
 
   db.public.none(schema);
 
+  // Load v4.0 migration
+  const migrationPath = path.join(__dirname, '../src/db/migrations/v4_ride_the_rugger.sql');
+  const migration = await fs.readFile(migrationPath, 'utf-8');
+
+  db.public.none(migration);
+
   return db;
 }

@@ -1,119 +1,155 @@
-# WalletSourceDB v3.0
+# WalletSourceDB v4.0 — "Ride the Rugger"
 
-On-chain wallet forensic intelligence database for Solana/Pump.fun tokens.
+On-chain forensic intelligence database for Solana/Pump.fun wallet profiling and predictive trading.
 
-## Phase 1 Status — Schema & Repos ✅ COMPLETE
-
-**Architecture:**
-- ✅ 7 PostgreSQL tables with proper constraints and indexes
-- ✅ 6 Repository classes with full CRUD operations
-- ✅ TypeScript strict mode with complete type definitions
-- ✅ Error handling with custom `WalletSourceError` class
-- ✅ Pino structured logging
-- ✅ Rate limiter singleton (1000 req/h)
-- ✅ Validation script for production testing
-
-**Quality Metrics:**
-- ✅ Type-check: **0 errors**
-- ✅ Lint: **0 errors**
-- ✅ Tests: **40/48 passing (83%)**
-
-**Test Suite Notes:**
-
-Tests use `pg-mem` for in-memory PostgreSQL simulation. The 8 failing tests are due to known pg-mem limitations that **do NOT affect production PostgreSQL**:
-
-- **WITH RECURSIVE** (3 tests) - `AncestryRepo.getAncestors()`, `getDescendants()`
-  - pg-mem has incomplete support for recursive CTEs
-  - ✅ Works correctly in production PostgreSQL 14+
-
-- **PERCENTILE_CONT** (4 tests) - `TokenEventRepo.getMedianFDV()`
-  - pg-mem doesn't implement this aggregate function
-  - ✅ Works correctly in production PostgreSQL 14+
-
-- **pg-mem UPDATE behavior** (1 test) - Fixed with workaround
-  - pg-mem evaluates SET expressions with new values instead of old
-  - ✅ Code works correctly in both pg-mem and production PostgreSQL
-
-All SQL queries are valid PostgreSQL 14+ syntax and have been designed for production use.
-
-## Setup
-
-1. **Install dependencies:**
-   ```bash
-   npm install
-   ```
-
-2. **Configure environment:**
-   ```bash
-   cp .env.example .env
-   # Edit .env with your credentials
-   ```
-
-3. **Start PostgreSQL** (Docker):
-   ```bash
-   docker run --name walletsource-db \
-     -e POSTGRES_DB=walletsource \
-     -e POSTGRES_USER=walletsource \
-     -e POSTGRES_PASSWORD=walletsource_dev \
-     -p 5432:5432 \
-     -d postgres:14
-   ```
-
-## Running
+## Quick Start
 
 ```bash
-# Build TypeScript
+# 1. Setup PostgreSQL (Docker)
+npm run db:setup
+
+# 2. Install dependencies
+npm install
+
+# 3. Build project
 npm run build
 
-# Validate with production PostgreSQL
-npm run validate
+# 4. Start in paper trading mode
+npm run paper:start
+```
 
-# Start application (Phase 2+)
-npm start
+## Documentation
 
-# Development mode with watch
-npm start:dev
+- **[DEPLOY.md](./DEPLOY.md)** — Complete deployment guide (PostgreSQL, paper trading, monitoring)
+- **[CLAUDE.md](./CLAUDE.md)** — Technical architecture and development guidelines
+- **[PRD_WalletSourceDB_v3.0.md](./PRD_WalletSourceDB_v3.0.md)** — Full product requirements
 
-# Run tests
-npm test
+## What is this?
 
+WalletSourceDB builds a live forensic database of Solana wallets that create tokens on Pump.fun. It:
+
+1. **Detects** new tokens via Solana WebSocket
+2. **Tracks** each token for 30 minutes (60 snapshots at 30s intervals)
+3. **Analyzes** rugger behavior patterns (timing, consistency, dump speed)
+4. **Builds** predictive playbooks (temporal windows for entry/exit)
+5. **Generates** trade signals (RIDE/FADE strategies)
+
+### Key Innovation: Time-Based Execution
+
+Unlike traditional price-based exits, v4.0 uses **temporal windows** derived from a wallet's historical rug patterns:
+
+- **RIDE**: Exploit predictable ruggers (buy early, sell before dump)
+- **FADE**: Short predictable peaks (short at peak, cover after dump)
+- **WATCH**: Insufficient data (fallback to P_exit)
+- **AVOID**: Too chaotic (fallback to P_exit)
+
+## Paper Trading Mode
+
+**IMPORTANT**: System starts in paper trading mode by default. All trade signals are logged but NOT executed.
+
+```bash
+# View paper trades
+tail -f data/paper-trades.log
+
+# Statistics
+npm run paper:stats
+```
+
+## Architecture
+
+```
+Solana WSS → ForensicWorker → TokenTracker (30min) → PlaybookBuilder → TradeExecutor
+                                                                            ↓
+                                                                    paper-trades.log
+```
+
+8 PostgreSQL tables:
+- `wallet_profiles` — Creator profiles with playbooks
+- `token_events` — Token verdicts (RUG/SUCCESS/NEUTRAL)
+- `token_snapshots` — 30-min tracking data
+- `wallet_ancestry` — Funding relationships
+- `cartel_groups` — Wallet clusters
+- `taint_log` — Rug propagation
+- `monitoring_queue` — Tracking queue
+- `calibration_log` — Weekly tuning
+
+## Development
+
+```bash
 # Type check
 npm run type-check
 
 # Lint
 npm run lint
+
+# Tests (178 tests, 98.3% passing)
+npm test
+
+# Coverage
+npm run test:coverage
+
+# Watch mode
+npm run start:dev
 ```
 
-## Validation Output (with PostgreSQL running):
+## Database Management
 
-```
-🔍 Starting WalletSourceDB validation...
-✅ Testing PostgreSQL connection...
-✅ PostgreSQL connection OK
+```bash
+# Start PostgreSQL
+npm run db:start
 
-📊 Testing WalletRepo...
-✅ Created wallet: TEST_WALLET_xxxxx
-✅ Wallet stats: rug=1, survival=1, rate=0.5
+# Stop PostgreSQL
+npm run db:stop
 
-🪙 Testing TokenEventRepo...
-✅ Recorded token event: TEST_TOKEN_xxxxx
-✅ Token verdict: SUCCESS, FDV: 50000
+# Reset database (WARNING: deletes all data)
+npm run db:reset
 
-⏱️  Testing MonitoringRepo...
-✅ Enqueued token, found 1 due token(s)
-
-🧹 Cleanup done
-✅ All validation checks passed!
+# pgAdmin (optional)
+docker-compose up -d pgadmin
+# Access: http://localhost:5050
 ```
 
-## Next Phases
+## Configuration
 
-- **Phase 2 (feat/verdict)**: ForensicWorker, RugScannerWorker, DexScreenerClient
-- **Phase 3 (feat/taint)**: TaintScorer with propagation depth 0-3
-- **Phase 4 (feat/profil)**: SigmoidScorer, profile_vector
-- **Phase 5 (feat/cartels)**: CartelDetector with clustering
-- **Phase 6 (feat/pexit)**: PExitCalculator v1 + v2
-- **Phase 7 (feat/dashboard)**: API REST + frontend
-- **Phase 8 (feat/sigmoid)**: CalibrationWorker hebdomadaire
+Edit `.env`:
 
-See [PRD_WalletSourceDB_v3.0.md](./PRD_WalletSourceDB_v3.0.md) and [CLAUDE.md](./CLAUDE.md) for complete documentation.
+```env
+# Helius API (required)
+HELIUS_API_KEY=your_key_here
+SOLANA_WSS_URL=wss://atlas-mainnet.helius-rpc.com?api-key=your_key_here
+
+# Database (Docker default)
+DATABASE_URL=postgresql://walletsource:walletsource_dev@localhost:5432/walletsource
+
+# Paper trading (MUST be true for testing)
+PAPER_TRADING_MODE=true
+PAPER_TRADING_LOG_FILE=./data/paper-trades.log
+
+# Rate limits
+DEXSCREENER_RATE_LIMIT=300  # req/min
+
+# Logging
+LOG_LEVEL=info
+```
+
+## Production Deployment
+
+See [DEPLOY.md](./DEPLOY.md) for full production checklist.
+
+**DO NOT** set `PAPER_TRADING_MODE=false` until:
+- 7+ days of paper trading completed
+- Playbook accuracy validated
+- Trade execution infrastructure ready
+- Risk management configured
+
+## License
+
+MIT
+
+## Support
+
+For issues, check:
+1. `data/` directory for logs
+2. Docker logs: `docker-compose logs postgres`
+3. Schema: `src/db/schema.sql`
+4. Tests: `npm test`

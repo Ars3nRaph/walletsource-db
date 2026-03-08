@@ -1,5 +1,5 @@
 import type { Pool } from 'pg';
-import type { WalletProfile } from '../types/index.js';
+import type { WalletProfile, RuggerPlaybook } from '../types/index.js';
 import { ErrorCode, WalletSourceError } from '../types/errors.js';
 import { logger } from '../utils/logger.js';
 
@@ -49,7 +49,7 @@ export class WalletRepo {
 
   async updateStrategy(
     walletAddress: string,
-    strategy: 'AVOID' | 'SHORT' | 'WATCH' | 'LONG'
+    strategy: 'RIDE' | 'FADE' | 'WATCH' | 'AVOID'
   ): Promise<void> {
     try {
       await this.pool.query(
@@ -219,6 +219,34 @@ export class WalletRepo {
       throw new WalletSourceError(
         ErrorCode.DB_QUERY_FAILED,
         `Failed to update cartel for ${walletAddress}`,
+        { error }
+      );
+    }
+  }
+
+  async updatePlaybook(walletAddress: string, playbook: RuggerPlaybook): Promise<void> {
+    try {
+      await this.pool.query(
+        `UPDATE wallet_profiles
+         SET rugger_playbook = $1,
+             playbook_confidence = $2,
+             playbook_updated_at = CURRENT_TIMESTAMP,
+             last_seen_at = CURRENT_TIMESTAMP
+         WHERE wallet_address = $3`,
+        [JSON.stringify(playbook), playbook.consistency_score, walletAddress]
+      );
+
+      logger.debug({
+        wallet_address: walletAddress,
+        sample_size: playbook.sample_size,
+        consistency: playbook.consistency_score,
+        strategy: playbook.recommended_strategy
+      }, 'Playbook updated');
+    } catch (error) {
+      logger.error({ error, walletAddress }, 'Failed to update playbook');
+      throw new WalletSourceError(
+        ErrorCode.DB_QUERY_FAILED,
+        `Failed to update playbook for ${walletAddress}`,
         { error }
       );
     }

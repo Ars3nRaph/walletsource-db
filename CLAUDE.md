@@ -1,17 +1,18 @@
-# WalletSourceDB — Intelligence forensique on-chain
+# WalletSourceDB v4.0 — "Ride the Rugger"
 
 ## Quick Facts
+- **Version** : v4.0 "Ride the Rugger" — exploiter les ruggers prévisibles au lieu de les éviter
 - **Stack** : TypeScript strict, Node.js 18+, PostgreSQL (node-postgres)
 - **Mode** : Collecte LIVE uniquement — pas d'import historique, la base se construit en temps réel
 - **Test** : `npm test` (Vitest)
 - **Lint** : `npm run lint` (ESLint + @typescript-eslint)
 - **Build** : `npm run build` (tsc)
 - **Type-check** : `npm run type-check` (tsc --noEmit)
-- **Start** : `npm start` (lance ForensicWorker + RugScannerWorker + CalibrationWorker)
-- **PRD complet** : `PRD_WalletSourceDB_v3.0.md` à la racine du projet
+- **Start** : `npm start` (lance ForensicWorker + TokenTracker + CartelDetector)
+- **PRD complet** : `PRD_WalletSourceDB_v3.0.md` + `MIGRATION_v4_RideTheRugger.md` à la racine du projet
 
-## Vision
-On ne trade pas le token. On trade le wallet. Base de données relationnelle de wallets "source" qui trace, profile et score les portefeuilles impliqués dans la création de tokens on-chain (Solana / Pump.fun). La base démarre vide et se remplit organiquement via la détection live. Objectif : prédire le comportement d'un token dès sa création via l'historique de son créateur et de son cartel.
+## Vision v4.0
+**Changement de paradigme** : On ne trade pas le token. On trade le **pattern du rugger**. Au lieu d'éviter les ruggers, on exploite leur prévisibilité via l'analyse de lifecycle complet (30 minutes de tracking continu) et les fenêtres temporelles (entry/exit windows pour RIDE, peak/dump windows pour FADE).
 
 ## Architecture
 
@@ -30,12 +31,15 @@ src/
 │   └── MonitoringRepo.ts       # monitoring_queue CRUD + getDueTokens()
 ├── workers/
 │   ├── ForensicWorker.ts       # Détection tokens via WSS Solana (logsSubscribe)
-│   ├── RugScannerWorker.ts     # Verdicts via DexScreener (toutes les 60s)
+│   ├── TokenTracker.ts         # v4.0: Tracking continu 30s×30min + lifecycle analysis
 │   └── CalibrationWorker.ts    # Recalibration hebdomadaire sigmoïdes (dimanche 03:00 UTC)
 ├── scoring/
 │   ├── TaintScorer.ts          # Propagation taint (50 × 0.7^depth, max depth 3)
 │   ├── SigmoidScorer.ts        # toxicity_score, risk_score, confidence_cartel_v2
-│   └── PExitCalculator.ts      # P_exit v1 (linéaire) + v2 (sigmoïde)
+│   ├── PlaybookBuilder.ts      # v4.0: Agrège rugs → playbook prédictif (fenêtres temporelles)
+│   └── PExitCalculator.ts      # P_exit v1 (linéaire) + v2 (sigmoïde) — fallback seulement
+├── execution/
+│   └── TradeExecutor.ts        # v4.0: Sortie par temps (RIDE/FADE) vs prix (P_exit)
 ├── cartels/
 │   └── CartelDetector.ts       # Clustering wallet_ancestry + batch détection
 ├── api/
@@ -54,7 +58,7 @@ tests/                          # Miroir de src/ avec .test.ts (Vitest + pg-mem)
 └── cartels/
 ```
 
-## Tables SQL (7 tables)
+## Tables SQL (8 tables — v4.0 ajout token_snapshots)
 
 ### 1. wallet_profiles (PK: wallet_address)
 | Colonne | Type | Rôle |
@@ -71,13 +75,31 @@ tests/                          # Miroir de src/ avec .test.ts (Vitest + pg-mem)
 | risk_score | REAL DEFAULT 0.5 | Score composite sigmoïde [0-1] |
 | cartel_id | TEXT FK → cartel_groups | Référence cartel |
 | profile_vector | TEXT (JSON) | 7 features pondérées |
-| strategy | TEXT | AVOID \| SHORT \| WATCH \| LONG |
+| strategy | TEXT | RIDE \| FADE \| WATCH \| AVOID (v4.0) |
+| rugger_playbook | JSONB | v4.0: Playbook prédictif (fenêtres temporelles) |
+| playbook_confidence | REAL | v4.0: consistency_score du playbook |
+| playbook_updated_at | DATETIME | v4.0: Dernière mise à jour playbook |
 
 ### 2. wallet_ancestry (PK: id)
 parent_wallet → child_wallet, funding_tx, funding_amount_sol, depth (0-3), confidence (0-1), detected_at
 
-### 3. token_events (PK: token_address)
+### 3. token_events (PK: token_address) — v4.0: +12 colonnes lifecycle
 creator_wallet (FK), detected_at, checked_at, verdict (RUG\|SUCCESS\|NEUTRAL), fdv_at_check, liquidity_at_check, price_change_5m, dexscreener_pair, p_exit_v1, p_exit_v2
+**v4.0 nouveaux champs**: peak_mc, peak_at, peak_price, time_to_peak_min, time_to_rug_min, dump_speed_pct_per_min, liquidity_at_peak, liquidity_removed, buy_volume_before_dump, rug_price, tracking_complete, snapshot_count
+
+### 3b. token_snapshots (PK: id) — v4.0 NOUVEAU
+| Colonne | Type | Rôle |
+|---------|------|------|
+| id | SERIAL PK | ID unique |
+| token_address | TEXT FK → token_events | Token suivi |
+| snapshot_at | DATETIME | Horodatage snapshot |
+| fdv | REAL | FDV au moment du snapshot |
+| liquidity_usd | REAL | Liquidité USD au snapshot |
+| price_usd | REAL | Prix USD au snapshot |
+| price_change_5m | REAL | Changement prix 5 min |
+| volume_5m | REAL | Volume 5 min |
+| buy_count_5m | INTEGER | Nombre achats 5 min |
+| sell_count_5m | INTEGER | Nombre ventes 5 min |
 
 ### 4. cartel_groups (PK: cartel_id)
 name, wallet_count, total_rug_count, total_survival_count, avg_rug_rate, confidence_score, confidence_score_v2, auto_strategy
@@ -86,18 +108,29 @@ name, wallet_count, total_rug_count, total_survival_count, avg_rug_rate, confide
 wallet_address (FK), source_token (FK), points_applied, propagation_depth, reason (RUG_NO_PAIR\|RUG_METRICS), applied_at
 
 ### 6. monitoring_queue (PK: id)
-token_address, creator_wallet, detected_at, check_at (detected_at + 15min), status (PENDING\|PROCESSING\|DONE\|RETRY), retry_count, processed_at
+token_address, creator_wallet, detected_at, check_at (v4.0: detected_at + **30min** au lieu de 15min), status (PENDING\|PROCESSING\|DONE\|RETRY), retry_count, processed_at
 
 ### 7. calibration_log (PK: id)
 calibrated_at, param_name, old_value, new_value, improvement_pct, tokens_evaluated, accepted
 
-## Pipeline live (flux séquentiel)
-1. **ForensicWorker** détecte un nouveau token Pump.fun via WSS → enqueue monitoring_queue (check_at = now + 15 min)
-2. **RugScannerWorker** (toutes les 60s) prend les tokens PENDING dont check_at est dépassé → appelle DexScreener → émet verdict
+## Pipeline live v4.0 (flux séquentiel)
+1. **ForensicWorker** détecte un nouveau token Pump.fun via WSS → enqueue monitoring_queue (check_at = now + **30 min** pour tracking complet)
+2. **TokenTracker** (v4.0) polling continu **30s × 30 min = 60 snapshots** :
+   - Prend les tokens PENDING dont check_at est dépassé
+   - Stocke un snapshot dans `token_snapshots` toutes les 30 secondes
+   - Après 30 minutes : analyse lifecycle complet (peak, dump, timing)
+   - Émet verdict basé sur le lifecycle (RUG_NO_PAIR, RUG_METRICS, SUCCESS, NEUTRAL)
+   - Met à jour `token_events` avec les 12 colonnes de lifecycle
 3. Si verdict = **RUG** → TaintScorer propage la pénalité en remontant l'ancestry (depth 0-3)
 4. **SigmoidScorer** recalcule toxicity_score, risk_score, strategy du wallet
-5. **HeliusClient** construit l'ancestry on-the-fly pour chaque nouveau wallet
-6. **CartelDetector** tourne en batch toutes les 5 min → détecte les cartels
+5. **PlaybookBuilder** (v4.0) reconstruit le playbook après chaque RUG :
+   - Agrège tous les rugs du wallet (≥ 3 requis)
+   - Calcule stats (avg_time_to_peak, avg_time_to_rug, consistency_score)
+   - Détermine fenêtres temporelles (entry_window, exit_window, short_window)
+   - Recommande stratégie RIDE/FADE/WATCH/AVOID
+   - Met à jour `wallet_profiles.rugger_playbook`
+6. **HeliusClient** construit l'ancestry on-the-fly pour chaque nouveau wallet
+7. **CartelDetector** tourne en batch toutes les 5 min → détecte les cartels
 7. **PExitCalculator** recalcule P_exit toutes les 10s pour les positions ouvertes
 8. **CalibrationWorker** recalibre les sigmoïdes chaque dimanche 03:00 UTC
 
@@ -206,8 +239,55 @@ Chaque dimanche 03:00 UTC :
 - **Parsing** : chercher `"Program log: Instruction: Create"` dans les logs → `accountKeys[0]` = creator_wallet, `accountKeys[1]` = token_mint
 - **PumpPortal fallback** : event.mint = token, event.traderPublicKey = creator
 
-### Rate limit global
-Max 1000 req/h (fenêtre glissante 60 min). Utiliser une classe `RateLimiter` singleton partagée entre DexScreenerClient et HeliusClient (src/utils/rateLimiter.ts). Si > 800 tokens en queue, prioriser les wallets avec le taint_score le plus élevé ou ceux appartenant à un cartel déjà référencé. Si quota atteint → re-enqueue avec check_at += 5 min.
+### Rate limit global (v4.0 correction)
+**Max 300 req/min** (fenêtre glissante 1 min) — limite officielle DexScreener. Capacité: **150 tokens simultanés** (chaque token = 2 req/min : 1 snapshot toutes les 30s).
+
+Utiliser une classe `RateLimiter` singleton partagée entre DexScreenerClient et HeliusClient (src/utils/rateLimiter.ts). Si capacité atteinte (≥150 tokens actifs OU remaining_quota < 10) → re-enqueue avec check_at += 5 min.
+
+## Stratégies v4.0 — RIDE the Rugger
+
+### Changement de paradigme
+**v3.0** : Éviter les ruggers → stratégies AVOID/SHORT/WATCH/LONG basées sur risk_score
+**v4.0** : Exploiter les ruggers prévisibles → stratégies **RIDE/FADE/WATCH/AVOID** basées sur consistency_score
+
+### Mapping stratégies
+| Strategy | Condition | Execution | Sortie |
+|----------|-----------|-----------|--------|
+| **RIDE** | consistency ≥ 0.7 AND sample ≥ 5 | BUY early, SELL at predicted dump | Temps (fenêtres) |
+| **FADE** | consistency ≥ 0.6 AND sample ≥ 5 | SHORT at peak, COVER after dump | Temps (fenêtres) |
+| **WATCH** | sample < 5 OR consistency < 0.6 | Pas assez de données | Prix (P_exit fallback) |
+| **AVOID** | avg_time_to_rug < 3 min | Trop rapide, imprévisible | Prix (P_exit fallback) |
+
+### TradeExecutor — Sortie par temps vs prix
+
+**RIDE execution** (long position):
+```
+Timeline: 0 ──── entry_end ──── exit_start ──── exit_end ────→
+Action:      BUY 100%    HOLD 0%    SELL progressive   SELL 100%
+
+Fenêtres:
+- Entry: [0, avg_time_to_peak - 1×std] → BUY 100%
+- Hold: [entry_end, avg_time_to_rug - 1×std] → HOLD
+- Exit: [exit_start, avg_time_to_rug] → SELL progressive (0-100%)
+- Past: > avg_time_to_rug → SELL 100% (emergency)
+```
+
+**FADE execution** (short position):
+```
+Timeline: 0 ──── peak ─── peak+0.5 ──── short_end ────→
+Action:     NONE    SHORT 100%  HOLD_SHORT   COVER 100%
+
+Fenêtres:
+- Before: < avg_time_to_peak → NONE
+- Short: [avg_time_to_peak, +0.5 min] → SHORT 100%
+- Hold: [peak+0.5, avg_time_to_rug - 0.5×std] → HOLD_SHORT
+- Cover: >= short_end → COVER 100%
+```
+
+**Fallback PExitCalculator** (wallets sans playbook ou WATCH/AVOID):
+- Sortie basée sur prix (MC_ratio × confidence)
+- P_exit v2 = sigmoid(α × (MC_ratio - 1)) × confidence_v2
+- Utilisé quand playbook absent ou stratégie WATCH/AVOID
 
 ## Détection de cartels (3 critères)
 1. **Funding commun** : ≥ 3 wallets financés par la même source (requête récursive wallet_ancestry)

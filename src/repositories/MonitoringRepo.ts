@@ -9,17 +9,17 @@ export class MonitoringRepo {
   async enqueue(
     tokenAddress: string,
     creatorWallet: string,
-    checkAt: Date
+    delayMinutes: number = 0
   ): Promise<MonitoringQueue> {
     try {
       const result = await this.pool.query<MonitoringQueue>(
         `INSERT INTO monitoring_queue (token_address, creator_wallet, check_at)
-         VALUES ($1, $2, $3)
+         VALUES ($1, $2, CURRENT_TIMESTAMP + INTERVAL '1 minute' * $3)
          RETURNING *`,
-        [tokenAddress, creatorWallet, checkAt]
+        [tokenAddress, creatorWallet, delayMinutes]
       );
 
-      logger.debug({ token_address: tokenAddress, check_at: checkAt }, 'Token enqueued for monitoring');
+      logger.debug({ token_address: tokenAddress, delay_minutes: delayMinutes }, 'Token enqueued for monitoring');
       return result.rows[0];
     } catch (error) {
       logger.error({ error, tokenAddress, creatorWallet }, 'Failed to enqueue token');
@@ -71,16 +71,16 @@ export class MonitoringRepo {
     }
   }
 
-  async reEnqueue(tokenAddress: string, newCheckAt: Date): Promise<void> {
+  async reEnqueue(tokenAddress: string, delayMinutes: number = 5): Promise<void> {
     try {
       await this.pool.query(
         `UPDATE monitoring_queue
-         SET status = 'RETRY', check_at = $1, retry_count = retry_count + 1
+         SET status = 'PENDING', check_at = CURRENT_TIMESTAMP + INTERVAL '1 minute' * $1, retry_count = retry_count + 1
          WHERE token_address = $2`,
-        [newCheckAt, tokenAddress]
+        [delayMinutes, tokenAddress]
       );
 
-      logger.debug({ token_address: tokenAddress, new_check_at: newCheckAt }, 'Token re-enqueued');
+      logger.debug({ token_address: tokenAddress, delay_minutes: delayMinutes }, 'Token re-enqueued');
     } catch (error) {
       logger.error({ error, tokenAddress }, 'Failed to re-enqueue token');
       throw new WalletSourceError(
@@ -107,6 +107,27 @@ export class MonitoringRepo {
       throw new WalletSourceError(
         ErrorCode.DB_QUERY_FAILED,
         `Failed to update status for token ${tokenAddress}`,
+        { error }
+      );
+    }
+  }
+
+  async resetOrphanedProcessing(): Promise<number> {
+    try {
+      const result = await this.pool.query(
+        "UPDATE monitoring_queue SET status = 'PENDING', check_at = CURRENT_TIMESTAMP WHERE status = 'PROCESSING' RETURNING token_address"
+      );
+
+      const count = result.rowCount || 0;
+      if (count > 0) {
+        logger.info({ count }, 'Reset orphaned PROCESSING tokens to PENDING');
+      }
+      return count;
+    } catch (error) {
+      logger.error({ error }, 'Failed to reset orphaned PROCESSING tokens');
+      throw new WalletSourceError(
+        ErrorCode.DB_QUERY_FAILED,
+        'Failed to reset orphaned PROCESSING tokens',
         { error }
       );
     }

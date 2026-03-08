@@ -44,8 +44,7 @@ async function validate(): Promise<void> {
     const monitoringRepo = new MonitoringRepo(pool);
 
     const testToken2 = 'TEST_TOKEN_QUEUE_' + Date.now();
-    const checkAt = new Date(Date.now() - 60000); // 1 minute ago (should be due)
-    await monitoringRepo.enqueue(testToken2, testWallet, checkAt);
+    await monitoringRepo.enqueue(testToken2, testWallet, 0); // Enqueue for immediate processing
 
     const dueTokens = await monitoringRepo.getDueTokens();
     logger.info(`✅ Enqueued token, found ${dueTokens.length} due token(s)\n`);

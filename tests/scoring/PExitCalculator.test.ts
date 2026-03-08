@@ -211,7 +211,7 @@ describe('PExitCalculator', () => {
         0.333,
         0.7, // confidence_score v1
         0.6, // confidence_score_v2
-        'LONG'
+        'RIDE'
       );
 
       // Associate wallet with cartel

@@ -20,7 +20,7 @@ CREATE TABLE cartel_groups (
   avg_rug_rate REAL NOT NULL DEFAULT 0,
   confidence_score REAL NOT NULL DEFAULT 0 CHECK (confidence_score BETWEEN 0 AND 1),
   confidence_score_v2 REAL NOT NULL DEFAULT 0 CHECK (confidence_score_v2 BETWEEN 0 AND 1),
-  auto_strategy TEXT NOT NULL DEFAULT 'WATCH' CHECK (auto_strategy IN ('AVOID', 'SHORT', 'WATCH', 'LONG'))
+  auto_strategy TEXT NOT NULL DEFAULT 'WATCH' CHECK (auto_strategy IN ('RIDE', 'FADE', 'WATCH', 'AVOID'))
 );
 
 -- 2. wallet_profiles (depends on cartel_groups)
@@ -37,7 +37,7 @@ CREATE TABLE wallet_profiles (
   risk_score REAL NOT NULL DEFAULT 0.5 CHECK (risk_score BETWEEN 0 AND 1),
   cartel_id TEXT REFERENCES cartel_groups(cartel_id) ON DELETE SET NULL,
   profile_vector TEXT NOT NULL DEFAULT '{}',
-  strategy TEXT NOT NULL DEFAULT 'WATCH' CHECK (strategy IN ('AVOID', 'SHORT', 'WATCH', 'LONG'))
+  strategy TEXT NOT NULL DEFAULT 'WATCH' CHECK (strategy IN ('RIDE', 'FADE', 'WATCH', 'AVOID'))
 );
 
 -- 3. wallet_ancestry (depends on wallet_profiles)
@@ -68,7 +68,22 @@ CREATE TABLE token_events (
   price_change_5m REAL,
   dexscreener_pair TEXT,
   p_exit_v1 REAL,
-  p_exit_v2 REAL
+  p_exit_v2 REAL,
+  -- v4.2 lifecycle analysis columns
+  peak_mc REAL,
+  peak_at TIMESTAMP,
+  peak_price REAL,
+  time_to_peak_min REAL,
+  time_to_rug_min REAL,
+  dump_speed_pct_per_min REAL,
+  liquidity_at_peak REAL,
+  liquidity_removed REAL,
+  buy_volume_before_dump REAL,
+  rug_price REAL,
+  tracking_complete BOOLEAN DEFAULT FALSE,
+  snapshot_count INTEGER DEFAULT 0,
+  peak_duration_min REAL,
+  peak_time TIMESTAMP
 );
 
 CREATE INDEX idx_token_creator ON token_events(creator_wallet);

@@ -44,17 +44,17 @@ describe('CartelRepo', () => {
 
   it('should update existing cartel on conflict', async () => {
     await repo.upsertCartel('cartel2', 'Cartel V1', 3, 5, 10, 0.3, 0.6, 0.65, 'WATCH');
-    await repo.upsertCartel('cartel2', 'Cartel V2', 5, 8, 12, 0.4, 0.7, 0.75, 'SHORT');
+    await repo.upsertCartel('cartel2', 'Cartel V2', 5, 8, 12, 0.4, 0.7, 0.75, 'FADE');
 
     const cartel = await repo.getById('cartel2');
 
     expect(cartel?.name).toBe('Cartel V2');
     expect(cartel?.wallet_count).toBe(5);
-    expect(cartel?.auto_strategy).toBe('SHORT');
+    expect(cartel?.auto_strategy).toBe('FADE');
   });
 
   it('should get cartel by id', async () => {
-    await repo.upsertCartel('cartel3', 'My Cartel', 2, 1, 5, 0.167, 0.8, 0.85, 'LONG');
+    await repo.upsertCartel('cartel3', 'My Cartel', 2, 1, 5, 0.167, 0.8, 0.85, 'RIDE');
 
     const cartel = await repo.getById('cartel3');
 
@@ -108,7 +108,7 @@ describe('CartelRepo', () => {
   });
 
   it('should respect auto_strategy constraint', async () => {
-    const strategies: Array<'AVOID' | 'SHORT' | 'WATCH' | 'LONG'> = ['AVOID', 'SHORT', 'WATCH', 'LONG'];
+    const strategies: Array<'AVOID' | 'FADE' | 'WATCH' | 'RIDE'> = ['AVOID', 'FADE', 'WATCH', 'RIDE'];
 
     for (const strategy of strategies) {
       await expect(

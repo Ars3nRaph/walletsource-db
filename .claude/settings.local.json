@@ -16,7 +16,8 @@
       "Bash(git add src/utils/)",
       "Bash(git add src/repositories/)",
       "Bash(npm test -- tests/repositories/WalletRepo.test.ts)",
-      "Bash(npm test -- tests/debug-rug-rate.test.ts)"
+      "Bash(npm test -- tests/debug-rug-rate.test.ts)",
+      "Bash(git add src/repositories/WalletRepo.ts src/workers/RugScannerWorker.ts src/scoring/ tests/scoring/)"
     ]
   }
 }

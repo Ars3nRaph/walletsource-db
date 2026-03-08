@@ -5,13 +5,13 @@ import { ErrorCode, WalletSourceError } from '../types/errors.js';
 import { WalletRepo } from '../repositories/WalletRepo.js';
 import { TokenEventRepo } from '../repositories/TokenEventRepo.js';
 import { MonitoringRepo } from '../repositories/MonitoringRepo.js';
-import { AncestryRepo } from '../repositories/AncestryRepo.js';
-import { HeliusClient } from '../api/HeliusClient.js';
 
 const PUMP_FUN_PROGRAM_ID = process.env.PUMP_FUN_PROGRAM_ID || '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
-const MONITORING_DELAY_MINUTES = 15;
+const MONITORING_DELAY_MINUTES = 0; // v4.2: start tracking IMMEDIATELY (RUGs happen in 3-7 min)
 const RECONNECT_BASE_DELAY_MS = 1000;
 const MAX_RECONNECT_DELAY_MS = 60000;
+const MAX_RECONNECT_ATTEMPTS_BEFORE_FALLBACK = 3;
+const PUMPPORTAL_WSS_URL = 'wss://pumpportal.fun/api/data';
 
 interface SolanaLogMessage {
   signature: string;
@@ -25,18 +25,15 @@ export class ForensicWorker {
   private walletRepo: WalletRepo;
   private tokenRepo: TokenEventRepo;
   private monitoringRepo: MonitoringRepo;
-  private ancestryRepo: AncestryRepo;
-  private heliusClient: HeliusClient;
   private reconnectAttempts = 0;
   private reconnectTimeout: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
+  private usingFallback = false;
 
   constructor(pool: Pool) {
     this.walletRepo = new WalletRepo(pool);
     this.tokenRepo = new TokenEventRepo(pool);
     this.monitoringRepo = new MonitoringRepo(pool);
-    this.ancestryRepo = new AncestryRepo(pool);
-    this.heliusClient = new HeliusClient();
   }
 
   async start(): Promise<void> {
@@ -58,29 +55,39 @@ export class ForensicWorker {
 
       this.ws.on('open', () => {
         this.reconnectAttempts = 0;
-        logger.info('WebSocket connected to Helius');
+        const service = this.usingFallback ? 'PumpPortal' : 'Helius';
+        logger.info({ service }, `WebSocket connected to ${service}`);
 
-        // Subscribe to Pump.fun program transactions
-        const subscribeMessage = {
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'transactionSubscribe',
-          params: [
-            {
-              accountInclude: [PUMP_FUN_PROGRAM_ID]
-            },
-            {
-              commitment: 'confirmed',
-              encoding: 'jsonParsed',
-              transactionDetails: 'full',
-              showRewards: false,
-              maxSupportedTransactionVersion: 0
-            }
-          ]
-        };
-
-        this.ws?.send(JSON.stringify(subscribeMessage));
-        logger.info({ programId: PUMP_FUN_PROGRAM_ID }, 'Subscribed to Pump.fun transactions');
+        // Subscribe based on service
+        if (this.usingFallback) {
+          // PumpPortal subscription
+          const subscribeMessage = {
+            method: 'subscribeNewToken'
+          };
+          this.ws?.send(JSON.stringify(subscribeMessage));
+          logger.info('Subscribed to PumpPortal new tokens');
+        } else {
+          // Helius subscription
+          const subscribeMessage = {
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'transactionSubscribe',
+            params: [
+              {
+                accountInclude: [PUMP_FUN_PROGRAM_ID]
+              },
+              {
+                commitment: 'confirmed',
+                encoding: 'jsonParsed',
+                transactionDetails: 'full',
+                showRewards: false,
+                maxSupportedTransactionVersion: 0
+              }
+            ]
+          };
+          this.ws?.send(JSON.stringify(subscribeMessage));
+          logger.info({ programId: PUMP_FUN_PROGRAM_ID }, 'Subscribed to Helius Pump.fun transactions');
+        }
       });
 
       this.ws.on('message', async (data: WebSocket.Data) => {
@@ -118,18 +125,33 @@ export class ForensicWorker {
       clearTimeout(this.reconnectTimeout);
     }
 
+    this.reconnectAttempts++;
+
+    // Fallback to PumpPortal after multiple failures
+    if (!this.usingFallback && this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS_BEFORE_FALLBACK) {
+      logger.warn(
+        { attempts: this.reconnectAttempts },
+        'Multiple Helius connection failures, switching to PumpPortal fallback'
+      );
+      this.usingFallback = true;
+      this.reconnectAttempts = 0;
+      this.connect(PUMPPORTAL_WSS_URL).catch((error) => {
+        logger.error({ error }, 'PumpPortal connection failed');
+      });
+      return;
+    }
+
     // Exponential backoff with max delay
     const delay = Math.min(
       RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts),
       MAX_RECONNECT_DELAY_MS
     );
 
-    this.reconnectAttempts++;
-
-    logger.info({ delay, attempt: this.reconnectAttempts }, 'Scheduling WebSocket reconnect');
+    logger.info({ delay, attempt: this.reconnectAttempts, fallback: this.usingFallback }, 'Scheduling WebSocket reconnect');
 
     this.reconnectTimeout = setTimeout(() => {
-      this.connect(wssUrl).catch((error) => {
+      const targetUrl = this.usingFallback ? PUMPPORTAL_WSS_URL : wssUrl;
+      this.connect(targetUrl).catch((error) => {
         logger.error({ error }, 'Reconnect failed');
       });
     }, delay);
@@ -139,19 +161,27 @@ export class ForensicWorker {
     try {
       const message = JSON.parse(data);
 
-      // Subscription confirmation
-      if (message.result) {
-        logger.debug({ result: message.result }, 'Subscription confirmed');
-        return;
-      }
+      if (this.usingFallback) {
+        // PumpPortal format
+        if (message.txType === 'create' && message.mint && message.traderPublicKey) {
+          await this.processNewTokenPumpPortal(message);
+        }
+      } else {
+        // Helius format
+        // Subscription confirmation
+        if (message.result) {
+          logger.debug({ result: message.result }, 'Subscription confirmed');
+          return;
+        }
 
-      // Transaction notification
-      if (message.params && message.params.result) {
-        const txData = message.params.result;
+        // Transaction notification
+        if (message.params && message.params.result) {
+          const txData = message.params.result;
 
-        // Check for Pump.fun Create instruction
-        if (this.isPumpFunCreateTransaction(txData)) {
-          await this.processNewToken(txData);
+          // Check for Pump.fun Create instruction
+          if (this.isPumpFunCreateTransaction(txData)) {
+            await this.processNewToken(txData);
+          }
         }
       }
     } catch (error) {
@@ -195,114 +225,53 @@ export class ForensicWorker {
         await this.walletRepo.upsertWallet(creatorWallet);
         logger.info({ wallet: creatorWallet }, 'New wallet created');
 
-        // Phase 7: Build ancestry on-the-fly for new wallets
-        await this.buildWalletAncestry(creatorWallet);
+        // Ancestry deferred: Build only on RUG verdict (in TaintScorer) to save Helius credits
+        // This reduces credit usage from 400k/day to ~50k/day (only for ruggers)
       }
 
       // Record token event
       await this.tokenRepo.recordEvent(tokenMint, creatorWallet);
 
-      // Enqueue for verdict check in 15 minutes
-      const checkAt = new Date(Date.now() + MONITORING_DELAY_MINUTES * 60 * 1000);
-      await this.monitoringRepo.enqueue(tokenMint, creatorWallet, checkAt);
+      // Enqueue for tracking (start immediately in v4.2)
+      await this.monitoringRepo.enqueue(tokenMint, creatorWallet, MONITORING_DELAY_MINUTES);
 
-      logger.info({ token: tokenMint, checkAt }, 'Token enqueued for monitoring');
+      logger.info({ token: tokenMint, delay_minutes: MONITORING_DELAY_MINUTES }, 'Token enqueued for monitoring');
     } catch (error) {
       logger.error({ error, signature: txData.signature }, 'Failed to process new token');
     }
   }
 
-  /**
-   * Build wallet ancestry on-the-fly using Helius API.
-   * Discovers funding sources (parent wallets) and creates links in wallet_ancestry.
-   * Section 8.3 of PRD.
-   */
-  private async buildWalletAncestry(childWallet: string, currentDepth = 0): Promise<void> {
-    const MAX_DEPTH = 3;
-    const MIN_FUNDING_AMOUNT_SOL = 0.01;
-    const MIN_CONFIDENCE = 0.7;
-
-    // Stop recursion at max depth
-    if (currentDepth >= MAX_DEPTH) {
-      return;
-    }
-
+  private async processNewTokenPumpPortal(message: { mint: string; traderPublicKey: string; signature?: string }): Promise<void> {
     try {
-      // Fetch wallet transactions from Helius
-      const transactions = await this.heliusClient.getWalletTransactions(childWallet);
+      const tokenMint = message.mint;
+      const creatorWallet = message.traderPublicKey;
 
-      // Find incoming native SOL transfers (funding sources)
-      const fundingSources = new Map<string, { amount: number; txHash: string }>();
+      logger.info({ token: tokenMint, wallet: creatorWallet, signature: message.signature }, 'Token detected (PumpPortal)');
 
-      for (const tx of transactions) {
-        if (!tx.nativeTransfers || tx.nativeTransfers.length === 0) {
-          continue;
-        }
+      // Ensure wallet exists in database
+      const existingWallet = await this.walletRepo.getByAddress(creatorWallet);
+      const isNewWallet = !existingWallet;
 
-        for (const transfer of tx.nativeTransfers) {
-          // Check if this is an incoming transfer to childWallet
-          if (transfer.toUserAccount === childWallet && transfer.fromUserAccount !== childWallet) {
-            const amountSOL = transfer.amount / 1e9; // Convert lamports to SOL
+      if (isNewWallet) {
+        await this.walletRepo.upsertWallet(creatorWallet);
+        logger.info({ wallet: creatorWallet }, 'New wallet created');
 
-            if (amountSOL >= MIN_FUNDING_AMOUNT_SOL) {
-              const existing = fundingSources.get(transfer.fromUserAccount);
-              if (!existing || amountSOL > existing.amount) {
-                fundingSources.set(transfer.fromUserAccount, {
-                  amount: amountSOL,
-                  txHash: tx.signature
-                });
-              }
-            }
-          }
-        }
+        // Ancestry deferred: Build only on RUG verdict (in TaintScorer) to save Helius credits
       }
 
-      logger.debug({
-        wallet: childWallet,
-        depth: currentDepth,
-        fundingSources: fundingSources.size
-      }, 'Funding sources discovered');
+      // Record token event
+      await this.tokenRepo.recordEvent(tokenMint, creatorWallet);
 
-      // Create ancestry links for each funding source
-      for (const [parentWallet, { amount, txHash }] of fundingSources.entries()) {
-        // Ensure parent wallet exists
-        const parentExists = await this.walletRepo.getByAddress(parentWallet);
-        if (!parentExists) {
-          await this.walletRepo.upsertWallet(parentWallet);
-        }
+      // Enqueue for tracking (start immediately in v4.2)
+      await this.monitoringRepo.enqueue(tokenMint, creatorWallet, MONITORING_DELAY_MINUTES);
 
-        // Calculate confidence (simple heuristic: larger amounts = higher confidence)
-        // Max confidence at 1 SOL+, min at 0.01 SOL
-        const confidence = Math.min(1.0, 0.5 + (amount / 2.0));
-
-        // Add ancestry link
-        await this.ancestryRepo.addLink(
-          parentWallet,
-          childWallet,
-          txHash,
-          amount,
-          currentDepth,
-          confidence
-        );
-
-        logger.debug({
-          parent: parentWallet,
-          child: childWallet,
-          amount,
-          depth: currentDepth,
-          confidence
-        }, 'Ancestry link created');
-
-        // Recursively build ancestry for parent if high confidence
-        if (confidence >= MIN_CONFIDENCE && currentDepth + 1 < MAX_DEPTH) {
-          await this.buildWalletAncestry(parentWallet, currentDepth + 1);
-        }
-      }
+      logger.info({ token: tokenMint, delay_minutes: MONITORING_DELAY_MINUTES }, 'Token enqueued for monitoring');
     } catch (error) {
-      logger.error({ error, wallet: childWallet, depth: currentDepth }, 'Failed to build wallet ancestry');
-      // Don't throw - ancestry is best-effort, don't block token detection
+      logger.error({ error, token: message.mint }, 'Failed to process new token (PumpPortal)');
     }
   }
+
+  // NOTE: buildWalletAncestry() moved to TokenTracker (RUG verdict only) to save Helius credits
 
   async stop(): Promise<void> {
     this.isShuttingDown = true;

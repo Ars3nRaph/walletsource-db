@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import { logger } from './utils/logger.js';
 import { getDb, closeDb } from './db/connection.js';
 import { ForensicWorker } from './workers/ForensicWorker.js';
-import { RugScannerWorker } from './workers/RugScannerWorker.js';
+import { TokenTracker } from './workers/TokenTracker.js';
 import { CartelDetector } from './cartels/CartelDetector.js';
 import { HealthCheck } from './utils/healthCheck.js';
 import type { Pool } from 'pg';
@@ -16,7 +16,7 @@ const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 class WalletSourceDB {
   private pool: Pool | null = null;
   private forensicWorker: ForensicWorker | null = null;
-  private rugScannerWorker: RugScannerWorker | null = null;
+  private tokenTracker: TokenTracker | null = null;
   private cartelDetector: CartelDetector | null = null;
   private healthCheck: HealthCheck | null = null;
   private cartelDetectionInterval: NodeJS.Timeout | null = null;
@@ -25,7 +25,7 @@ class WalletSourceDB {
 
   async start(): Promise<void> {
     try {
-      logger.info('WalletSourceDB v3.0 starting...');
+      logger.info('WalletSourceDB v4.0 "Ride the Rugger" starting...');
 
       // 1. Initialize database connection
       this.pool = await getDb();
@@ -39,10 +39,10 @@ class WalletSourceDB {
       await this.forensicWorker.start();
       logger.info('ForensicWorker started');
 
-      // 4. Start RugScannerWorker (verdict every 60s)
-      this.rugScannerWorker = new RugScannerWorker(this.pool);
-      await this.rugScannerWorker.start();
-      logger.info('RugScannerWorker started');
+      // 4. Start TokenTracker (continuous polling for 30 minutes)
+      this.tokenTracker = new TokenTracker(this.pool);
+      await this.tokenTracker.start();
+      logger.info('TokenTracker started');
 
       // 5. Start CartelDetector (batch every 5 min)
       this.cartelDetector = new CartelDetector(this.pool);
@@ -100,9 +100,9 @@ class WalletSourceDB {
         logger.info('CartelDetector stopped');
       }
 
-      // 3. Stop RugScannerWorker
-      if (this.rugScannerWorker) {
-        await this.rugScannerWorker.stop();
+      // 3. Stop TokenTracker
+      if (this.tokenTracker) {
+        await this.tokenTracker.stop();
       }
 
       // 4. Stop ForensicWorker (close WSS)

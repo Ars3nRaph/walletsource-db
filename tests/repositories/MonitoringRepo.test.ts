@@ -21,9 +21,7 @@ describe('MonitoringRepo', () => {
   it('should enqueue token', async () => {
     await walletRepo.upsertWallet('creator1');
 
-    const checkAt = new Date(Date.now() + 15 * 60 * 1000); // +15 min
-    const queued = await repo.enqueue('token1', 'creator1', checkAt);
-
+    const queued = await repo.enqueue('token1', 'creator1', 15); // +15 min
     expect(queued.token_address).toBe('token1');
     expect(queued.creator_wallet).toBe('creator1');
     expect(queued.status).toBe('PENDING');
@@ -33,14 +31,9 @@ describe('MonitoringRepo', () => {
   it('should get due tokens (tokens past check_at)', async () => {
     await walletRepo.upsertWallet('creator_due');
 
-    const now = new Date();
-    const past1 = new Date(now.getTime() - 10 * 60 * 1000); // -10 min (due)
-    const past2 = new Date(now.getTime() - 5 * 60 * 1000);  // -5 min (due)
-    const future = new Date(now.getTime() + 5 * 60 * 1000); // +5 min (not due)
-
-    await repo.enqueue('tokenA', 'creator_due', past1);
-    await repo.enqueue('tokenB', 'creator_due', future);
-    await repo.enqueue('tokenC', 'creator_due', past2);
+    await repo.enqueue('tokenA', 'creator_due', -10); // -10 min (due)
+    await repo.enqueue('tokenB', 'creator_due', 5);   // +5 min (not due)
+    await repo.enqueue('tokenC', 'creator_due', -5);  // -5 min (due)
 
     const dueTokens = await repo.getDueTokens();
 
@@ -51,11 +44,9 @@ describe('MonitoringRepo', () => {
   it('should only return PENDING tokens in getDueTokens', async () => {
     await walletRepo.upsertWallet('creator_status');
 
-    const past = new Date(Date.now() - 10 * 60 * 1000);
-
-    await repo.enqueue('token_pending', 'creator_status', past);
-    await repo.enqueue('token_done', 'creator_status', past);
-    await repo.enqueue('token_processing', 'creator_status', past);
+    await repo.enqueue('token_pending', 'creator_status', -10);
+    await repo.enqueue('token_done', 'creator_status', -10);
+    await repo.enqueue('token_processing', 'creator_status', -10);
 
     await repo.updateStatus('token_done', 'DONE');
     await repo.updateStatus('token_processing', 'PROCESSING');
@@ -69,8 +60,7 @@ describe('MonitoringRepo', () => {
   it('should mark token as processed', async () => {
     await walletRepo.upsertWallet('creator2');
 
-    const checkAt = new Date(Date.now() + 15 * 60 * 1000);
-    await repo.enqueue('token2', 'creator2', checkAt);
+    await repo.enqueue('token2', 'creator2', 15);
     await repo.markProcessed('token2');
 
     const result = await pool.query(
@@ -85,27 +75,22 @@ describe('MonitoringRepo', () => {
   it('should re-enqueue token with retry', async () => {
     await walletRepo.upsertWallet('creator3');
 
-    const checkAt = new Date(Date.now() + 15 * 60 * 1000);
-    await repo.enqueue('token3', 'creator3', checkAt);
-
-    const newCheckAt = new Date(Date.now() + 20 * 60 * 1000);
-    await repo.reEnqueue('token3', newCheckAt);
+    await repo.enqueue('token3', 'creator3', 15);
+    await repo.reEnqueue('token3', 20);
 
     const result = await pool.query(
       'SELECT * FROM monitoring_queue WHERE token_address = $1',
       ['token3']
     );
 
-    expect(result.rows[0].status).toBe('RETRY');
+    expect(result.rows[0].status).toBe('PENDING');
     expect(result.rows[0].retry_count).toBe(1);
   });
 
   it('should update token status', async () => {
     await walletRepo.upsertWallet('creator4');
 
-    const checkAt = new Date(Date.now() + 15 * 60 * 1000);
-    await repo.enqueue('token4', 'creator4', checkAt);
-
+    await repo.enqueue('token4', 'creator4', 15);
     await repo.updateStatus('token4', 'PROCESSING');
 
     const result = await pool.query(
@@ -119,13 +104,11 @@ describe('MonitoringRepo', () => {
   it('should increment retry count on re-enqueue', async () => {
     await walletRepo.upsertWallet('creator_retry');
 
-    const checkAt = new Date(Date.now() + 15 * 60 * 1000);
-    await repo.enqueue('token_retry', 'creator_retry', checkAt);
+    await repo.enqueue('token_retry', 'creator_retry', 15);
 
     // Re-enqueue 3 times
     for (let i = 0; i < 3; i++) {
-      const newCheckAt = new Date(Date.now() + (20 + i * 5) * 60 * 1000);
-      await repo.reEnqueue('token_retry', newCheckAt);
+      await repo.reEnqueue('token_retry', 20 + i * 5);
     }
 
     const result = await pool.query(

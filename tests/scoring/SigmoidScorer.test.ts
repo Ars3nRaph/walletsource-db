@@ -109,17 +109,17 @@ describe('SigmoidScorer', () => {
 
   describe('getStrategy', () => {
     it('should map risk scores to correct strategies', () => {
-      expect(getStrategy(0.00)).toBe('LONG');
-      expect(getStrategy(0.15)).toBe('LONG');
-      expect(getStrategy(0.24)).toBe('LONG');
+      expect(getStrategy(0.00)).toBe('RIDE');
+      expect(getStrategy(0.15)).toBe('RIDE');
+      expect(getStrategy(0.24)).toBe('RIDE');
 
       expect(getStrategy(0.25)).toBe('WATCH');
       expect(getStrategy(0.35)).toBe('WATCH');
       expect(getStrategy(0.49)).toBe('WATCH');
 
-      expect(getStrategy(0.50)).toBe('SHORT');
-      expect(getStrategy(0.60)).toBe('SHORT');
-      expect(getStrategy(0.74)).toBe('SHORT');
+      expect(getStrategy(0.50)).toBe('FADE');
+      expect(getStrategy(0.60)).toBe('FADE');
+      expect(getStrategy(0.74)).toBe('FADE');
 
       expect(getStrategy(0.75)).toBe('AVOID');
       expect(getStrategy(0.85)).toBe('AVOID');
@@ -142,7 +142,10 @@ describe('SigmoidScorer', () => {
         risk_score: 0.7,
         cartel_id: null,
         profile_vector: '',
-        strategy: 'SHORT'
+        strategy: 'FADE',
+        rugger_playbook: null,
+        playbook_confidence: 0,
+        playbook_updated_at: null
       };
 
       const vector = computeProfileVector(wallet);
@@ -165,7 +168,10 @@ describe('SigmoidScorer', () => {
         risk_score: 0.4,
         cartel_id: 'cartel1',
         profile_vector: '',
-        strategy: 'WATCH'
+        strategy: 'WATCH',
+        rugger_playbook: null,
+        playbook_confidence: 0,
+        playbook_updated_at: null
       };
 
       const cartel: CartelGroup = {

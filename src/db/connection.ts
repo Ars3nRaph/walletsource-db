@@ -29,18 +29,38 @@ export async function getDb(): Promise<pg.Pool> {
   try {
     pool = new pg.Pool({ connectionString });
 
+    // Force UTC timezone for all connections (fixes Windows timezone issues)
+    await pool.query("SET timezone = 'UTC'");
+
     // Test connection
     await pool.query('SELECT CURRENT_TIMESTAMP');
-    logger.info('PostgreSQL connection established');
+    logger.info('PostgreSQL connection established (timezone: UTC)');
 
-    // Initialize schema on first call
+    // Initialize schema ONLY if tables don't exist (check DB, not memory variable)
     if (!schemaInitialized) {
-      const schemaPath = path.join(__dirname, 'schema.sql');
-      const schemaSql = await fs.readFile(schemaPath, 'utf-8');
+      // Check if wallet_profiles table exists (indicator that schema is already loaded)
+      const tableCheck = await pool.query(
+        `SELECT EXISTS (
+          SELECT FROM information_schema.tables
+          WHERE table_schema = 'public'
+          AND table_name = 'wallet_profiles'
+        )`
+      );
 
-      await pool.query(schemaSql);
+      const tablesExist = tableCheck.rows[0].exists;
+
+      if (!tablesExist) {
+        // Tables don't exist → run schema.sql (will DROP and CREATE)
+        const schemaPath = path.join(__dirname, 'schema.sql');
+        const schemaSql = await fs.readFile(schemaPath, 'utf-8');
+        await pool.query(schemaSql);
+        logger.info('Database schema initialized (tables created)');
+      } else {
+        // Tables already exist → skip schema execution to preserve data
+        logger.info('Database schema already exists (skipping initialization to preserve data)');
+      }
+
       schemaInitialized = true;
-      logger.info('Database schema initialized');
     }
 
     return pool;

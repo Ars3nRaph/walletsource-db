@@ -12,7 +12,10 @@ export interface WalletProfile {
   risk_score: number;
   cartel_id: string | null;
   profile_vector: string; // JSON stringified
-  strategy: 'AVOID' | 'SHORT' | 'WATCH' | 'LONG';
+  strategy: 'RIDE' | 'FADE' | 'WATCH' | 'AVOID';
+  rugger_playbook: RuggerPlaybook | null;
+  playbook_confidence: number;
+  playbook_updated_at: Date | null;
 }
 
 // Table: wallet_ancestry
@@ -40,6 +43,22 @@ export interface TokenEvent {
   dexscreener_pair: string | null;
   p_exit_v1: number | null;
   p_exit_v2: number | null;
+  // v4.0 — Tracking lifecycle (30 minutes)
+  peak_mc: number | null;
+  peak_at: Date | null;
+  time_to_peak_min: number | null;
+  time_to_rug_min: number | null;
+  dump_speed_pct_per_min: number | null;
+  liquidity_at_peak: number | null;
+  liquidity_removed: number | null;
+  buy_volume_before_dump: number | null;
+  peak_price: number | null;
+  rug_price: number | null;
+  tracking_complete: boolean;
+  snapshot_count: number;
+  // v4.2 — Peak duration for SHORT timing
+  peak_duration_min: number | null;
+  peak_time: Date | null;
 }
 
 // Table: cartel_groups
@@ -52,7 +71,7 @@ export interface CartelGroup {
   avg_rug_rate: number;
   confidence_score: number;
   confidence_score_v2: number;
-  auto_strategy: 'AVOID' | 'SHORT' | 'WATCH' | 'LONG';
+  auto_strategy: 'RIDE' | 'FADE' | 'WATCH' | 'AVOID';
 }
 
 // Table: taint_log
@@ -123,4 +142,41 @@ export interface ProfileVector {
   ancestry_depth: number;
   funding_diversity: number; // unique sources / total funding txs
   token_frequency: number; // tokens launched per day
+}
+
+// Table: token_snapshots (v4.0)
+export interface TokenSnapshot {
+  id: number;
+  token_address: string;
+  snapshot_at: Date;
+  fdv: number | null;
+  liquidity_usd: number | null;
+  price_usd: number | null;
+  price_change_5m: number | null;
+  volume_5m: number | null;
+  buy_count_5m: number | null;
+  sell_count_5m: number | null;
+}
+
+// Rugger Playbook (v4.0)
+export interface RuggerPlaybook {
+  sample_size: number;
+  avg_time_to_peak_min: number;
+  std_time_to_peak_min: number;
+  avg_peak_mc: number;
+  std_peak_mc: number;
+  avg_time_to_rug_min: number;
+  std_time_to_rug_min: number;
+  avg_dump_speed: number;
+  avg_liquidity_at_peak: number;
+  consistency_score: number;
+  entry_window_end_min: number;
+  exit_window_start_min: number;
+  exit_window_end_min: number;
+  short_window_start_min: number;
+  short_window_end_min: number;
+  recommended_strategy: 'RIDE' | 'FADE' | 'WATCH' | 'AVOID';
+  // v4.2 — Peak duration (time between peak and dump start)
+  avg_peak_duration_min: number;
+  std_peak_duration_min: number;
 }
