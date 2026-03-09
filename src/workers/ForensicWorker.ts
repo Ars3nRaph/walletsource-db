@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import type { Pool } from 'pg';
 import { logger } from '../utils/logger.js';
+import { PumpTradeStream } from './PumpTradeStream.js';
 import { ErrorCode, WalletSourceError } from '../types/errors.js';
 import { WalletRepo } from '../repositories/WalletRepo.js';
 import { TokenEventRepo } from '../repositories/TokenEventRepo.js';
@@ -23,6 +24,7 @@ interface SolanaLogMessage {
 export class ForensicWorker {
   private ws: WebSocket | null = null;
   private walletRepo: WalletRepo;
+  public pumpTradeStream: PumpTradeStream;
   private tokenRepo: TokenEventRepo;
   private monitoringRepo: MonitoringRepo;
   private reconnectAttempts = 0;
@@ -34,6 +36,7 @@ export class ForensicWorker {
     this.walletRepo = new WalletRepo(pool);
     this.tokenRepo = new TokenEventRepo(pool);
     this.monitoringRepo = new MonitoringRepo(pool);
+    this.pumpTradeStream = new PumpTradeStream(pool);
   }
 
   async start(): Promise<void> {
@@ -46,6 +49,7 @@ export class ForensicWorker {
     }
 
     logger.info({ url: wssUrl.replace(/api-key=[^&]+/, 'api-key=***') }, 'ForensicWorker starting');
+    await this.pumpTradeStream.start();
     await this.connect(wssUrl);
   }
 
@@ -232,16 +236,46 @@ export class ForensicWorker {
       // Record token event
       await this.tokenRepo.recordEvent(tokenMint, creatorWallet);
 
-      // Enqueue for tracking (start immediately in v4.2)
-      await this.monitoringRepo.enqueue(tokenMint, creatorWallet, MONITORING_DELAY_MINUTES);
 
-      logger.info({ token: tokenMint, delay_minutes: MONITORING_DELAY_MINUTES }, 'Token enqueued for monitoring');
+      // Determine tracking mode based on wallet history
+      const walletProfile = await this.walletRepo.getByAddress(creatorWallet);
+      const rugCount = walletProfile?.rug_count ?? 0;
+      const strategy = walletProfile?.strategy ?? 'WATCH';
+
+      let trackingMode: 'deep' | 'medium' | 'fast_verdict';
+      if (strategy === 'RIDE' || strategy === 'FADE' || strategy === 'AVOID') {
+        trackingMode = 'deep'; // Known interesting — full 10s/20min tracking
+      } else if (rugCount >= 3) {
+        trackingMode = 'medium'; // Known rugger — 30s/10min tracking
+      } else {
+        trackingMode = 'fast_verdict'; // Unknown/new — 2 checks only (T+3min, T+10min)
+      }
+
+      await this.monitoringRepo.enqueue(tokenMint, creatorWallet, MONITORING_DELAY_MINUTES, trackingMode);
+
+      // Subscribe to real-time trade stream (0 credits, push-based)
+      this.pumpTradeStream.subscribe(tokenMint);
+
+      logger.info({ token: tokenMint, tracking_mode: trackingMode, rug_count: rugCount, strategy }, 'Token enqueued for monitoring');
     } catch (error) {
       logger.error({ error, signature: txData.signature }, 'Failed to process new token');
     }
   }
 
-  private async processNewTokenPumpPortal(message: { mint: string; traderPublicKey: string; signature?: string }): Promise<void> {
+  private async processNewTokenPumpPortal(message: {
+    mint: string;
+    traderPublicKey: string;
+    signature?: string;
+    marketCapSol?: number;
+    solAmount?: number;
+    initialBuy?: number;
+    vSolInBondingCurve?: number;
+    vTokensInBondingCurve?: number;
+    name?: string;
+    symbol?: string;
+    uri?: string;
+    is_mayhem_mode?: boolean;
+  }): Promise<void> {
     try {
       const tokenMint = message.mint;
       const creatorWallet = message.traderPublicKey;
@@ -262,19 +296,100 @@ export class ForensicWorker {
       // Record token event
       await this.tokenRepo.recordEvent(tokenMint, creatorWallet);
 
-      // Enqueue for tracking (start immediately in v4.2)
-      await this.monitoringRepo.enqueue(tokenMint, creatorWallet, MONITORING_DELAY_MINUTES);
+      // Store PumpPortal creation data immediately (true block-1 data)
+      if (message.marketCapSol !== undefined) {
+        // Fetch SOL price for USD conversion (cached, 1 req/5min max)
+        const solPriceUsd = await this.getSolPrice();
+        const entryMcUsd = message.marketCapSol * solPriceUsd;
 
-      logger.info({ token: tokenMint, delay_minutes: MONITORING_DELAY_MINUTES }, 'Token enqueued for monitoring');
+        await this.tokenRepo.pool.query(`
+          UPDATE token_events SET
+            market_cap_sol_at_creation = $1,
+            sol_amount_initial = $2,
+            initial_buy_tokens = $3,
+            v_sol_in_bonding_curve = $4,
+            v_tokens_in_bonding_curve = $5,
+            token_name = $6,
+            token_symbol = $7,
+            is_mayhem_mode = $8,
+            sol_price_at_creation = $9,
+            fdv_at_detection = $10
+          WHERE token_address = $11 AND fdv_at_detection IS NULL
+        `, [
+          message.marketCapSol,
+          message.solAmount ?? null,
+          message.initialBuy ?? null,
+          message.vSolInBondingCurve ?? null,
+          message.vTokensInBondingCurve ?? null,
+          message.name ?? null,
+          message.symbol ?? null,
+          message.is_mayhem_mode ?? false,
+          solPriceUsd,
+          entryMcUsd,
+          tokenMint
+        ]);
+
+        logger.info({
+          token: tokenMint,
+          marketCapSol: message.marketCapSol,
+          entryMcUsd: Math.round(entryMcUsd),
+          name: message.symbol,
+          solPrice: solPriceUsd
+        }, 'Block-1 entry MC captured');
+      }
+
+      // Determine tracking mode based on wallet history
+      const walletProfile = await this.walletRepo.getByAddress(creatorWallet);
+      const rugCount = walletProfile?.rug_count ?? 0;
+      const strategy = walletProfile?.strategy ?? 'WATCH';
+
+      let trackingMode: 'deep' | 'medium' | 'fast_verdict';
+      if (strategy === 'RIDE' || strategy === 'FADE' || strategy === 'AVOID') {
+        trackingMode = 'deep'; // Known interesting — full 10s/20min tracking
+      } else if (rugCount >= 3) {
+        trackingMode = 'medium'; // Known rugger — 30s/10min tracking
+      } else {
+        trackingMode = 'fast_verdict'; // Unknown/new — 2 checks only (T+3min, T+10min)
+      }
+
+      await this.monitoringRepo.enqueue(tokenMint, creatorWallet, MONITORING_DELAY_MINUTES, trackingMode);
+
+      // Subscribe to real-time trade stream (0 credits, push-based)
+      this.pumpTradeStream.subscribe(tokenMint);
+
+      logger.info({ token: tokenMint, tracking_mode: trackingMode, rug_count: rugCount, strategy }, 'Token enqueued for monitoring');
     } catch (error) {
       logger.error({ error, token: message.mint }, 'Failed to process new token (PumpPortal)');
     }
+  }
+
+  // SOL price cache (refresh every 5 minutes)
+  private cachedSolPrice = 150; // fallback
+  private solPriceCachedAt = 0;
+
+  private async getSolPrice(): Promise<number> {
+    const now = Date.now();
+    if (now - this.solPriceCachedAt < 5 * 60 * 1000) return this.cachedSolPrice;
+    try {
+      const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd', {
+        signal: AbortSignal.timeout(3000)
+      });
+      const data = await res.json() as { solana?: { usd?: number } };
+      if (data?.solana?.usd) {
+        this.cachedSolPrice = data.solana.usd;
+        this.solPriceCachedAt = now;
+      }
+    } catch {
+      // keep cached value
+    }
+    return this.cachedSolPrice;
   }
 
   // NOTE: buildWalletAncestry() moved to TokenTracker (RUG verdict only) to save Helius credits
 
   async stop(): Promise<void> {
     this.isShuttingDown = true;
+    await this.pumpTradeStream.stop();
 
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);

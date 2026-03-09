@@ -10,30 +10,39 @@ export type TradeAction = 'BUY' | 'SELL' | 'HOLD' | 'NONE';
 
 export interface TradeSignal {
   action: TradeAction;
-  confidence: number; // 0-1
-  percentage?: number; // 0-100, % of position to enter/exit
+  confidence: number;
+  percentage?: number;
   reason: string;
   playbook_strategy?: 'RIDE' | 'FADE' | 'WATCH' | 'AVOID';
 }
 
+interface OpenPosition {
+  entryMC: number;
+  entryTime: Date;
+  highestMC: number; // trailing high for stop-loss
+}
+
 /**
- * TradeExecutor — v4.2 Spot Trading with Intelligent Exit
+ * TradeExecutor — v4.3 Strict Entry/Exit with Position Tracking
  *
- * Uses BUY/SELL spot trading with intelligent exit signals:
- * - Exit on stagnation detection (no 5% MC rise in 20s)
- * - Exit in temporal exit window (playbook-based)
- * - Peak duration tracking for optimized sell timing
- *
- * Strategy execution:
- * - RIDE only (consistency >= 0.70)
- * - BUY: Entry in entry_window
- * - SELL: Stagnation detected OR exit_window reached
+ * Fixes vs v4.2:
+ * 1. Position tracking — no SELL without an open BUY, no double BUY
+ * 2. Pre-buy pump confirmation — MC must have risen ≥5% from first snapshot before buying
+ * 3. Hard stop-loss — exit if MC drops 20% from entry price
+ * 4. pumpRatio gate — block entry if already at/past expected peak (ratio ≥ 1.0x of expected move)
+ * 5. Discard RIDE wallets with fallback pump=3.0 and avg_peak_mc < $2000 (not real traders)
+ * 6. Min liquidity check via MC floor — don't buy if MC hasn't moved (DexScreener cache = token dead)
  */
 export class TradeExecutor {
   private tokenRepo: TokenEventRepo;
   private walletRepo: WalletRepo;
   private stagnationDetector: StagnationDetector;
   private peakDetector: PeakDurationDetector;
+
+  // Position state — only one position per token at a time
+  private openPositions: Map<string, OpenPosition> = new Map();
+  // First snapshot MC per token (for pump confirmation)
+  private firstSnapshotMC: Map<string, number> = new Map();
 
   constructor(pool: Pool) {
     this.tokenRepo = new TokenEventRepo(pool);
@@ -42,43 +51,32 @@ export class TradeExecutor {
     this.peakDetector = new PeakDurationDetector();
   }
 
-  /**
-   * Evaluate trade action based on spot BUY/SELL with intelligent exit.
-   *
-   * @param tokenAddress - Token address
-   * @param elapsedMinutes - Minutes elapsed since token detection
-   * @param currentMC - Current market cap (FDV)
-   * @returns Trade signal with BUY/SELL/HOLD action
-   */
   async evaluateTrade(
     tokenAddress: string,
     elapsedMinutes: number,
     currentMC: number
   ): Promise<TradeSignal> {
     try {
-      // Record snapshot for detectors
+      // Record MC for detectors + first snapshot tracking
       this.stagnationDetector.recordSnapshot(tokenAddress, currentMC);
       this.peakDetector.recordSnapshot(tokenAddress, currentMC);
 
-      // Get token and creator wallet
-      const token = await this.tokenRepo.getByAddress(tokenAddress);
-      if (!token) {
-        return {
-          action: 'NONE',
-          confidence: 0,
-          reason: 'Token not found'
-        };
+      if (!this.firstSnapshotMC.has(tokenAddress)) {
+        this.firstSnapshotMC.set(tokenAddress, currentMC);
       }
 
-      // Get wallet with playbook
-      const wallet = await this.walletRepo.getByAddress(token.creator_wallet);
-      if (!wallet) {
-        return {
-          action: 'NONE',
-          confidence: 0,
-          reason: 'Wallet not found'
-        };
+      // Update trailing high on open position (for stop-loss)
+      const pos = this.openPositions.get(tokenAddress);
+      if (pos && currentMC > pos.highestMC) {
+        pos.highestMC = currentMC;
       }
+
+      // Get token and wallet
+      const token = await this.tokenRepo.getByAddress(tokenAddress);
+      if (!token) return { action: 'NONE', confidence: 0, reason: 'Token not found' };
+
+      const wallet = await this.walletRepo.getByAddress(token.creator_wallet);
+      if (!wallet) return { action: 'NONE', confidence: 0, reason: 'Wallet not found' };
 
       // Parse playbook
       let playbook: RuggerPlaybook | null = null;
@@ -88,16 +86,11 @@ export class TradeExecutor {
           : wallet.rugger_playbook;
       }
 
-      // No playbook → NO TRADE
       if (!playbook) {
-        return {
-          action: 'NONE',
-          confidence: 0,
-          reason: 'No playbook - not a predictable rugger'
-        };
+        return { action: 'NONE', confidence: 0, reason: 'No playbook - not a predictable rugger' };
       }
 
-      // ONLY trade RIDE strategy (predictable ruggers)
+      // ONLY trade RIDE strategy
       if (playbook.recommended_strategy !== 'RIDE') {
         return {
           action: 'NONE',
@@ -107,37 +100,46 @@ export class TradeExecutor {
         };
       }
 
-      // Require high confidence (≥ 0.7)
-      if (playbook.consistency_score < 0.7) {
+      // FIX: Discard wallets with fallback pump=3.0 and low avg_peak_mc
+      // These wallets have insufficient real data (fdv_at_detection was null)
+      const avgPumpMultiple = playbook.avg_pump_multiple ?? 3.0;
+      const avgPeakMC = playbook.avg_peak_mc ?? 0;
+      if (avgPumpMultiple >= 2.9 && avgPeakMC < 2000) {
         return {
           action: 'NONE',
-          confidence: playbook.consistency_score,
-          reason: `Low consistency ${playbook.consistency_score.toFixed(2)} - minimum 0.70 required`,
+          confidence: 0,
+          reason: `Fallback pump data (${avgPumpMultiple.toFixed(1)}x on avg_peak $${avgPeakMC.toFixed(0)}) — insufficient real entry data`,
           playbook_strategy: 'RIDE'
         };
       }
 
-      // Evaluate RIDE strategy with intelligent exit
+      // Minimum avg_peak_mc threshold
+      if (avgPeakMC < 2000) {
+        return {
+          action: 'NONE',
+          confidence: 0,
+          reason: `avg_peak_mc $${avgPeakMC.toFixed(0)} < $2000 minimum — no real pump`,
+          playbook_strategy: 'RIDE'
+        };
+      }
+
+      // Minimum consistency
+      if (playbook.consistency_score < 0.7) {
+        return {
+          action: 'NONE',
+          confidence: playbook.consistency_score,
+          reason: `Low consistency ${playbook.consistency_score.toFixed(2)} < 0.70`,
+          playbook_strategy: 'RIDE'
+        };
+      }
+
       return this.evaluateRide(playbook, elapsedMinutes, tokenAddress, currentMC);
     } catch (error) {
       logger.error({ error, tokenAddress }, 'Failed to evaluate trade');
-      return {
-        action: 'NONE',
-        confidence: 0,
-        reason: 'Evaluation error'
-      };
+      return { action: 'NONE', confidence: 0, reason: 'Evaluation error' };
     }
   }
 
-  /**
-   * Evaluate RIDE strategy with intelligent exit detection.
-   *
-   * Timeline:
-   * 1. Entry window: [0, entry_window_end] → BUY (if MC not too high)
-   * 2. Hold period with stagnation monitoring → HOLD or SELL (if stagnation)
-   * 3. Exit window: [exit_window_start, exit_window_end] → SELL (progressive)
-   * 4. Past exit: > exit_window_end → SELL 100%
-   */
   private evaluateRide(
     playbook: RuggerPlaybook,
     elapsedMinutes: number,
@@ -149,117 +151,207 @@ export class TradeExecutor {
       exit_window_start_min,
       exit_window_end_min,
       avg_peak_mc,
-      consistency_score
+      consistency_score,
     } = playbook;
 
-    // Phase 1: Entry window (before peak, low risk)
-    if (elapsedMinutes <= entry_window_end_min) {
-      // Protection: ne pas acheter si le prix a déjà explosé (> 70% du peak moyen)
-      if (currentMC > avg_peak_mc * 0.7) {
-        return {
-          action: 'NONE',
-          confidence: 0.5,
-          percentage: 0,
-          reason: `MC too high (${currentMC.toFixed(0)} > 70% of avg peak ${avg_peak_mc.toFixed(0)}) - missed entry`,
-          playbook_strategy: 'RIDE'
-        };
-      }
+    const avgPumpMultiple = playbook.avg_pump_multiple ?? 3.0;
+    const hasOpenPosition = this.openPositions.has(tokenAddress);
+    const pos = this.openPositions.get(tokenAddress);
 
-      return {
-        action: 'BUY',
-        confidence: consistency_score,
-        percentage: 100,
-        reason: `Entry window (0-${entry_window_end_min.toFixed(1)} min, MC: ${currentMC.toFixed(0)} < 70% peak)`,
-        playbook_strategy: 'RIDE'
-      };
-    }
+    // ── POSITION OPEN: manage the existing trade ──────────────────────────────
+    if (hasOpenPosition && pos) {
+      const entryMC = pos.entryMC;
 
-    // Phase 2: Hold period with dump/stagnation detection
-    if (elapsedMinutes < exit_window_start_min) {
-      // Priority 1: Check for dump (MC dropping after peak)
-      if (this.stagnationDetector.checkDump(tokenAddress)) {
-        const stats = this.stagnationDetector.getStats(tokenAddress);
+      // STOP-LOSS: MC dropped 5%+ from entry → cut immediately
+      const dropFromEntry = (entryMC - currentMC) / entryMC;
+      if (dropFromEntry >= 0.05) {
+        this.closePosition(tokenAddress);
         return {
           action: 'SELL',
           confidence: 1.0,
           percentage: 100,
-          reason: `Dump detected (MC dropped ${stats ? (stats.dumpFromPeak * 100).toFixed(1) : '?'}% from peak) - exit immediately`,
+          reason: `🛑 STOP-LOSS: MC dropped ${(dropFromEntry * 100).toFixed(1)}% from entry ($${entryMC.toFixed(0)} → $${currentMC.toFixed(0)})`,
           playbook_strategy: 'RIDE'
         };
       }
 
-      // Priority 2: Check for stagnation AFTER peak
+      // TRAILING STOP: MC dropped 5%+ from highest point since entry
+      const dropFromHigh = (pos.highestMC - currentMC) / pos.highestMC;
+      if (dropFromHigh >= 0.05 && pos.highestMC > entryMC * 1.05) {
+        this.closePosition(tokenAddress);
+        return {
+          action: 'SELL',
+          confidence: 1.0,
+          percentage: 100,
+          reason: `📉 TRAILING STOP: MC dropped ${(dropFromHigh * 100).toFixed(1)}% from high ($${pos.highestMC.toFixed(0)} → $${currentMC.toFixed(0)})`,
+          playbook_strategy: 'RIDE'
+        };
+      }
+
+      // DUMP detection (StagnationDetector)
+      if (this.stagnationDetector.checkDump(tokenAddress)) {
+        const stats = this.stagnationDetector.getStats(tokenAddress);
+        this.closePosition(tokenAddress);
+        return {
+          action: 'SELL',
+          confidence: 1.0,
+          percentage: 100,
+          reason: `Dump detected (${stats ? (stats.dumpFromPeak * 100).toFixed(1) : '?'}% from peak) — immediate exit`,
+          playbook_strategy: 'RIDE'
+        };
+      }
+
+      // STAGNATION after peak
       if (this.stagnationDetector.checkStagnation(tokenAddress)) {
+        this.closePosition(tokenAddress);
         return {
           action: 'SELL',
           confidence: 0.9,
           percentage: 100,
-          reason: `Stagnation after peak (no 5% MC rise in 20s) - early exit`,
+          reason: `Stagnation after peak (no 5% MC rise in 20s) — early exit`,
           playbook_strategy: 'RIDE'
         };
       }
 
-      // Continue holding (monitoring for peak/dump)
-      const hasPeak = this.stagnationDetector.hasPeakBeenReached(tokenAddress);
+      // EXIT WINDOW
+      if (elapsedMinutes >= exit_window_start_min) {
+        if (elapsedMinutes <= exit_window_end_min) {
+          const windowDuration = exit_window_end_min - exit_window_start_min;
+          const progress = windowDuration > 0
+            ? (elapsedMinutes - exit_window_start_min) / windowDuration
+            : 1.0;
+          const pct = Math.min(100, Math.round(progress * 100));
+          if (pct >= 100) {
+            this.closePosition(tokenAddress);
+          }
+          return {
+            action: 'SELL',
+            confidence: consistency_score * progress,
+            percentage: pct,
+            reason: `Exit window (${exit_window_start_min.toFixed(1)}-${exit_window_end_min.toFixed(1)} min, ${pct}% complete)`,
+            playbook_strategy: 'RIDE'
+          };
+        }
+
+        // Past exit window
+        this.closePosition(tokenAddress);
+        return {
+          action: 'SELL',
+          confidence: 1.0,
+          percentage: 100,
+          reason: `Past exit window (>${exit_window_end_min.toFixed(1)} min) — force close`,
+          playbook_strategy: 'RIDE'
+        };
+      }
+
+      // HOLD — within position, monitoring
       return {
         action: 'HOLD',
         confidence: consistency_score,
         percentage: 0,
-        reason: hasPeak
-          ? `Hold after peak (${entry_window_end_min.toFixed(1)}-${exit_window_start_min.toFixed(1)} min, monitoring for dump)`
-          : `Hold period (${entry_window_end_min.toFixed(1)}-${exit_window_start_min.toFixed(1)} min, waiting for peak)`,
+        reason: `Holding (elapsed ${elapsedMinutes.toFixed(1)} min, entry $${entryMC.toFixed(0)}, high $${pos.highestMC.toFixed(0)}, current $${currentMC.toFixed(0)})`,
         playbook_strategy: 'RIDE'
       };
     }
 
-    // Phase 3: Exit window (progressive sell, but prioritize dump/stagnation)
-    if (elapsedMinutes <= exit_window_end_min) {
-      // Priority 1: Check for dump first
-      if (this.stagnationDetector.checkDump(tokenAddress)) {
-        const stats = this.stagnationDetector.getStats(tokenAddress);
-        return {
-          action: 'SELL',
-          confidence: 1.0,
-          percentage: 100,
-          reason: `Dump detected in exit window (MC dropped ${stats ? (stats.dumpFromPeak * 100).toFixed(1) : '?'}% from peak) - immediate full exit`,
-          playbook_strategy: 'RIDE'
-        };
-      }
+    // ── NO OPEN POSITION: evaluate entry ─────────────────────────────────────
 
-      // Priority 2: Check for stagnation (immediate exit)
-      if (this.stagnationDetector.checkStagnation(tokenAddress)) {
-        return {
-          action: 'SELL',
-          confidence: 1.0,
-          percentage: 100,
-          reason: `Stagnation detected in exit window - immediate full exit`,
-          playbook_strategy: 'RIDE'
-        };
-      }
-
-      // Progressive sell based on time
-      const windowDuration = exit_window_end_min - exit_window_start_min;
-      const progress = windowDuration > 0
-        ? (elapsedMinutes - exit_window_start_min) / windowDuration
-        : 1.0;
-
+    // Past entry window → don't open
+    if (elapsedMinutes > entry_window_end_min) {
       return {
-        action: 'SELL',
-        confidence: consistency_score * progress,
-        percentage: Math.min(100, Math.round(progress * 100)),
-        reason: `Exit window (${exit_window_start_min.toFixed(1)}-${exit_window_end_min.toFixed(1)} min, ${Math.round(progress * 100)}% complete)`,
+        action: 'NONE',
+        confidence: 0,
+        reason: `Past entry window (${elapsedMinutes.toFixed(1)} > ${entry_window_end_min.toFixed(1)} min)`,
         playbook_strategy: 'RIDE'
       };
     }
 
-    // Phase 4: Past exit window → emergency exit
+    // FIX: Require minimum pump confirmation before entry
+    // MC must have risen ≥5% from first snapshot to confirm token is live & pumping
+    const firstMC = this.firstSnapshotMC.get(tokenAddress) ?? currentMC;
+    const mcRiseFromFirst = (currentMC - firstMC) / Math.max(firstMC, 1);
+    if (mcRiseFromFirst < 0.05 && elapsedMinutes > 0.5) {
+      return {
+        action: 'NONE',
+        confidence: 0,
+        reason: `No pump confirmed yet (MC +${(mcRiseFromFirst * 100).toFixed(1)}% from start, need +5%) — flat/dead token`,
+        playbook_strategy: 'RIDE'
+      };
+    }
+
+    // FIX: pumpRatio gate — don't enter if already past expected pump
+    // estimatedEntryMC = where token starts (avg_peak / avg_pump_multiple)
+    const estimatedEntryMC = avg_peak_mc / Math.max(avgPumpMultiple, 1.5);
+    const currentPumpRatio = currentMC / Math.max(estimatedEntryMC, 1);
+    const maxEntryRatio = 1 + (avgPumpMultiple - 1) * 0.50; // max 50% into the expected move
+
+    if (currentPumpRatio > maxEntryRatio) {
+      return {
+        action: 'NONE',
+        confidence: 0,
+        reason: `Entry missed — pumped ${currentPumpRatio.toFixed(2)}x already (max ${maxEntryRatio.toFixed(2)}x, expected total ${avgPumpMultiple.toFixed(1)}x)`,
+        playbook_strategy: 'RIDE'
+      };
+    }
+
+    // FIX: MC floor sanity — if current MC == first MC and > 30s elapsed, likely DexScreener cache (token dead)
+    if (currentMC === firstMC && elapsedMinutes > 0.5) {
+      return {
+        action: 'NONE',
+        confidence: 0,
+        reason: `MC unchanged since start ($${currentMC.toFixed(0)}) — DexScreener cache or dead token`,
+        playbook_strategy: 'RIDE'
+      };
+    }
+
+    // All checks passed → open position
+    this.openPositions.set(tokenAddress, {
+      entryMC: currentMC,
+      entryTime: new Date(),
+      highestMC: currentMC
+    });
+
+    logger.info({
+      token: tokenAddress,
+      entryMC: currentMC,
+      elapsedMin: elapsedMinutes.toFixed(2),
+      pumpRatio: currentPumpRatio.toFixed(2),
+      expectedPump: avgPumpMultiple.toFixed(1),
+      mcRiseFromFirst: (mcRiseFromFirst * 100).toFixed(1) + '%'
+    }, '[POSITION OPENED]');
+
     return {
-      action: 'SELL',
-      confidence: 1.0,
+      action: 'BUY',
+      confidence: consistency_score,
       percentage: 100,
-      reason: `Past exit window (>${exit_window_end_min.toFixed(1)} min)`,
+      reason: `BUY confirmed: +${(mcRiseFromFirst*100).toFixed(1)}% rise, pumpRatio ${currentPumpRatio.toFixed(2)}x/${maxEntryRatio.toFixed(2)}x max, window 0-${entry_window_end_min.toFixed(1)}min`,
       playbook_strategy: 'RIDE'
     };
   }
 
+  private closePosition(tokenAddress: string): void {
+    const pos = this.openPositions.get(tokenAddress);
+    if (pos) {
+      const holdMin = (Date.now() - pos.entryTime.getTime()) / 60000;
+      logger.info({
+        token: tokenAddress,
+        entryMC: pos.entryMC,
+        highestMC: pos.highestMC,
+        holdMin: holdMin.toFixed(2)
+      }, '[POSITION CLOSED]');
+      this.openPositions.delete(tokenAddress);
+    }
+    // Clean first snapshot (token lifecycle done)
+    this.firstSnapshotMC.delete(tokenAddress);
+  }
+
+  /**
+   * Called when token tracking ends — close any lingering position
+   */
+  closePositionIfOpen(tokenAddress: string): void {
+    if (this.openPositions.has(tokenAddress)) {
+      this.closePosition(tokenAddress);
+    }
+    this.firstSnapshotMC.delete(tokenAddress);
+  }
 }

@@ -149,7 +149,7 @@ export class RugScannerWorker {
     }
   }
 
-  private determineVerdict(response: { pairs: Array<{ fdv?: number; liquidity?: { usd?: number }; priceChange?: { m5?: number } }> | null }): Verdict {
+  private determineVerdict(response: { pairs: Array<{ fdv?: number | null; liquidity?: { usd?: number | null; base?: number | null; quote?: number | null } | null; priceChange?: { m5?: number | null } | null }> | null }): Verdict {
     // No pair found = immediate rug
     if (!response.pairs || response.pairs.length === 0) {
       return 'RUG_NO_PAIR';

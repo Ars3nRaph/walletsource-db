@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WalletSourceDB — Graphs</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0a0a0f;color:#e0e0e0;font-family:'Segoe UI',monospace;min-height:100vh}
+    header{background:linear-gradient(135deg,#0d1117,#161b22);border-bottom:1px solid #30363d;padding:20px 32px;display:flex;align-items:center;gap:16px}
+    header a{color:#58a6ff;text-decoration:none;font-size:14px;opacity:.7}
+    header a:hover{opacity:1}
+    header h1{font-size:20px;color:#f0f6fc}
+    .sep{color:#30363d}
+    #hub{display:flex;flex-direction:column;align-items:center;padding:60px 24px}
+    #hub h2{font-size:28px;color:#f0f6fc;margin-bottom:12px}
+    #hub p{color:#8b949e;margin-bottom:48px;font-size:15px}
+    .nav-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:20px;width:100%;max-width:920px}
+    .nav-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:32px 20px;text-align:center;cursor:pointer;transition:all .2s;text-decoration:none;color:inherit;display:block}
+    .nav-card:hover{transform:translateY(-3px);background:#1c2128}
+    .nav-card .icon{font-size:38px;margin-bottom:12px}
+    .nav-card h3{font-size:17px;color:#f0f6fc;margin-bottom:6px}
+    .nav-card p{font-size:12px;color:#8b949e;line-height:1.5}
+    .nav-card.success{border-color:#ffa657}.nav-card.success:hover{border-color:#ffc680;box-shadow:0 0 20px #ffa65733}
+    .nav-card.ride{border-color:#3fb950}.nav-card.ride:hover{border-color:#56d364;box-shadow:0 0 20px #3fb95033}
+    .nav-card.pnl{border-color:#58a6ff}.nav-card.pnl:hover{border-color:#79c0ff;box-shadow:0 0 20px #58a6ff33}
+    .nav-card.wallets{border-color:#bc8cff}.nav-card.wallets:hover{border-color:#d2a8ff;box-shadow:0 0 20px #bc8cff33}
+    .nav-card.verdict{border-color:#f85149}.nav-card.verdict:hover{border-color:#ff7b72;box-shadow:0 0 20px #f8514933}
+    #page{display:none;padding:32px;max-width:1200px;margin:0 auto}
+    #page.active{display:block}
+    .page-header{display:flex;align-items:center;gap:16px;margin-bottom:32px}
+    .back-btn{background:#21262d;border:1px solid #30363d;border-radius:8px;padding:8px 16px;cursor:pointer;color:#8b949e;font-size:13px;transition:all .2s}
+    .back-btn:hover{background:#30363d;color:#f0f6fc}
+    .page-title{font-size:22px;color:#f0f6fc}
+    .page-subtitle{color:#8b949e;font-size:14px;margin-top:4px}
+    .charts-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(480px,1fr));gap:24px}
+    .chart-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:24px}
+    .chart-card h3{color:#f0f6fc;font-size:15px;margin-bottom:16px}
+    .summary-row{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:24px}
+    .summary-chip{background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px 18px;font-size:14px}
+    .summary-chip .val{font-size:20px;font-weight:700;color:#f0f6fc;display:block}
+    .summary-chip .lbl{color:#8b949e;font-size:11px}
+    .win{color:#3fb950}.loss{color:#f85149}.neu{color:#ffa657}
+    .loading{text-align:center;padding:60px;color:#8b949e;grid-column:1/-1}
+    .full{grid-column:1/-1}
+  </style>
+</head>
+<body>
+<header>
+  <a href="/">← Dashboard</a>
+  <span class="sep">|</span>
+  <h1>📊 Graphs</h1>
+  <span class="sep" id="breadcrumb"></span>
+</header>
+
+<div id="hub">
+  <h2>📊 Analytics & Graphs</h2>
+  <p>Explore performance data by category</p>
+  <div class="nav-grid">
+    <a class="nav-card success" onclick="loadPage('success')">
+      <div class="icon">✅</div><h3>Success</h3>
+      <p>Tokens survivants — pics de MC, durées, top performers</p>
+    </a>
+    <a class="nav-card ride" onclick="loadPage('ride')">
+      <div class="icon">🎯</div><h3>RIDE</h3>
+      <p>Wallets RIDE — pump multiples, timing, consistance</p>
+    </a>
+    <a class="nav-card pnl" onclick="loadPage('pnl')">
+      <div class="icon">💰</div><h3>P&L</h3>
+      <p>Paper trades — gains, pertes, P&L cumulatif</p>
+    </a>
+    <a class="nav-card wallets" onclick="loadPage('wallets')">
+      <div class="icon">👛</div><h3>Wallets</h3>
+      <p>Distribution stratégies, histogramme rug rate, top ruggers</p>
+    </a>
+    <a class="nav-card verdict" onclick="loadPage('verdict')">
+      <div class="icon">⚖️</div><h3>Verdicts</h3>
+      <p>Timeline 24h — rugs, succès, neutral par heure</p>
+    </a>
+  </div>
+</div>
+
+<div id="page">
+  <div class="page-header">
+    <button class="back-btn" onclick="showHub()">← Retour</button>
+    <div>
+      <div class="page-title" id="page-title"></div>
+      <div class="page-subtitle" id="page-subtitle"></div>
+    </div>
+  </div>
+  <div id="summary-row" class="summary-row"></div>
+  <div id="charts-container" class="charts-grid"></div>
+</div>
+
+<script>
+const C={
+  green:'#3fb950',gf:'rgba(63,185,80,.15)',
+  blue:'#58a6ff',bf:'rgba(88,166,255,.15)',
+  orange:'#ffa657',of:'rgba(255,166,87,.15)',
+  purple:'#bc8cff',pf:'rgba(188,140,255,.15)',
+  red:'#f85149',rf:'rgba(248,81,73,.15)',
+  gray:'#8b949e',grf:'rgba(139,148,158,.15)'
+};
+const DEF={
+  responsive:true,
+  plugins:{
+    legend:{labels:{color:'#8b949e',font:{size:12}}},
+    tooltip:{backgroundColor:'#1c2128',borderColor:'#30363d',borderWidth:1,titleColor:'#f0f6fc',bodyColor:'#8b949e'}
+  },
+  scales:{
+    x:{ticks:{color:'#8b949e',maxRotation:35},grid:{color:'#21262d'}},
+    y:{ticks:{color:'#8b949e'},grid:{color:'#21262d'}}
+  }
+};
+let charts=[];
+function destroy(){charts.forEach(c=>c.destroy());charts=[];}
+function showHub(){
+  destroy();
+  document.getElementById('hub').style.display='flex';
+  document.getElementById('page').classList.remove('active');
+  document.getElementById('breadcrumb').textContent='';
+  document.getElementById('summary-row').innerHTML='';
+  document.getElementById('charts-container').innerHTML='';
+}
+function showPage(t,s,e){
+  document.getElementById('hub').style.display='none';
+  document.getElementById('page').classList.add('active');
+  document.getElementById('page-title').textContent=e+' '+t;
+  document.getElementById('page-subtitle').textContent=s;
+  document.getElementById('breadcrumb').textContent='| '+t;
+}
+function chip(v,l,c=''){return`<div class="summary-chip"><span class="val ${c}">${v}</span><span class="lbl">${l}</span></div>`;}
+function card(id,title,full=false){
+  const d=document.createElement('div');
+  d.className='chart-card'+(full?' full':'');
+  d.innerHTML=`<h3>${title}</h3><canvas id="${id}"></canvas>`;
+  return d;
+}
+
+async function loadSuccess(){
+  showPage('Success Tokens','Top 50 tokens survivants','✅');
+  const ct=document.getElementById('charts-container');
+  ct.innerHTML='<div class="loading">Chargement...</div>';
+  const {tokens}=await fetch('/api/graphs/success').then(r=>r.json());
+  const top=[...tokens].sort((a,b)=>(b.peak_mc||0)-(a.peak_mc||0)).slice(0,20);
+  document.getElementById('summary-row').innerHTML=
+    chip(tokens.length,'Tokens Success')+
+    chip('$'+(Math.max(...tokens.map(t=>t.peak_mc||0))).toLocaleString(),'Meilleur Peak MC','win')+
+    chip(Math.round(tokens.reduce((s,t)=>s+(t.time_to_peak_min||0),0)/(tokens.length||1))+'m','Avg Time to Peak','neu');
+  ct.innerHTML='';
+  const c1=card('s1','Top 20 — Peak Market Cap ($)');ct.appendChild(c1);
+  charts.push(new Chart('s1',{type:'bar',data:{labels:top.map(t=>t.token_address.slice(0,8)+'…'),
+    datasets:[{label:'Peak MC ($)',data:top.map(t=>t.peak_mc||0),backgroundColor:C.of,borderColor:C.orange,borderWidth:2}]},
+    options:{...DEF,plugins:{...DEF.plugins,legend:{display:false}}}}));
+  const c2=card('s2','Entry MC vs Peak MC');ct.appendChild(c2);
+  charts.push(new Chart('s2',{type:'scatter',data:{datasets:[{label:'Token',
+    data:tokens.filter(t=>t.fdv_at_detection>0&&t.peak_mc>0).map(t=>({x:t.fdv_at_detection,y:t.peak_mc})),
+    backgroundColor:C.orange,pointRadius:5}]},
+    options:{...DEF,scales:{x:{...DEF.scales.x,title:{display:true,text:'Entry MC ($)',color:'#8b949e'}},
+      y:{...DEF.scales.y,title:{display:true,text:'Peak MC ($)',color:'#8b949e'}}}}}));
+  const bk=[0,1000,2000,5000,10000,20000,50000,100000,Infinity];
+  const bl=['<$1k','1-2k','2-5k','5-10k','10-20k','20-50k','50-100k','>$100k'];
+  const bc=new Array(bl.length).fill(0);
+  tokens.forEach(t=>{const mc=t.peak_mc||0;for(let i=0;i<bk.length-1;i++){if(mc>=bk[i]&&mc<bk[i+1]){bc[i]++;break;}}});
+  const c3=card('s3','Distribution Peak MC');ct.appendChild(c3);
+  charts.push(new Chart('s3',{type:'bar',data:{labels:bl,datasets:[{label:'Tokens',data:bc,backgroundColor:C.gf,borderColor:C.green,borderWidth:2}]},
+    options:{...DEF,plugins:{...DEF.plugins,legend:{display:false}}}}));
+}
+
+async function loadRide(){
+  showPage('RIDE Wallets','Patterns de pump des wallets RIDE','🎯');
+  const ct=document.getElementById('charts-container');
+  ct.innerHTML='<div class="loading">Chargement...</div>';
+  const {tokens}=await fetch('/api/graphs/ride').then(r=>r.json());
+  const withPeak=tokens.filter(t=>t.peak_mc);
+  const wallets=[...new Set(tokens.map(t=>t.creator_wallet))];
+  document.getElementById('summary-row').innerHTML=
+    chip(tokens.length,'Total Tokens')+
+    chip(wallets.length,'Wallets RIDE','win')+
+    chip('$'+Math.round(withPeak.reduce((s,t)=>s+(t.peak_mc||0),0)/(withPeak.length||1)).toLocaleString(),'Avg Peak MC','neu');
+  ct.innerHTML='';
+  const byW={};tokens.forEach(t=>{if(!byW[t.creator_wallet])byW[t.creator_wallet]=[];if(t.peak_mc)byW[t.creator_wallet].push(t.peak_mc);});
+  const avgs=Object.entries(byW).map(([w,mcs])=>({w:w.slice(0,8)+'…',avg:mcs.reduce((s,v)=>s+v,0)/(mcs.length||1)})).sort((a,b)=>b.avg-a.avg).slice(0,12);
+  const c1=card('r1','Avg Peak MC par Wallet');ct.appendChild(c1);
+  charts.push(new Chart('r1',{type:'bar',data:{labels:avgs.map(w=>w.w),
+    datasets:[{label:'Avg Peak MC ($)',data:avgs.map(w=>Math.round(w.avg)),backgroundColor:C.gf,borderColor:C.green,borderWidth:2}]},
+    options:{...DEF,plugins:{...DEF.plugins,legend:{display:false}}}}));
+  const valid=tokens.filter(t=>t.fdv_at_detection>0&&t.peak_mc>0);
+  const c2=card('r2','Entry MC vs Peak MC (pump multiple)');ct.appendChild(c2);
+  charts.push(new Chart('r2',{type:'scatter',data:{datasets:[{label:'Token',
+    data:valid.map(t=>({x:t.fdv_at_detection,y:t.peak_mc})),backgroundColor:C.green,pointRadius:5}]},
+    options:{...DEF,scales:{x:{...DEF.scales.x,title:{display:true,text:'Entry MC ($)',color:'#8b949e'}},
+      y:{...DEF.scales.y,title:{display:true,text:'Peak MC ($)',color:'#8b949e'}}}}}));
+  const byDay={};tokens.forEach(t=>{const d=t.detected_at.slice(0,10);byDay[d]=(byDay[d]||0)+1;});
+  const days=Object.keys(byDay).sort();
+  const c3=card('r3','Tokens dans le temps');ct.appendChild(c3);
+  charts.push(new Chart('r3',{type:'line',data:{labels:days,
+    datasets:[{label:'Tokens',data:days.map(d=>byDay[d]),borderColor:C.green,backgroundColor:C.gf,fill:true,tension:.3}]},
+    options:{...DEF}}));
+}
+
+async function loadPnl(){
+  showPage('Paper P&L','Performance paper trading cumulatif','💰');
+  const ct=document.getElementById('charts-container');
+  ct.innerHTML='<div class="loading">Chargement...</div>';
+  const {trades}=await fetch('/api/graphs/pnl').then(r=>r.json());
+  const done=trades.filter(t=>t.pnl_pct!==null);
+  const wins=done.filter(t=>t.pnl_pct>0);
+  const totalPnl=done.reduce((s,t)=>s+t.pnl_pct,0);
+  const wr=done.length?(wins.length/done.length*100).toFixed(1):0;
+  document.getElementById('summary-row').innerHTML=
+    chip(done.length,'Trades Complétés')+
+    chip(wr+'%','Win Rate',parseFloat(wr)>=50?'win':'loss')+
+    chip((totalPnl>=0?'+':'')+totalPnl.toFixed(1)+'%','P&L Total',totalPnl>=0?'win':'loss')+
+    chip(trades.filter(t=>t.status==='OPEN').length,'Ouverts','neu');
+  ct.innerHTML='';
+  if(!done.length){
+    ct.innerHTML='<div class="chart-card full"><h3>Aucun trade complété pour le moment</h3><p style="color:#8b949e;padding:24px">En attente de paires BUY→SELL dans paper-trades.log</p></div>';
+    return;
+  }
+  let cumul=0;
+  const cumulData=done.map(t=>{cumul+=t.pnl_pct;return parseFloat(cumul.toFixed(2));});
+  const c1=card('p1','P&L Cumulatif (%)',true);ct.appendChild(c1);
+  charts.push(new Chart('p1',{type:'line',data:{labels:done.map((_,i)=>`Trade ${i+1}`),
+    datasets:[{label:'P&L Cumulatif %',data:cumulData,borderColor:totalPnl>=0?C.green:C.red,
+      backgroundColor:totalPnl>=0?C.gf:C.rf,fill:true,tension:.3}]},options:{...DEF}}));
+  const c2=card('p2','P&L par Trade (%)');ct.appendChild(c2);
+  charts.push(new Chart('p2',{type:'bar',data:{labels:done.map(t=>t.token),
+    datasets:[{label:'P&L %',data:done.map(t=>t.pnl_pct),
+      backgroundColor:done.map(t=>t.pnl_pct>=0?C.gf:C.rf),
+      borderColor:done.map(t=>t.pnl_pct>=0?C.green:C.red),borderWidth:2}]},
+    options:{...DEF,plugins:{...DEF.plugins,legend:{display:false}}}}));
+  const c3=card('p3','Win / Loss');ct.appendChild(c3);
+  charts.push(new Chart('p3',{type:'doughnut',data:{labels:['Wins','Losses'],
+    datasets:[{data:[wins.length,done.length-wins.length],backgroundColor:[C.green,C.red],borderWidth:0}]},
+    options:{responsive:true,plugins:{legend:{labels:{color:'#8b949e'}},tooltip:DEF.plugins.tooltip}}}));
+}
+
+async function loadWallets(){
+  showPage('Wallets','Distribution stratégies & top ruggers','👛');
+  const ct=document.getElementById('charts-container');
+  ct.innerHTML='<div class="loading">Chargement...</div>';
+  const {strategies,rug_rate_distribution,top_ruggers}=await fetch('/api/graphs/wallets').then(r=>r.json());
+  const total=strategies.reduce((s,r)=>s+parseInt(r.count),0);
+  document.getElementById('summary-row').innerHTML=
+    chip(total.toLocaleString(),'Total Wallets')+
+    chip(strategies.find(s=>s.strategy==='RIDE')?.count||0,'RIDE','win')+
+    chip(strategies.find(s=>s.strategy==='FADE')?.count||0,'FADE','neu')+
+    chip(strategies.find(s=>s.strategy==='AVOID')?.count||0,'AVOID','loss');
+  ct.innerHTML='';
+  const sm={RIDE:C.green,FADE:C.blue,AVOID:C.red,WATCH:C.gray};
+  const c1=card('w1','Distribution Stratégies');ct.appendChild(c1);
+  charts.push(new Chart('w1',{type:'doughnut',data:{labels:strategies.map(s=>s.strategy),
+    datasets:[{data:strategies.map(s=>parseInt(s.count)),backgroundColor:strategies.map(s=>sm[s.strategy]||C.gray),borderWidth:0}]},
+    options:{responsive:true,plugins:{legend:{labels:{color:'#8b949e'}},tooltip:DEF.plugins.tooltip}}}));
+  const c2=card('w2','Distribution Rug Rate (%)');ct.appendChild(c2);
+  charts.push(new Chart('w2',{type:'bar',data:{labels:rug_rate_distribution.map(r=>r.bucket+'%'),
+    datasets:[{label:'Wallets',data:rug_rate_distribution.map(r=>parseInt(r.count)),backgroundColor:C.rf,borderColor:C.red,borderWidth:2}]},
+    options:{...DEF,plugins:{...DEF.plugins,legend:{display:false}}}}));
+  const c3=card('w3','Top Ruggers (par rug count)',true);ct.appendChild(c3);
+  charts.push(new Chart('w3',{type:'bar',data:{labels:top_ruggers.map(r=>r.wallet_address.slice(0,8)+'…'),
+    datasets:[{label:'Rug Count',data:top_ruggers.map(r=>r.rug_count),backgroundColor:C.pf,borderColor:C.purple,borderWidth:2}]},
+    options:{...DEF,plugins:{...DEF.plugins,legend:{display:false}}}}));
+}
+
+async function loadVerdict(){
+  showPage('Verdicts','Timeline 24h des verdicts par heure','⚖️');
+  const ct=document.getElementById('charts-container');
+  ct.innerHTML='<div class="loading">Chargement...</div>';
+  const {data}=await fetch('/api/graphs/verdict').then(r=>r.json());
+  const hours=[...new Set(data.map(d=>d.hour))].sort();
+  const vtypes=[...new Set(data.map(d=>d.verdict))];
+  const cm={RUG_NO_PAIR:C.red,RUG_METRICS:C.orange,SUCCESS:C.green,NEUTRAL:C.gray};
+  const datasets=vtypes.map(v=>({label:v,data:hours.map(h=>{const r=data.find(d=>d.hour===h&&d.verdict===v);return r?parseInt(r.count):0;}),
+    borderColor:cm[v]||C.blue,backgroundColor:(cm[v]||C.blue)+'33',fill:false,tension:.3}));
+  const total=data.reduce((s,d)=>s+parseInt(d.count),0);
+  const rugC=data.filter(d=>d.verdict.startsWith('RUG')).reduce((s,d)=>s+parseInt(d.count),0);
+  document.getElementById('summary-row').innerHTML=
+    chip(total.toLocaleString(),'Total (24h)')+
+    chip(rugC.toLocaleString(),'Rugs (24h)','loss')+
+    chip(total>0?(rugC/total*100).toFixed(1):0+'%','Rug Rate','loss');
+  ct.innerHTML='';
+  const c1=card('v1','Verdicts par heure (24h)',true);ct.appendChild(c1);
+  charts.push(new Chart('v1',{type:'line',data:{labels:hours.map(h=>h.slice(11,16)),datasets},options:{...DEF}}));
+  const totals=vtypes.map(v=>data.filter(d=>d.verdict===v).reduce((s,d)=>s+parseInt(d.count),0));
+  const c2=card('v2','Total par Verdict (24h)');ct.appendChild(c2);
+  charts.push(new Chart('v2',{type:'bar',data:{labels:vtypes,
+    datasets:[{label:'Count',data:totals,backgroundColor:vtypes.map(v=>(cm[v]||C.blue)+'33'),
+      borderColor:vtypes.map(v=>cm[v]||C.blue),borderWidth:2}]},
+    options:{...DEF,plugins:{...DEF.plugins,legend:{display:false}}}}));
+}
+
+function loadPage(p){
+  destroy();
+  document.getElementById('summary-row').innerHTML='';
+  document.getElementById('charts-container').innerHTML='';
+  ({success:loadSuccess,ride:loadRide,pnl:loadPnl,wallets:loadWallets,verdict:loadVerdict})[p]?.();
+}
+</script>
+</body>
+</html>

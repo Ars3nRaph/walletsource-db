@@ -4,7 +4,7 @@ import { ErrorCode, WalletSourceError } from '../types/errors.js';
 import type { TokenSnapshot } from '../types/index.js';
 
 export class SnapshotRepo {
-  constructor(private pool: Pool) {}
+  constructor(public pool: Pool) {}
 
   /**
    * Insert a new snapshot record.

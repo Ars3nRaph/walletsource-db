@@ -23,8 +23,13 @@ describe('DexScreenerClient', () => {
       pairs: [{
         pairAddress: 'pair123',
         fdv: 50000,
-        liquidity: { usd: 10000 },
-        priceChange: { m5: -2.5 }
+        marketCap: null,
+        priceUsd: null,
+        liquidity: { usd: 10000, base: null, quote: null },
+        priceChange: { m1: null, m5: -2.5, h1: null, h6: null, h24: null },
+        volume: { m1: null, m5: null, h1: null, h6: null, h24: null },
+        txns: { m1: null, m5: null, h1: null, h6: null, h24: null },
+        pairCreatedAt: null
       }]
     };
 

@@ -153,3 +153,72 @@ if (document.readyState === 'loading') {
 } else {
   init();
 }
+
+// ── Paper Trades P&L ──────────────────────────────────────────────────────
+async function loadPaperTrades() {
+  try {
+    const res  = await fetch('/api/paper-trades');
+    const data = await res.json();
+    if (!data.success) return;
+
+    const s = data.summary;
+
+    // Summary
+    document.getElementById('pt-completed').textContent = s.completed;
+    document.getElementById('pt-open').textContent      = s.open;
+
+    const wrEl = document.getElementById('pt-winrate');
+    wrEl.textContent = s.completed ? `${s.win_rate_pct}%` : '—';
+    wrEl.className   = 'value ' + (s.win_rate_pct >= 50 ? 'success' : 'danger');
+
+    const avgEl = document.getElementById('pt-avg-pnl');
+    avgEl.textContent = s.completed ? `${s.avg_pnl_pct > 0 ? '+' : ''}${s.avg_pnl_pct}%` : '—';
+    avgEl.className   = 'value ' + (s.avg_pnl_pct >= 0 ? 'success' : 'danger');
+
+    const totEl = document.getElementById('pt-total-pnl');
+    totEl.textContent = s.completed ? `${s.total_pnl_pct > 0 ? '+' : ''}${s.total_pnl_pct}%` : '—';
+    totEl.className   = 'value ' + (s.total_pnl_pct >= 0 ? 'success' : 'danger');
+
+    document.getElementById('pt-best').textContent    = s.best_pct  !== null ? `+${s.best_pct}%`  : '—';
+    document.getElementById('pt-worst').textContent   = s.worst_pct !== null ? `${s.worst_pct}%` : '—';
+    document.getElementById('pt-wins').textContent    = s.wins;
+    document.getElementById('pt-losses').textContent  = s.losses;
+    document.getElementById('pt-raw-buy').textContent  = s.raw_buy_signals;
+    document.getElementById('pt-raw-sell').textContent = s.raw_sell_signals;
+
+    // Table
+    const tbody = document.getElementById('pt-tbody');
+    if (!data.trades.length) {
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#666">Aucun trade enregistré</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = data.trades.map((t, i) => {
+      const pnlClass  = t.status === 'WIN' ? 'pnl-win' : t.status === 'LOSS' ? 'pnl-loss' : 'pnl-open';
+      const badgeClass= t.status === 'WIN' ? 'badge-win' : t.status === 'LOSS' ? 'badge-loss' : 'badge-open';
+      const pnlStr    = t.pnl_pct !== null ? `${t.pnl_pct > 0 ? '+' : ''}${t.pnl_pct}%` : '—';
+      const buyTime   = t.buy_time  ? new Date(t.buy_time).toLocaleTimeString()  : '—';
+      const mcEntry   = t.buy_mc    ? `$${t.buy_mc.toLocaleString('fr-FR', {maximumFractionDigits:0})}` : '—';
+      const mcExit    = t.sell_mc   ? `$${t.sell_mc.toLocaleString('fr-FR', {maximumFractionDigits:0})}` : '—';
+      const sellReason= (t.sell_reason || '—').replace(/\(.*\)/, '').trim().slice(0, 40);
+
+      return `<tr>
+        <td>${i + 1}</td>
+        <td class="mono" title="${t.token_full}">${t.token}</td>
+        <td>${buyTime}</td>
+        <td>${mcEntry}</td>
+        <td>${mcExit}</td>
+        <td class="${pnlClass}">${pnlStr}</td>
+        <td><span class="badge ${badgeClass}">${t.status}</span></td>
+        <td style="color:#888;font-size:0.75rem">${sellReason}</td>
+      </tr>`;
+    }).join('');
+
+  } catch (err) {
+    console.error('Paper trades load error:', err);
+  }
+}
+
+// Charger au démarrage et toutes les 10s
+loadPaperTrades();
+setInterval(loadPaperTrades, 10000);

@@ -4,19 +4,21 @@ import { ErrorCode, WalletSourceError } from '../types/errors.js';
 import { logger } from '../utils/logger.js';
 
 export class MonitoringRepo {
-  constructor(private pool: Pool) {}
+  constructor(public pool: Pool) {}
 
   async enqueue(
     tokenAddress: string,
     creatorWallet: string,
-    delayMinutes: number = 0
+    delayMinutes: number = 0,
+    trackingMode: 'deep' | 'medium' | 'fast_verdict' = 'fast_verdict'
   ): Promise<MonitoringQueue> {
     try {
       const result = await this.pool.query<MonitoringQueue>(
-        `INSERT INTO monitoring_queue (token_address, creator_wallet, check_at)
-         VALUES ($1, $2, CURRENT_TIMESTAMP + INTERVAL '1 minute' * $3)
+        `INSERT INTO monitoring_queue (token_address, creator_wallet, check_at, tracking_mode)
+         VALUES ($1, $2, CURRENT_TIMESTAMP + INTERVAL '1 minute' * $3, $4)
+         ON CONFLICT (token_address) DO NOTHING
          RETURNING *`,
-        [tokenAddress, creatorWallet, delayMinutes]
+        [tokenAddress, creatorWallet, delayMinutes, trackingMode]
       );
 
       logger.debug({ token_address: tokenAddress, delay_minutes: delayMinutes }, 'Token enqueued for monitoring');
@@ -34,9 +36,22 @@ export class MonitoringRepo {
   async getDueTokens(): Promise<MonitoringQueue[]> {
     try {
       const result = await this.pool.query<MonitoringQueue>(
-        `SELECT * FROM monitoring_queue
-         WHERE status = 'PENDING' AND check_at <= CURRENT_TIMESTAMP
-         ORDER BY check_at ASC`
+        `SELECT mq.*
+         FROM monitoring_queue mq
+         WHERE mq.status = 'PENDING'
+           AND mq.check_at <= CURRENT_TIMESTAMP
+           AND mq.detected_at > NOW() - INTERVAL '20 minutes'
+         ORDER BY
+           -- RIDE wallets first
+           EXISTS(
+             SELECT 1 FROM wallet_profiles wp
+             WHERE wp.wallet_address = mq.creator_wallet
+               AND wp.strategy = 'RIDE'
+               AND wp.rugger_playbook IS NOT NULL
+           ) DESC,
+           -- Then freshest tokens first
+           mq.detected_at DESC
+         LIMIT 5`
       );
 
       logger.debug({ count: result.rows.length }, 'Due tokens retrieved');

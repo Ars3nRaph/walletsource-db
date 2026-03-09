@@ -68,6 +68,7 @@ CREATE TABLE token_events (
   detected_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   checked_at TIMESTAMP,
   verdict TEXT,
+  fdv_at_detection REAL,
   fdv_at_check REAL,
   liquidity_at_check REAL,
   price_change_5m REAL,

@@ -37,6 +37,7 @@ export interface TokenEvent {
   detected_at: Date;
   checked_at: Date | null;
   verdict: 'RUG_NO_PAIR' | 'RUG_METRICS' | 'SUCCESS' | 'NEUTRAL' | null;
+  fdv_at_detection: number | null;
   fdv_at_check: number | null;
   liquidity_at_check: number | null;
   price_change_5m: number | null;
@@ -112,9 +113,36 @@ export interface CalibrationLog {
 // API Response Types
 export interface DexScreenerPair {
   pairAddress: string;
-  fdv: number;
-  liquidity: { usd: number };
-  priceChange: { m5: number };
+  fdv: number | null;
+  marketCap: number | null;
+  priceUsd: string | null;
+  liquidity: {
+    usd: number | null;
+    base: number | null;
+    quote: number | null;
+  };
+  priceChange: {
+    m1: number | null;
+    m5: number | null;
+    h1: number | null;
+    h6: number | null;
+    h24: number | null;
+  };
+  volume: {
+    m1: number | null;
+    m5: number | null;
+    h1: number | null;
+    h6: number | null;
+    h24: number | null;
+  };
+  txns: {
+    m1: { buys: number; sells: number } | null;
+    m5: { buys: number; sells: number } | null;
+    h1: { buys: number; sells: number } | null;
+    h6: { buys: number; sells: number } | null;
+    h24: { buys: number; sells: number } | null;
+  };
+  pairCreatedAt: number | null;
 }
 
 export interface DexScreenerResponse {
@@ -160,23 +188,58 @@ export interface TokenSnapshot {
 
 // Rugger Playbook (v4.0)
 export interface RuggerPlaybook {
+  // ── Core identity ──────────────────────────────────────
   sample_size: number;
+  recommended_strategy: 'RIDE' | 'FADE' | 'WATCH' | 'AVOID';
+  consistency_score: number;           // 1 - CV(time_to_rug) — predictability
+
+  // ── Timing — minutes (legacy, kept for TradeExecutor compat) ──
   avg_time_to_peak_min: number;
   std_time_to_peak_min: number;
-  avg_peak_mc: number;
-  std_peak_mc: number;
   avg_time_to_rug_min: number;
   std_time_to_rug_min: number;
-  avg_dump_speed: number;
+  avg_peak_duration_min: number;       // v4.2
+  std_peak_duration_min: number;       // v4.2
+
+  // ── Timing — seconds (tick-level precision, v4.4) ─────
+  avg_time_to_peak_sec: number | null;
+  std_time_to_peak_sec: number | null;
+  avg_time_to_rug_sec: number | null;
+  std_time_to_rug_sec: number | null;
+  avg_first_sell_delay_sec: number | null; // delay créateur → 1er sell
+  avg_rug_duration_sec: number | null;     // durée de la chute
+  consistency_score_sec: number | null;    // consistance timing secondes
+
+  // ── Market cap ────────────────────────────────────────
+  avg_peak_mc: number;
+  std_peak_mc: number;
+  avg_pump_multiple: number;           // v4.3 — peak/entry ratio
+  avg_pump_speed_mc_per_sec: number | null; // vitesse de montée tick-level
+
+  // ── Volume & liquidité ────────────────────────────────
+  avg_dump_speed: number;              // legacy %/min
   avg_liquidity_at_peak: number;
-  consistency_score: number;
+  avg_total_buy_vol_usd: number | null;
+  avg_total_sell_vol_usd: number | null;
+  avg_buy_sell_ratio: number | null;   // pression nette buy vs sell
+  avg_largest_sell_pct: number | null; // plus gros sell / peak MC
+
+  // ── Comportement wallets ──────────────────────────────
+  avg_buy_wallet_count: number | null;
+  avg_sell_wallet_count: number | null;
+  creator_sold_rate: number | null;    // % tokens où le créateur vend
+  avg_top_buyer_pct: number | null;    // concentration achat
+  avg_top_seller_pct: number | null;   // concentration vente
+
+  // ── Pattern signatures ────────────────────────────────
+  micro_buy_rate: number | null;       // % tokens avec bots micro-achat
+  avg_cascade_score: number | null;    // intensité dump coordonné
+  avg_pump_dump_speed_ratio: number | null; // pump lent vs dump rapide
+
+  // ── Fenêtres d'entrée/sortie (minutes) ───────────────
   entry_window_end_min: number;
   exit_window_start_min: number;
   exit_window_end_min: number;
   short_window_start_min: number;
   short_window_end_min: number;
-  recommended_strategy: 'RIDE' | 'FADE' | 'WATCH' | 'AVOID';
-  // v4.2 — Peak duration (time between peak and dump start)
-  avg_peak_duration_min: number;
-  std_peak_duration_min: number;
 }

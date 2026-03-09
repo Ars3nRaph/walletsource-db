@@ -1,7 +1,6 @@
 import type { Pool } from 'pg';
 import { logger } from '../utils/logger.js';
 import { DexScreenerClient } from '../api/DexScreenerClient.js';
-import { GeckoTerminalClient } from '../api/GeckoTerminalClient.js';
 import { HeliusClient } from '../api/HeliusClient.js';
 import { TokenEventRepo } from '../repositories/TokenEventRepo.js';
 import { WalletRepo } from '../repositories/WalletRepo.js';
@@ -11,18 +10,15 @@ import { SnapshotRepo } from '../repositories/SnapshotRepo.js';
 import { AncestryRepo } from '../repositories/AncestryRepo.js';
 import { TaintScorer } from '../scoring/TaintScorer.js';
 import { PlaybookBuilder } from '../scoring/PlaybookBuilder.js';
-import { TradeAnalyzer } from '../scoring/TradeAnalyzer.js';
 import { computeToxicity, computeRiskScore, getStrategy } from '../scoring/SigmoidScorer.js';
 import { StagnationDetector } from '../execution/StagnationDetector.js';
 import { PeakDurationDetector } from '../execution/PeakDurationDetector.js';
 import { PaperTradeExecutor } from '../execution/PaperTradeExecutor.js';
 import type { TokenSnapshot } from '../types/index.js';
 
-const POLL_INTERVAL_MS = 10 * 1000; // 10 seconds — high-resolution snapshots for movement reconstruction
-const TRACKING_DURATION_MS = 20 * 60 * 1000; // 20 minutes — full lifecycle capture including late rugs
+const POLL_INTERVAL_MS = 30 * 1000; // 30 seconds (optimal: excellent data quality, 2× capacity, 60% rate limit)
+const TRACKING_DURATION_MS = 10 * 60 * 1000; // 10 minutes (full duration to preserve data quality for playbook building)
 const RUG_GRACE_PERIOD_MS = 3 * 60 * 1000; // 3 minutes - continue tracking after RUG detection to collect lifecycle data
-// Batch mode: DexScreener allows 30 tokens/req. With 10s interval and 25 active tokens:
-// Max 1 batch/10s = 6 batches/min = 6 req/min (well within 300/min free limit)
 
 // Verdict thresholds from PRD section 3
 const THRESHOLDS = {
@@ -47,7 +43,6 @@ interface LifecycleAnalysis {
   liquidity_removed: number | null;
   buy_volume_before_dump: number | null;
   rug_price: number | null;
-  price_change_5m: number | null;
   verdict: Verdict;
 }
 
@@ -59,11 +54,9 @@ export class TokenTracker {
   private snapshotRepo: SnapshotRepo;
   private ancestryRepo: AncestryRepo;
   private dexScreenerClient: DexScreenerClient;
-  private geckoClient: GeckoTerminalClient;
   private heliusClient: HeliusClient;
   private taintScorer: TaintScorer;
   private playbookBuilder: PlaybookBuilder;
-  private tradeAnalyzer: TradeAnalyzer;
   private stagnationDetector: StagnationDetector;
   private peakDetector: PeakDurationDetector;
   private tradeExecutor: PaperTradeExecutor;
@@ -80,11 +73,9 @@ export class TokenTracker {
     this.snapshotRepo = new SnapshotRepo(pool);
     this.ancestryRepo = new AncestryRepo(pool);
     this.dexScreenerClient = new DexScreenerClient();
-    this.geckoClient = new GeckoTerminalClient();
     this.heliusClient = new HeliusClient();
     this.taintScorer = new TaintScorer(pool);
     this.playbookBuilder = new PlaybookBuilder(pool);
-    this.tradeAnalyzer = new TradeAnalyzer(pool);
     this.stagnationDetector = new StagnationDetector();
     this.peakDetector = new PeakDurationDetector();
     this.tradeExecutor = new PaperTradeExecutor(pool);
@@ -113,14 +104,6 @@ export class TokenTracker {
 
   private async checkDueTokens(): Promise<void> {
     try {
-      // Auto-purge stale pending tokens (older than 20min = already dead)
-      await this.monitoringRepo.pool.query(`
-        UPDATE monitoring_queue
-        SET status = 'DONE', processed_at = NOW()
-        WHERE status = 'PENDING'
-          AND detected_at < NOW() - INTERVAL '20 minutes'
-      `);
-
       logger.debug('Checking for due tokens...');
       const dueTokens = await this.monitoringRepo.getDueTokens();
 
@@ -149,20 +132,20 @@ export class TokenTracker {
         logger.debug({
           activeCount,
           remainingQuota,
-          maxCapacity: 50
+          maxCapacity: 135
         }, 'Rate limit check (90% utilization)');
 
         // Each token consumes 2 req/min (1 per 30s), rate limit = 300 req/min
         // Max capacity = 300 / 2 = 150 tokens theoretical. Use 135 (270 req/min = 90% utilization).
         // With 10min tracking + 30s polling: 135 slots × 6 cycles/h = 810 tokens/h capacity!
-        if (activeCount >= 50 || remainingQuota < 20) {
+        if (activeCount >= 135 || remainingQuota < 30) {
           logger.warn({
             activeCount,
             remainingQuota,
             token: queueItem.token_address
-          }, 'Capacity full — dropping stale token');
-          // Drop instead of requeue: if we are full, old tokens are already dead
-          await this.monitoringRepo.markProcessed(queueItem.token_address);
+          }, 'Capacity limit reached, re-enqueueing token');
+
+          await this.monitoringRepo.reEnqueue(queueItem.token_address, 5);
           continue;
         }
 
@@ -177,24 +160,15 @@ export class TokenTracker {
         // Reserve slot immediately to update activeCount synchronously
         this.activeTracking.set(queueItem.token_address, setInterval(() => {}, 999999));
 
-        // Route to appropriate tracking mode
-        const mode = (queueItem as unknown as { tracking_mode?: string }).tracking_mode ?? 'fast_verdict';
-        if (mode === 'fast_verdict') {
-          // Only 2 checks: T+3min and T+10min — no slot occupation
-          this.activeTracking.delete(queueItem.token_address);
-          this.startFastVerdict(queueItem.token_address, queueItem.creator_wallet, queueItem.detected_at);
-        } else {
-          const interval = mode === 'deep' ? POLL_INTERVAL_MS : 30 * 1000;
-          const duration = mode === 'deep' ? TRACKING_DURATION_MS : 10 * 60 * 1000;
-          await this.startTracking(queueItem.token_address, queueItem.creator_wallet, queueItem.detected_at, interval, duration);
-        }
+        // Start tracking this token
+        await this.startTracking(queueItem.token_address, queueItem.creator_wallet, queueItem.detected_at);
       }
     } catch (error) {
       logger.error({ error }, 'Error checking due tokens');
     }
   }
 
-  private async startTracking(tokenAddress: string, creatorWallet: string, detectedAt: Date, pollIntervalMs: number = POLL_INTERVAL_MS, trackingDurationMs: number = TRACKING_DURATION_MS): Promise<void> {
+  private async startTracking(tokenAddress: string, creatorWallet: string, detectedAt: Date): Promise<void> {
     try {
       // Mark as processing
       await this.monitoringRepo.updateStatus(tokenAddress, 'PROCESSING');
@@ -203,35 +177,17 @@ export class TokenTracker {
 
       let snapshotCount = 0;
       const startTime = Date.now();
-      let fdvAtDetectionStored = false; // Fix #1: store first FDV snapshot
 
       // Poll every 60 seconds for 10 minutes
       const pollInterval = setInterval(async () => {
         try {
           snapshotCount++;
 
-          // Fetch current state: DexScreener primary, GeckoTerminal fallback
+          // Fetch current state from DexScreener
           const response = await this.dexScreenerClient.getToken(tokenAddress);
           const pair = response.pairs?.[0];
 
-          let currentFdv = pair?.fdv ?? null;
-          let currentLiquidity = pair?.liquidity?.usd ?? null;
-          let usedGecko = false;
-
-          // GeckoTerminal fallback: if DexScreener has no pair yet, try GeckoTerminal
-          if (!pair && snapshotCount <= 6) {
-            try {
-              const geckoData = await this.geckoClient.getToken(tokenAddress);
-              if (geckoData.hasPair) {
-                currentFdv = geckoData.fdv;
-                currentLiquidity = geckoData.liquidityUsd;
-                usedGecko = true;
-                logger.debug({ token: tokenAddress, snapshot: snapshotCount, fdv: currentFdv, liquidity: currentLiquidity }, 'GeckoTerminal fallback used');
-              }
-            } catch (_geckoErr) {
-              // GeckoTerminal failure is non-fatal
-            }
-          }
+          const currentFdv = pair?.fdv ?? null;
 
           // Record snapshot for detectors (v4.2)
           if (currentFdv !== null) {
@@ -239,89 +195,27 @@ export class TokenTracker {
             this.peakDetector.recordSnapshot(tokenAddress, currentFdv);
           }
 
-          // Store snapshot — full metrics
-          const priceUsd = pair?.priceUsd ? parseFloat(pair.priceUsd) : null;
-          await this.snapshotRepo.pool.query(`
-            INSERT INTO token_snapshots (
-              token_address, snapshot_at,
-              fdv, liquidity_usd, price_usd,
-              market_cap,
-              price_change_5m, price_change_1m, price_change_5m_v2, price_change_1h,
-              volume_5m, volume_5m_usd, volume_1m, volume_1h, volume_6h, volume_24h,
-              buy_count_5m, sell_count_5m,
-              txns_1m_buys, txns_1m_sells,
-              txns_5m_buys_v2, txns_5m_sells_v2,
-              txns_1h_buys, txns_1h_sells,
-              liquidity_base, liquidity_quote,
-              pair_created_at, data_source
-            ) VALUES (
-              $1, NOW(),
-              $2, $3, $4,
-              $5,
-              $6, $7, $8, $9,
-              $10, $11, $12, $13, $14, $15,
-              $16, $17,
-              $18, $19,
-              $20, $21,
-              $22, $23,
-              $24, $25,
-              $26, $27
-            )
-          `, [
-            tokenAddress,
-            currentFdv,
-            currentLiquidity,
-            priceUsd,
-            // market_cap (DexScreener sometimes has marketCap separate from fdv)
-            pair?.marketCap ?? currentFdv,
-            // price changes
-            usedGecko ? null : (pair?.priceChange?.m5 ?? null),
-            usedGecko ? null : (pair?.priceChange?.m1 ?? null),
-            usedGecko ? null : (pair?.priceChange?.m5 ?? null),
-            usedGecko ? null : (pair?.priceChange?.h1 ?? null),
-            // volumes
-            usedGecko ? null : (pair?.volume?.m5 ?? null),
-            usedGecko ? null : (pair?.volume?.m5 ?? null),
-            usedGecko ? null : (pair?.volume?.m1 ?? null),
-            usedGecko ? null : (pair?.volume?.h1 ?? null),
-            usedGecko ? null : (pair?.volume?.h6 ?? null),
-            usedGecko ? null : (pair?.volume?.h24 ?? null),
-            // txns 5m
-            usedGecko ? null : (pair?.txns?.m5?.buys ?? null),
-            usedGecko ? null : (pair?.txns?.m5?.sells ?? null),
-            // txns 1m
-            usedGecko ? null : (pair?.txns?.m1?.buys ?? null),
-            usedGecko ? null : (pair?.txns?.m1?.sells ?? null),
-            // txns 5m v2
-            usedGecko ? null : (pair?.txns?.m5?.buys ?? null),
-            usedGecko ? null : (pair?.txns?.m5?.sells ?? null),
-            // txns 1h
-            usedGecko ? null : (pair?.txns?.h1?.buys ?? null),
-            usedGecko ? null : (pair?.txns?.h1?.sells ?? null),
-            // liquidity breakdown
-            usedGecko ? null : (pair?.liquidity?.base ?? null),
-            usedGecko ? null : (pair?.liquidity?.quote ?? null),
-            // pair metadata
-            usedGecko ? null : (pair?.pairCreatedAt ?? null),
-            usedGecko ? 'gecko' : 'dexscreener'
-          ]);
+          // Store snapshot
+          await this.snapshotRepo.insertSnapshot({
+            token_address: tokenAddress,
+            snapshot_at: new Date(),
+            fdv: currentFdv,
+            liquidity_usd: pair?.liquidity?.usd ?? null,
+            price_usd: pair?.fdv && pair?.liquidity?.usd
+              ? pair.fdv / 1000000 // Rough estimate
+              : null,
+            price_change_5m: pair?.priceChange?.m5 ?? null,
+            volume_5m: null, // DexScreener doesn't provide this in current schema
+            buy_count_5m: null,
+            sell_count_5m: null
+          });
 
           logger.debug({
             token: tokenAddress,
             snapshot: snapshotCount,
             fdv: currentFdv,
-            liquidity: currentLiquidity,
-            source: usedGecko ? 'gecko' : 'dexscreener'
+            liquidity: pair?.liquidity?.usd
           }, 'Snapshot recorded');
-
-          // Fix #1: store fdv_at_detection on first snapshot with valid FDV
-          if (!fdvAtDetectionStored && currentFdv !== null && currentFdv > 0) {
-            await this.tokenRepo.pool.query(
-              `UPDATE token_events SET fdv_at_detection = $1 WHERE token_address = $2 AND fdv_at_detection IS NULL`,
-              [currentFdv, tokenAddress]
-            );
-            fdvAtDetectionStored = true;
-          }
 
           // Evaluate trade signal in real-time (v4.2)
           if (currentFdv !== null) {
@@ -332,19 +226,11 @@ export class TokenTracker {
           }
 
           // EARLY EXIT: Check if RUG detected (no pair, low liquidity, or major dump)
-          // Fix #1: treat pairs===null OR pairs===[] OR pairs===undefined as RUG_NO_PAIR (unless GeckoTerminal found a pair)
-          const noPair = !usedGecko && (response.pairs === null || response.pairs === undefined || response.pairs.length === 0);
-          // Fix #2: treat null/undefined liquidity as RUG (token listed but no liquidity = dead)
-          const noLiquidity = (pair !== undefined || usedGecko) && (
-            currentLiquidity === null ||
-            currentLiquidity === undefined ||
-            currentLiquidity < THRESHOLDS.RUG_NO_MARKET_LIQUIDITY
-          );
           const isRug = (
-            // No pair found or empty pairs array (RUG_NO_PAIR)
-            noPair ||
-            // Low or null liquidity (RUG_METRICS)
-            noLiquidity ||
+            // No pair found (RUG_NO_PAIR)
+            response.pairs === null ||
+            // Low liquidity (RUG_METRICS)
+            (pair?.liquidity?.usd && pair.liquidity.usd < THRESHOLDS.RUG_NO_MARKET_LIQUIDITY) ||
             // Major dump detected (50%+ drop from peak)
             (currentFdv !== null && this.peakDetector.getPeakMC(tokenAddress) &&
              currentFdv < this.peakDetector.getPeakMC(tokenAddress)! * (1 - THRESHOLDS.RUG_DUMP_THRESHOLD))
@@ -362,8 +248,8 @@ export class TokenTracker {
                 snapshotCount,
                 elapsedMin: (now - startTime) / (60 * 1000),
                 gracePeriodMin: RUG_GRACE_PERIOD_MS / (60 * 1000),
-                reason: noPair ? 'NO_PAIR' :
-                        noLiquidity ? 'LOW_OR_NULL_LIQUIDITY' :
+                reason: response.pairs === null ? 'NO_PAIR' :
+                        pair?.liquidity?.usd && pair.liquidity.usd < THRESHOLDS.RUG_NO_MARKET_LIQUIDITY ? 'LOW_LIQUIDITY' :
                         'DUMP_DETECTED'
               }, 'RUG detected - continuing tracking for lifecycle data collection');
             } else if (now - rugFirstDetected >= RUG_GRACE_PERIOD_MS) {
@@ -381,17 +267,16 @@ export class TokenTracker {
               // Analyze lifecycle and emit verdict
               await this.finalizeTracking(tokenAddress, creatorWallet, detectedAt);
 
-              // Clean up detectors + close any open paper position
+              // Clean up detectors
               this.stagnationDetector.clear(tokenAddress);
               this.peakDetector.clear(tokenAddress);
-              this.tradeExecutor.closePositionIfOpen(tokenAddress);
               return; // Exit polling loop
             }
             // else: still within grace period, continue tracking
           }
 
           // Check if tracking duration complete (normal exit)
-          if (Date.now() - startTime >= trackingDurationMs) {
+          if (Date.now() - startTime >= TRACKING_DURATION_MS) {
             clearInterval(pollInterval);
             this.activeTracking.delete(tokenAddress);
             this.rugDetectionTime.delete(tokenAddress);
@@ -399,15 +284,14 @@ export class TokenTracker {
             // Analyze lifecycle and emit verdict
             await this.finalizeTracking(tokenAddress, creatorWallet, detectedAt);
 
-            // Clean up detectors + close any open paper position (v4.3)
+            // Clean up detectors (v4.2)
             this.stagnationDetector.clear(tokenAddress);
             this.peakDetector.clear(tokenAddress);
-            this.tradeExecutor.closePositionIfOpen(tokenAddress);
           }
         } catch (error) {
           logger.error({ error, token: tokenAddress }, 'Error recording snapshot');
         }
-      }, pollIntervalMs);
+      }, POLL_INTERVAL_MS);
 
       // Clear placeholder interval and replace with real polling interval
       const existing = this.activeTracking.get(tokenAddress);
@@ -462,9 +346,8 @@ export class TokenTracker {
              tracking_complete = TRUE,
              snapshot_count = $14,
              peak_duration_min = $15,
-             peak_time = $16,
-             price_change_5m = $17
-         WHERE token_address = $18`,
+             peak_time = $16
+         WHERE token_address = $17`,
         [
           analysis.verdict,
           snapshots[snapshots.length - 1]?.fdv ?? null,
@@ -482,7 +365,6 @@ export class TokenTracker {
           snapshots.length,
           peakDuration,
           peakTime,
-          analysis.price_change_5m,
           tokenAddress
         ]
       );
@@ -504,9 +386,6 @@ export class TokenTracker {
 
       // Update wallet sigmoid scores
       await this.updateWalletScores(creatorWallet);
-
-      // Compute rich trade metrics from trade_events (tick-level data)
-      await this.tradeAnalyzer.analyze(tokenAddress, creatorWallet);
 
       // If RUG, rebuild playbook to update temporal windows
       if (analysis.verdict === 'RUG_NO_PAIR' || analysis.verdict === 'RUG_METRICS') {
@@ -551,7 +430,6 @@ export class TokenTracker {
         liquidity_removed: null,
         buy_volume_before_dump: null,
         rug_price: null,
-        price_change_5m: null,
         verdict: 'RUG_NO_PAIR'
       };
     }
@@ -569,8 +447,7 @@ export class TokenTracker {
 
     // Check for dead token (no market)
     const maxLiquidity = Math.max(...snapshots.map(s => s.liquidity_usd ?? 0));
-    // Fix #2: OR instead of AND — a dead token has no FDV OR no liquidity (not necessarily both)
-    if (maxFdv < THRESHOLDS.RUG_NO_MARKET_FDV || maxLiquidity < THRESHOLDS.RUG_NO_MARKET_LIQUIDITY) {
+    if (maxFdv < THRESHOLDS.RUG_NO_MARKET_FDV && maxLiquidity < THRESHOLDS.RUG_NO_MARKET_LIQUIDITY) {
       // For RUG_NO_PAIR, calculate timing metrics based on available snapshots
       // This enables playbook building for "fast abandon" ruggers
       const lastSnapshot = snapshots[snapshots.length - 1];
@@ -595,7 +472,6 @@ export class TokenTracker {
         liquidity_removed: null,
         buy_volume_before_dump: null,
         rug_price: null,
-        price_change_5m: null,
         verdict: 'RUG_NO_PAIR'
       };
     }
@@ -664,9 +540,6 @@ export class TokenTracker {
       verdict = 'NEUTRAL';
     }
 
-    // Get price_change_5m from last snapshot with a non-null value
-    const priceChange5m = [...snapshots].reverse().find(s => s.price_change_5m != null)?.price_change_5m ?? null;
-
     return {
       peak_mc: maxFdv,
       peak_at: peakSnapshot.snapshot_at,
@@ -678,7 +551,6 @@ export class TokenTracker {
       liquidity_removed: liquidityRemoved,
       buy_volume_before_dump: buyVolumeBeforeDump > 0 ? buyVolumeBeforeDump : null,
       rug_price: rugPrice,
-      price_change_5m: priceChange5m,
       verdict
     };
   }
@@ -695,7 +567,6 @@ export class TokenTracker {
       liquidity_removed: null,
       buy_volume_before_dump: null,
       rug_price: null,
-      price_change_5m: null,
       verdict
     };
   }
@@ -823,48 +694,6 @@ export class TokenTracker {
     } catch (error) {
       logger.warn({ error, wallet: childWallet }, 'Failed to build ancestry (non-blocking)');
     }
-  }
-
-
-  // Fast verdict: only 2 lightweight checks (T+3min, T+10min)
-  // Uses 2 req/token vs 120 for deep — allows scanning 1400+ tokens/hour for wallet profiling
-  private startFastVerdict(tokenAddress: string, creatorWallet: string, detectedAt: Date): void {
-    const check = async (label: string) => {
-      try {
-        const response = await this.dexScreenerClient.getToken(tokenAddress);
-        const pair = response.pairs?.[0];
-        const fdv = pair?.fdv ?? null;
-        const liquidity = pair?.liquidity?.usd ?? null;
-
-        // Store one snapshot for verdict
-        if (fdv !== null || liquidity !== null) {
-          await this.snapshotRepo.pool.query(`
-            INSERT INTO token_snapshots (token_address, snapshot_at, fdv, liquidity_usd, data_source)
-            VALUES ($1, NOW(), $2, $3, 'fast_verdict')
-            ON CONFLICT DO NOTHING
-          `, [tokenAddress, fdv, liquidity]);
-        }
-
-        logger.debug({ token: tokenAddress, label, fdv, liquidity }, 'Fast verdict snapshot');
-      } catch (err) {
-        logger.debug({ token: tokenAddress, label, err }, 'Fast verdict snapshot failed');
-      }
-    };
-
-    // Check at T+3min
-    setTimeout(() => check('T+3min'), 3 * 60 * 1000);
-
-    // Check at T+10min — then run verdict
-    setTimeout(async () => {
-      await check('T+10min');
-      try {
-        await this.finalizeTracking(tokenAddress, creatorWallet, detectedAt);
-        await this.monitoringRepo.markProcessed(tokenAddress);
-      } catch (err) {
-        logger.warn({ token: tokenAddress, err }, 'Fast verdict lifecycle analysis failed');
-        await this.monitoringRepo.markProcessed(tokenAddress);
-      }
-    }, 10 * 60 * 1000);
   }
 
   async stop(): Promise<void> {

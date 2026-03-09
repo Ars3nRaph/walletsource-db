@@ -304,3 +304,63 @@ footer p {
   0%, 100% { opacity: 0.5; }
   50% { opacity: 1; }
 }
+
+/* ── Paper Trades ── */
+.table-container {
+  overflow-x: auto;
+  margin-top: 0.75rem;
+}
+
+.trades-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  background: #1a1a2e;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.trades-table th {
+  background: #16213e;
+  color: #a0a8c0;
+  padding: 10px 12px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid #2a2a4a;
+}
+
+.trades-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid #1e1e3a;
+  color: #c8d0e0;
+  vertical-align: middle;
+}
+
+.trades-table tr:hover td {
+  background: rgba(255,255,255,0.03);
+}
+
+.trades-table tr:last-child td {
+  border-bottom: none;
+}
+
+.pnl-win  { color: #4caf50; font-weight: 700; }
+.pnl-loss { color: #f44336; font-weight: 700; }
+.pnl-open { color: #ffc107; font-weight: 700; }
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.badge-win  { background: rgba(76,175,80,0.2);  color: #4caf50; }
+.badge-loss { background: rgba(244,67,54,0.2);  color: #f44336; }
+.badge-open { background: rgba(255,193,7,0.2);  color: #ffc107; }
+
+.mono { font-family: monospace; font-size: 0.78rem; }

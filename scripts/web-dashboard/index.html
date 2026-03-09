@@ -16,6 +16,7 @@
         <span class="dot"></span>
         <span id="status-text">Connecting...</span>
       </div>
+      <nav style="margin-left:auto"><a href="/graphs" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px 20px;color:#58a6ff;text-decoration:none;font-size:14px;font-weight:600;transition:all .2s" onmouseover="this.style.borderColor='#58a6ff';this.style.background='#1c2128'" onmouseout="this.style.borderColor='#30363d';this.style.background='#21262d'">📊 Graphs</a></nav>
     </header>
 
     <!-- Main Stats Grid -->
@@ -231,6 +232,57 @@
           <span class="activity-label">Latest Snapshot:</span>
           <span class="activity-value mono" id="latest-snapshot">-</span>
         </div>
+      </div>
+    </div>
+
+
+    <!-- Paper Trading P&L -->
+    <div class="section" id="paper-trades-section">
+      <h2>💰 Paper Trading — Bilan P&amp;L</h2>
+
+      <!-- Summary cards -->
+      <div class="stats-grid" style="margin-bottom:1rem">
+        <div class="stat-card">
+          <div class="stat-header"><span class="icon">📊</span><h3>Résumé</h3></div>
+          <div class="stat-row"><span class="label">Trades complétés</span><span class="value" id="pt-completed">-</span></div>
+          <div class="stat-row"><span class="label">Positions ouvertes</span><span class="value info" id="pt-open">-</span></div>
+          <div class="stat-row"><span class="label">Win Rate</span><span class="value" id="pt-winrate">-</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-header"><span class="icon">💵</span><h3>P&amp;L</h3></div>
+          <div class="stat-row"><span class="label">P&amp;L Moyen</span><span class="value" id="pt-avg-pnl">-</span></div>
+          <div class="stat-row"><span class="label">P&amp;L Total cumulé</span><span class="value" id="pt-total-pnl">-</span></div>
+          <div class="stat-row"><span class="label">Meilleur trade</span><span class="value success" id="pt-best">-</span></div>
+          <div class="stat-row"><span class="label">Pire trade</span><span class="value danger" id="pt-worst">-</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-header"><span class="icon">✅</span><h3>Résultats</h3></div>
+          <div class="stat-row"><span class="label">Gains</span><span class="value success" id="pt-wins">-</span></div>
+          <div class="stat-row"><span class="label">Pertes</span><span class="value danger" id="pt-losses">-</span></div>
+          <div class="stat-row"><span class="label">Signaux BUY bruts</span><span class="value" id="pt-raw-buy">-</span></div>
+          <div class="stat-row"><span class="label">Signaux SELL bruts</span><span class="value" id="pt-raw-sell">-</span></div>
+        </div>
+      </div>
+
+      <!-- Trades table -->
+      <div class="table-container">
+        <table class="trades-table" id="pt-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Token</th>
+              <th>BUY Time</th>
+              <th>MC Entrée</th>
+              <th>MC Sortie</th>
+              <th>P&amp;L</th>
+              <th>Statut</th>
+              <th>Raison sortie</th>
+            </tr>
+          </thead>
+          <tbody id="pt-tbody">
+            <tr><td colspan="8" style="text-align:center;color:#666">Chargement…</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
