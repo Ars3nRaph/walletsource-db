@@ -32,6 +32,9 @@ interface OpenPosition {
   walletAddress: string;
   peakTime: number;           // timestamp when highestMC was set
   hadSignificantPump: boolean; // true if ever reached +20%
+  entryBuyVol: number;        // buy volume ($) at entry — drives adaptive SL
+  entryBuyCount: number;      // buy count at entry
+  entryBuyerCount: number;    // unique buyers at entry
 }
 
 interface LiveTradeState {
@@ -516,18 +519,41 @@ export class TradeExecutor {
     const dropFromEntry = (pos.entryMC - currentMC) / pos.entryMC;
     const holdSecAdaptive = (Date.now() - pos.entryTime.getTime()) / 1000;
     
-    // 2a. QUICK RUG: fast bail on bot-inflated entries or massive drops
+    // 2a. ADAPTIVE STOP LOSS — based on entry volume (market conviction)
+    //
+    // Data-driven insight (13 trades backtest):
+    //   - High volume ($1000+, 9+ wallets): 38% avg pump → needs room → -15% SL
+    //   - Medium volume ($100-999): mixed → -10% SL
+    //   - Low volume (<$100): likely dud → tight -5% SL
+    //   - Bot-inflated entry (>1.08x baseline): always tight -5% SL
+    //
+    // Trade #1 lesson: $1042 vol, 9 wallets → quick rug at -7.6% → missed +38%
+    // Trade #2 lesson: $171 vol, 4 wallets → quick rug at -10.8% → saved from -29%
     const cachedBase = this.rideCache.get(tokenAddress);
-      const entryBaseline = cachedBase?.fdvAtDetection || pos.entryMC;
-      const entryRatio = pos.entryMC / Math.max(entryBaseline, 1);
-    if (holdSecAdaptive < 5 && pos.tradeCount >= 2) {
-      // Bot-inflated entry (>1.08x baseline): tight stop at -5%
-      // Baseline entry (<1.08x): wider room at -12% (normal volatility)
-      const qrThreshold = entryRatio > 1.08 ? 0.05 : 0.12;
-      if (dropFromEntry > qrThreshold) {
+    const entryBaseline = cachedBase?.fdvAtDetection || pos.entryMC;
+    const entryRatio = pos.entryMC / Math.max(entryBaseline, 1);
+
+    let adaptiveSL: number;
+    if (entryRatio > 1.08) {
+      // Bot-inflated entry: always tight
+      adaptiveSL = 0.05;
+    } else if (pos.entryBuyVol >= 500 && pos.entryBuyerCount >= 5) {
+      // High conviction: strong market interest, give room for dips
+      adaptiveSL = 0.15;
+    } else if (pos.entryBuyVol >= 100 && pos.entryBuyerCount >= 3) {
+      // Medium conviction
+      adaptiveSL = 0.10;
+    } else {
+      // Low conviction: minimal market interest
+      adaptiveSL = 0.06;
+    }
+
+    // Quick exit: within first 8s, apply adaptive SL
+    if (holdSecAdaptive < 8 && pos.tradeCount >= 2) {
+      if (dropFromEntry > adaptiveSL) {
         this.closePosition(tokenAddress);
         return this.sell(100, 1.0, 'RIDE',
-          `⚡ QUICK RUG -${(dropFromEntry*100).toFixed(1)}% in ${holdSecAdaptive.toFixed(0)}s (entry@${entryRatio.toFixed(2)}x, thresh=${(qrThreshold*100).toFixed(0)}%)`,
+          `⚡ ADAPTIVE SL -${(dropFromEntry*100).toFixed(1)}% in ${holdSecAdaptive.toFixed(0)}s (vol=$${pos.entryBuyVol.toFixed(0)}/${pos.entryBuyerCount}w → thresh=${(adaptiveSL*100).toFixed(0)}%)`,
           this.emptySignals());
       }
     }
@@ -709,6 +735,9 @@ export class TradeExecutor {
       walletAddress,
       peakTime: Date.now(),
       hadSignificantPump: false,
+      entryBuyVol: buyVol,
+      entryBuyCount: buyCount,
+      entryBuyerCount: uniqueBuyerCount,
     });
 
     const evStr = ws.evPerTrade.toFixed(1);
