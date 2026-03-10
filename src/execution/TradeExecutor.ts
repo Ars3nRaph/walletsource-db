@@ -30,6 +30,8 @@ interface OpenPosition {
   lowestMCAfterEntry: number;
   tradeCount: number;
   walletAddress: string;
+  peakTime: number;           // timestamp when highestMC was set
+  hadSignificantPump: boolean; // true if ever reached +20%
 }
 
 interface LiveTradeState {
@@ -366,7 +368,10 @@ export class TradeExecutor {
       if (pos) {
         if (currentMC > pos.highestMC && currentMC < pos.highestMC * 5) {
           pos.highestMC = currentMC;
+          pos.peakTime = Date.now();
         }
+        const currentProfit = (pos.highestMC - pos.entryMC) / pos.entryMC;
+        if (currentProfit >= 0.20) pos.hadSignificantPump = true;
         if (currentMC < pos.lowestMCAfterEntry) pos.lowestMCAfterEntry = currentMC;
         pos.tradeCount++;
       }
@@ -433,12 +438,62 @@ export class TradeExecutor {
         this.emptySignals());
     }
 
-    // 2. STOP-LOSS — per-wallet threshold
+    // 1.5. PROFIT DECAY — token pumped but now stagnating/declining
+    //   If we HAD +20%+ profit but it's been >8s since the peak and profit < 50% of peak profit
+    //   → the pump is over, take what's left before the rug
+    if (pos.hadSignificantPump) {
+      const secSincePeak = (Date.now() - pos.peakTime) / 1000;
+      const currentPnl = (currentMC - pos.entryMC) / pos.entryMC;
+      const peakPnl = (pos.highestMC - pos.entryMC) / pos.entryMC;
+      const retainedPct = peakPnl > 0 ? currentPnl / peakPnl : 0;
+      
+      // If 8s+ since peak AND we've lost more than 50% of peak profits → exit
+      if (secSincePeak > 8 && retainedPct < 0.50 && currentPnl > 0) {
+        const pnlStr = (currentPnl * 100).toFixed(1);
+        const peakStr = (peakPnl * 100).toFixed(1);
+        this.closePosition(tokenAddress);
+        return this.sell(100, 1.0, 'RIDE',
+          `⏳ PROFIT DECAY +${pnlStr}% (was +${peakStr}%, ${secSincePeak.toFixed(0)}s ago, ${(retainedPct*100).toFixed(0)}% retained)`,
+          this.emptySignals());
+      }
+      
+      // If 15s+ since peak AND any profit remaining → take it
+      if (secSincePeak > 15 && currentPnl > 0.02) {
+        const pnlStr = (currentPnl * 100).toFixed(1);
+        this.closePosition(tokenAddress);
+        return this.sell(100, 1.0, 'RIDE',
+          `⏳ STALE PUMP +${pnlStr}% (peak ${(peakPnl*100).toFixed(0)}% was ${secSincePeak.toFixed(0)}s ago — taking profit)`,
+          this.emptySignals());
+      }
+    }
+
+    // 2. ADAPTIVE EXIT — behavior-based, not fixed percentage
     const dropFromEntry = (pos.entryMC - currentMC) / pos.entryMC;
-    if (dropFromEntry >= ws.stopLossPct && pos.tradeCount >= 2) {
+    const holdSecAdaptive = (Date.now() - pos.entryTime.getTime()) / 1000;
+    
+    // 2a. QUICK RUG: within first 5s, if we're down > 5% → token isn't pumping, bail fast
+    if (holdSecAdaptive < 5 && dropFromEntry > 0.05 && pos.tradeCount >= 2) {
       this.closePosition(tokenAddress);
       return this.sell(100, 1.0, 'RIDE',
-        `🛑 SL ${(dropFromEntry*100).toFixed(1)}% > ${(ws.stopLossPct*100).toFixed(0)}% (wallet-specific)`,
+        `⚡ QUICK RUG -${(dropFromEntry*100).toFixed(1)}% in ${holdSecAdaptive.toFixed(0)}s — pas de pump`,
+        this.emptySignals());
+    }
+    
+    // 2b. HARD STOP: absolute max loss 25% regardless of timing
+    //     In paper trading prices gap through — this catches the gap
+    if (dropFromEntry >= 0.25) {
+      this.closePosition(tokenAddress);
+      return this.sell(100, 1.0, 'RIDE',
+        `🛑 HARD STOP -${(dropFromEntry*100).toFixed(1)}% (max loss 25%)`,
+        this.emptySignals());
+    }
+    
+    // 2c. NO PUMP TIMEOUT: after 15s, if token never pumped +10% → dead, exit
+    if (holdSecAdaptive > 15 && !pos.hadSignificantPump) {
+      const pnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
+      this.closePosition(tokenAddress);
+      return this.sell(100, 1.0, 'RIDE',
+        `⏰ NO PUMP after ${holdSecAdaptive.toFixed(0)}s (P&L ${pnl}%) — token mort`,
         this.emptySignals());
     }
 
@@ -575,6 +630,8 @@ export class TradeExecutor {
       lowestMCAfterEntry: currentMC,
       tradeCount: 0,
       walletAddress,
+      peakTime: Date.now(),
+      hadSignificantPump: false,
     });
 
     const evStr = ws.evPerTrade.toFixed(1);
