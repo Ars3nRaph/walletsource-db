@@ -66,7 +66,7 @@ export class TokenTracker {
   private tradeAnalyzer: TradeAnalyzer;
   private stagnationDetector: StagnationDetector;
   private peakDetector: PeakDurationDetector;
-  private tradeExecutor: PaperTradeExecutor;
+  public tradeExecutor: PaperTradeExecutor;
   private intervalId: NodeJS.Timeout | null = null;
   private isRunning = false;
   private activeTracking: Map<string, NodeJS.Timeout> = new Map();
@@ -85,6 +85,8 @@ export class TokenTracker {
     this.taintScorer = new TaintScorer(pool);
     this.playbookBuilder = new PlaybookBuilder(pool);
     this.tradeAnalyzer = new TradeAnalyzer(pool);
+    // Wire PumpTradeStream → TradeExecutor for live tick signals
+    // (set after both are constructed via start())
     this.stagnationDetector = new StagnationDetector();
     this.peakDetector = new PeakDurationDetector();
     this.tradeExecutor = new PaperTradeExecutor(pool);

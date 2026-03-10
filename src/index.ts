@@ -44,6 +44,13 @@ class WalletSourceDB {
       await this.tokenTracker.start();
       logger.info('TokenTracker started');
 
+      // Wire PumpTradeStream → TradeExecutor for live tick-level signals
+      if (this.forensicWorker && this.tokenTracker) {
+        const te = this.tokenTracker.tradeExecutor;
+        this.forensicWorker.pumpTradeStream.setTradeExecutor(te);
+        logger.info('PumpTradeStream → TradeExecutor wired');
+      }
+
       // 5. Start CartelDetector (batch every 5 min)
       this.cartelDetector = new CartelDetector(this.pool);
       this.cartelDetectionInterval = setInterval(async () => {

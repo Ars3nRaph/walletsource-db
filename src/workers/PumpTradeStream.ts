@@ -1,6 +1,7 @@
 import WebSocket from 'ws';
 import type { Pool } from 'pg';
 import { logger } from '../utils/logger.js';
+import type { TradeExecutor } from '../execution/TradeExecutor.js';
 
 const PUMPPORTAL_WSS_URL = 'wss://pumpportal.fun/api/data';
 const MAX_SUBSCRIPTIONS = 100; // PumpPortal safe limit per connection
@@ -35,9 +36,14 @@ export class PumpTradeStream {
 
   // Token expiry: stop tracking after 20min
   private tokenExpiry = new Map<string, number>();
+  private tradeExecutor: TradeExecutor | null = null;
 
   constructor(pool: Pool) {
     this.pool = pool;
+  }
+
+  setTradeExecutor(executor: TradeExecutor): void {
+    this.tradeExecutor = executor;
   }
 
   async start(): Promise<void> {
@@ -139,6 +145,12 @@ export class PumpTradeStream {
 
     // Compute USD values
     const marketCapUsd = marketCapSol * this.solPrice;
+    const volumeUsd2 = solAmount * this.solPrice;
+
+    // Notify TradeExecutor with live tick data (before DB insert for minimal latency)
+    if (this.tradeExecutor) {
+      this.tradeExecutor.onTrade(mint, txType, marketCapUsd, volumeUsd2, traderPublicKey);
+    }
     const priceUsd = vTokensInBondingCurve > 0
       ? (vSolInBondingCurve / vTokensInBondingCurve) * this.solPrice
       : null;
