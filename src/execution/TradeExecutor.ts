@@ -471,12 +471,20 @@ export class TradeExecutor {
     const dropFromEntry = (pos.entryMC - currentMC) / pos.entryMC;
     const holdSecAdaptive = (Date.now() - pos.entryTime.getTime()) / 1000;
     
-    // 2a. QUICK RUG: within first 5s, if we're down > 5% → token isn't pumping, bail fast
-    if (holdSecAdaptive < 5 && dropFromEntry > 0.05 && pos.tradeCount >= 2) {
-      this.closePosition(tokenAddress);
-      return this.sell(100, 1.0, 'RIDE',
-        `⚡ QUICK RUG -${(dropFromEntry*100).toFixed(1)}% in ${holdSecAdaptive.toFixed(0)}s — pas de pump`,
-        this.emptySignals());
+    // 2a. QUICK RUG: fast bail on bot-inflated entries or massive drops
+    const cachedBase = this.rideCache.get(tokenAddress);
+      const entryBaseline = cachedBase?.fdvAtDetection || pos.entryMC;
+      const entryRatio = pos.entryMC / Math.max(entryBaseline, 1);
+    if (holdSecAdaptive < 5 && pos.tradeCount >= 2) {
+      // Bot-inflated entry (>1.08x baseline): tight stop at -5%
+      // Baseline entry (<1.08x): wider room at -12% (normal volatility)
+      const qrThreshold = entryRatio > 1.08 ? 0.05 : 0.12;
+      if (dropFromEntry > qrThreshold) {
+        this.closePosition(tokenAddress);
+        return this.sell(100, 1.0, 'RIDE',
+          `⚡ QUICK RUG -${(dropFromEntry*100).toFixed(1)}% in ${holdSecAdaptive.toFixed(0)}s (entry@${entryRatio.toFixed(2)}x, thresh=${(qrThreshold*100).toFixed(0)}%)`,
+          this.emptySignals());
+      }
     }
     
     // 2b. HARD STOP: absolute max loss 25% regardless of timing
@@ -594,15 +602,15 @@ export class TradeExecutor {
     if (elapsedSec >= 3 && elapsedSec <= 8) {
       // Best signal: price WAS high (bots spiked it) AND now back near baseline
       
-      if (peakSeen >= 1.15 && mcRatio <= 1.15) {
+      if (peakSeen >= 1.08 && mcRatio <= 1.08) {
         // Perfect: bot spike confirmed (was 1.15x+) AND dipped back ≤1.15x
         // This is the cheapest real entry point
       } else if (mcRatio <= 1.05) {
         // Price at/near baseline — flat start, enter cheap
         // Some tokens don't get bot-sniped heavily
-      } else if (mcRatio > 1.15 && elapsedSec < 5) {
+      } else if (mcRatio > 1.08 && elapsedSec < 5) {
         // Still in bot spike territory (>1.15x before T+5s) — wait for dip
-        return this.none(`⏳ Phase 1: attente dip (${mcRatio.toFixed(2)}x > 1.15x, peak=${peakSeen.toFixed(2)}x)`, 'RIDE');
+        return this.none(`⏳ Phase 1: attente dip (${mcRatio.toFixed(2)}x > 1.08x, peak=${peakSeen.toFixed(2)}x)`, 'RIDE');
       } else if (mcRatio > ws.maxEntryRatio) {
         return this.none(`Ratio ${mcRatio.toFixed(2)}x > ${ws.maxEntryRatio.toFixed(2)}x max entry`, 'RIDE');
       }
