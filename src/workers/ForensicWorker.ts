@@ -360,25 +360,12 @@ export class ForensicWorker {
       // Subscribe to real-time trade stream (0 credits, push-based)
       this.pumpTradeStream.subscribe(tokenMint);
 
-      // ── INSTANT RIDE ENTRY (v5.1) ──────────────────────────────
-      // Sniper bots buy at token creation (T+0s) at bonding curve price.
-      // Instead of waiting for trade ticks (T+1-2s, MC already +50-70%),
-      // evaluate entry IMMEDIATELY at creation price = fdv_at_detection.
-      // This is paper trading — we simulate buying at the same time as bots.
+      // v5.3: No instant entry — phased entry waits for T+3-8s dip after bot spike
+      // The tradeExecutor will enter via trade ticks from PumpTradeStream
       if (strategy === 'RIDE' && entryMcUsd && this.tradeExecutor) {
-        const playbook = walletProfile?.rugger_playbook;
-        if (playbook) {
-          const pumpMultiple = typeof playbook === 'string' 
-            ? JSON.parse(playbook).avg_pump_multiple 
-            : ((playbook as unknown) as Record<string, unknown>).avg_pump_multiple;
-          if (pumpMultiple >= 2.0) {
-            logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8), entryMC: Math.round(entryMcUsd), pump_x: pumpMultiple }, '⚡ INSTANT RIDE — evaluating at creation price');
-            // Pre-seed the rideCache with creation data so evaluateTrade works
-            this.tradeExecutor.onTrade(tokenMint, 'buy', entryMcUsd, 0, 'creator');
-            // Evaluate immediately at creation price
-            await this.tradeExecutor.evaluateTrade(tokenMint, 0, entryMcUsd);
-          }
-        }
+        // Seed the baseline price for the phased entry system
+        this.tradeExecutor.onTrade(tokenMint, 'buy', entryMcUsd, 0, 'creator');
+        logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8), baselineMC: Math.round(entryMcUsd) }, '👁️ RIDE watching — phased entry armed');
       }
 
       logger.info({ token: tokenMint, tracking_mode: trackingMode, rug_count: rugCount, strategy }, 'Token enqueued for monitoring');
