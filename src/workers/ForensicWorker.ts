@@ -1,3 +1,4 @@
+import { TradeExecutor } from '../execution/TradeExecutor.js';
 import WebSocket from 'ws';
 import type { Pool } from 'pg';
 import { logger } from '../utils/logger.js';
@@ -25,6 +26,7 @@ export class ForensicWorker {
   private ws: WebSocket | null = null;
   private walletRepo: WalletRepo;
   public pumpTradeStream: PumpTradeStream;
+  public tradeExecutor: TradeExecutor | null = null;
   private tokenRepo: TokenEventRepo;
   private monitoringRepo: MonitoringRepo;
   private reconnectAttempts = 0;
@@ -297,10 +299,11 @@ export class ForensicWorker {
       await this.tokenRepo.recordEvent(tokenMint, creatorWallet);
 
       // Store PumpPortal creation data immediately (true block-1 data)
+      let entryMcUsd = 0;
       if (message.marketCapSol !== undefined) {
         // Fetch SOL price for USD conversion (cached, 1 req/5min max)
         const solPriceUsd = await this.getSolPrice();
-        const entryMcUsd = message.marketCapSol * solPriceUsd;
+        entryMcUsd = message.marketCapSol * solPriceUsd;
 
         await this.tokenRepo.pool.query(`
           UPDATE token_events SET
@@ -356,6 +359,27 @@ export class ForensicWorker {
 
       // Subscribe to real-time trade stream (0 credits, push-based)
       this.pumpTradeStream.subscribe(tokenMint);
+
+      // ── INSTANT RIDE ENTRY (v5.1) ──────────────────────────────
+      // Sniper bots buy at token creation (T+0s) at bonding curve price.
+      // Instead of waiting for trade ticks (T+1-2s, MC already +50-70%),
+      // evaluate entry IMMEDIATELY at creation price = fdv_at_detection.
+      // This is paper trading — we simulate buying at the same time as bots.
+      if (strategy === 'RIDE' && entryMcUsd && this.tradeExecutor) {
+        const playbook = walletProfile?.rugger_playbook;
+        if (playbook) {
+          const pumpMultiple = typeof playbook === 'string' 
+            ? JSON.parse(playbook).avg_pump_multiple 
+            : ((playbook as unknown) as Record<string, unknown>).avg_pump_multiple;
+          if (pumpMultiple >= 2.0) {
+            logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8), entryMC: Math.round(entryMcUsd), pump_x: pumpMultiple }, '⚡ INSTANT RIDE — evaluating at creation price');
+            // Pre-seed the rideCache with creation data so evaluateTrade works
+            this.tradeExecutor.onTrade(tokenMint, 'buy', entryMcUsd, 0, 'creator');
+            // Evaluate immediately at creation price
+            await this.tradeExecutor.evaluateTrade(tokenMint, 0, entryMcUsd);
+          }
+        }
+      }
 
       logger.info({ token: tokenMint, tracking_mode: trackingMode, rug_count: rugCount, strategy }, 'Token enqueued for monitoring');
     } catch (error) {

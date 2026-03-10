@@ -189,7 +189,7 @@ export class TradeExecutor {
 
     // ── EV CALCULATION ──
     // Expected value = winRate * avgWinPct - (1-winRate) * avgLossPct
-    const avgWinPct = Math.max(0, (medianPump / 1.7 - 1) * 100 * 0.5);  // realistic: enter at 1.7x baseline
+    const avgWinPct = Math.max(0, (medianPump - 1) * 100 * 0.5);  // instant entry at baseline (T+0s snipe)
     const avgLossPct = Math.min(stopLossPct * 100, 15);  // cap loss at SL or 15%
     const evPerTrade = winRate * avgWinPct - (1 - winRate) * avgLossPct;
 
@@ -442,14 +442,29 @@ export class TradeExecutor {
         this.emptySignals());
     }
 
-    // 3. TRAILING STOP — per-wallet threshold, only if pump confirmed
-    if (pos.highestMC > pos.entryMC * 1.10) {
+    // 3. PROGRESSIVE TRAILING STOP — widens with profit, tightens as pump matures
+    //    Don't trigger until meaningful profit; let the pump develop
+    const profitPct = (pos.highestMC - pos.entryMC) / pos.entryMC;
+    if (profitPct >= 0.20) {  // activate only after +20% unrealized profit
       const dropFromHigh = (pos.highestMC - currentMC) / pos.highestMC;
-      if (dropFromHigh >= ws.trailingStopPct) {
-        const pnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
+      
+      // Progressive trailing: wider early, tighter as profit grows
+      // +20-50% profit  → 35% trailing (let it breathe, normal volatility)
+      // +50-100% profit → 28% trailing (decent pump, protect some gains)
+      // +100-200% profit → 22% trailing (big pump, lock in more)
+      // +200%+ profit   → 18% trailing (massive pump, protect hard)
+      let trailingPct: number;
+      if (profitPct < 0.50) trailingPct = 0.35;
+      else if (profitPct < 1.00) trailingPct = 0.28;
+      else if (profitPct < 2.00) trailingPct = 0.22;
+      else trailingPct = 0.18;
+      
+      if (dropFromHigh >= trailingPct) {
+        const realPnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
+        const capturedPct = ((currentMC - pos.entryMC) / (pos.highestMC - pos.entryMC) * 100).toFixed(0);
         this.closePosition(tokenAddress);
         return this.sell(100, 1.0, 'RIDE',
-          `📉 TRAILING ${(dropFromHigh*100).toFixed(1)}% from $${pos.highestMC.toFixed(0)} → $${currentMC.toFixed(0)} (P&L ${pnl}%)`,
+          `📉 TRAILING ${(dropFromHigh*100).toFixed(0)}%>${(trailingPct*100).toFixed(0)}% from $${pos.highestMC.toFixed(0)} | P&L +${realPnl}% (captured ${capturedPct}% of peak)`,
           this.emptySignals());
       }
     }
@@ -498,15 +513,22 @@ export class TradeExecutor {
       return this.none(`⏰ Trop tard (${elapsedSec.toFixed(0)}s > ${ws.maxEntrySec.toFixed(0)}s)`, 'RIDE');
     }
 
-    // Pump not confirmed (need +10% above baseline minimum)
     const pumpPct = mcRatio - 1;
-    if (pumpPct < ws.minPumpPct) {
-      return this.none(`Pump ${(pumpPct*100).toFixed(1)}% < ${(ws.minPumpPct*100).toFixed(0)}% min`, 'RIDE');
-    }
-
-    // Too high — past the safe entry zone (per-wallet P25 of winning pumps)
-    if (mcRatio > ws.maxEntryRatio) {
-      return this.none(`Ratio ${mcRatio.toFixed(2)}x > ${ws.maxEntryRatio.toFixed(2)}x max entry`, 'RIDE');
+    
+    // ── INSTANT ENTRY (T+0s): buy at creation price, no pump needed ──
+    // We trust the playbook: this wallet has proven pump history
+    // Bots snipe at T+0s — we do the same in paper trading
+    if (elapsedSec < 1.0) {
+      // Only check: is the EV positive? (already verified by getWalletStrategy)
+      // Skip pump check, ratio check, momentum check — we're at baseline price
+    } else {
+      // ── LATE ENTRY (T+1s+): pump confirmation required ──
+      if (pumpPct < ws.minPumpPct) {
+        return this.none(`Pump ${(pumpPct*100).toFixed(1)}% < ${(ws.minPumpPct*100).toFixed(0)}% min`, 'RIDE');
+      }
+      if (mcRatio > ws.maxEntryRatio) {
+        return this.none(`Ratio ${mcRatio.toFixed(2)}x > ${ws.maxEntryRatio.toFixed(2)}x max entry`, 'RIDE');
+      }
     }
 
     // Cascade already in progress
@@ -519,8 +541,8 @@ export class TradeExecutor {
       return this.none(`Sell pressure (${state.sellCount}s > ${state.buyCount}b)`, 'RIDE');
     }
 
-    // MOMENTUM CONFIRMATION: MC must be rising over last 3 seconds
-    // This filters bot spikes ($2500→$3000 in 0.5s then dump) from real pumps (sustained rise)
+    // MOMENTUM CONFIRMATION — skip for instant entry (T+0s)
+    if (elapsedSec >= 1.0) {
     const history = this.priceHistory.get(tokenAddress);
     if (history && history.length >= 3) {
       const now = Date.now();
@@ -543,6 +565,7 @@ export class TradeExecutor {
     } else {
       return this.none('⏳ Pas assez de ticks pour confirmer momentum', 'RIDE');
     }
+    } // end if elapsedSec >= 1.0
 
     // ✅ BUY — all per-wallet checks passed
     this.openPositions.set(tokenAddress, {
