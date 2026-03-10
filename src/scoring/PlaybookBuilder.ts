@@ -120,7 +120,8 @@ export class PlaybookBuilder {
       const consistencyScoreSec = timesToRugSec.length >= 3 ? this.computeConsistency(timesToRugSec) : null;
 
       // Temporal windows
-      const entryWindowEnd = Math.max(0, avgTimeToPeak - stdTimeToPeak);
+      // v4.4: Entry window = peak + 1σ (old formula gave 0 because peak is ~15s with std>15s)
+      const entryWindowEnd = Math.max(0.5, avgTimeToPeak + stdTimeToPeak);
       const exitWindowStart = Math.max(0, avgTimeToRug - stdTimeToRug);
       const exitWindowEnd = avgTimeToRug;
       const shortWindowStart = avgTimeToPeak;

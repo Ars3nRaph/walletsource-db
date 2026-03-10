@@ -325,8 +325,9 @@ export class TokenTracker {
             fdvAtDetectionStored = true;
           }
 
-          // Evaluate trade signal in real-time (v4.2)
-          if (currentFdv !== null) {
+          // Evaluate trade signal — skip for RIDE tokens (handled by live PumpTradeStream ticks)
+          // DexScreener FDV has artifacts ($25k spikes, $1900 dips) that corrupt stop-loss/trailing
+          if (currentFdv !== null && !this.tradeExecutor.isLiveTracked(tokenAddress)) {
             const elapsedMs = Date.now() - new Date(detectedAt).getTime();
             const elapsedMin = elapsedMs / (60 * 1000);
 

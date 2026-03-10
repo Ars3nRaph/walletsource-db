@@ -8,19 +8,19 @@ export type TradeAction = 'BUY' | 'SELL' | 'HOLD' | 'NONE';
 
 export interface TradeSignal {
   action: TradeAction;
-  confidence: number;         // 0.0 → 1.0
+  confidence: number;
   percentage?: number;
   reason: string;
   playbook_strategy?: 'RIDE' | 'FADE' | 'WATCH' | 'AVOID';
-  signals?: SignalBreakdown;  // détail des facteurs
+  signals?: SignalBreakdown;
 }
 
 interface SignalBreakdown {
-  timing_score: number;        // position dans la fenêtre attendue
-  momentum_score: number;      // buy pressure actuelle
-  consistency_score: number;   // fiabilité historique du wallet
-  risk_score: number;          // risque de rug imminent
-  wallet_score: number;        // signature comportementale du wallet
+  timing_score: number;
+  momentum_score: number;
+  consistency_score: number;
+  risk_score: number;
+  wallet_score: number;
 }
 
 interface OpenPosition {
@@ -28,7 +28,8 @@ interface OpenPosition {
   entryTime: Date;
   highestMC: number;
   lowestMCAfterEntry: number;
-  tradeCount: number;         // nb de snapshots depuis l'entrée
+  tradeCount: number;
+  walletAddress: string;
 }
 
 interface LiveTradeState {
@@ -40,45 +41,193 @@ interface LiveTradeState {
   uniqueSellers: Set<string>;
   firstSellAt: Date | null;
   lastSeenAt: Date;
-  recentSells: number;         // sells dans les 10 dernières secondes
+  recentSells: number;
   recentBuys: number;
   cascadeDetected: boolean;
 }
 
 /**
- * TradeExecutor v4.4 — Prediction Engine Multi-Signal
+ * Per-wallet strategy parameters computed from historical data.
+ * Each wallet gets custom entry/exit/SL based on its actual patterns.
+ */
+interface WalletStrategy {
+  // Entry
+  minPumpPct: number;        // min pump above baseline to confirm entry (e.g., 0.10 = +10%)
+  maxEntryRatio: number;     // max MC/baseline ratio for entry (don't enter past this)
+  maxEntrySec: number;       // max seconds after detection to enter
+  
+  // Exit  
+  targetRatio: number;       // expected peak MC/baseline for partial exit
+  maxHoldSec: number;        // max hold time before force close
+  
+  // Risk
+  stopLossPct: number;       // stop-loss % from entry
+  trailingStopPct: number;   // trailing stop % from high
+  cascadeThreshold: number;  // consecutive sells to trigger cascade exit
+  
+  // Sizing
+  winRate: number;           // historical pump rate
+  evPerTrade: number;        // expected value per trade %
+  
+  // Source
+  sampleSize: number;        // how many tokens this is based on
+}
+
+/**
+ * TradeExecutor v5.0 — Per-Wallet Strategy Engine
  *
- * Utilise les playbooks enrichis (tick-level) + trade_events live pour :
- * - Scoring multi-facteur (timing, momentum, consistency, risk, wallet signature)
- * - Détection cascade en temps réel depuis trade_events
- * - Stop-loss adaptatif basé sur avg_rug_duration_sec du wallet
- * - Entry timing en secondes (précision ms) au lieu de minutes
- * - Seuil de confidence ajusté par creator_sold_rate + cascade_score
+ * Each RIDE wallet gets its own entry/exit/SL parameters derived from
+ * its historical token data. No more one-size-fits-all thresholds.
  */
 export class TradeExecutor {
   private tokenRepo: TokenEventRepo;
   private walletRepo: WalletRepo;
+  protected pool: Pool;
 
   private openPositions = new Map<string, OpenPosition>();
   private firstMC = new Map<string, number>();
   private liveState = new Map<string, LiveTradeState>();
 
-  // Cache for RIDE wallet detection (avoid repeated DB lookups on every tick)
-  private rideCache = new Map<string, { isRide: boolean; detectedAt: Date }>();
-  private evaluating = new Set<string>(); // prevent concurrent evaluations
-  private closedTokens = new Set<string>(); // tokens already sold — no re-entry ever
+  // Cache: token → { isRide, detectedAt, fdvAtDetection, walletAddress, strategy }
+  private rideCache = new Map<string, {
+    isRide: boolean;
+    detectedAt: Date;
+    fdvAtDetection: number;
+    walletAddress: string;
+    strategy: WalletStrategy | null;
+  }>();
+  private evaluating = new Set<string>();
+  private closedTokens = new Set<string>();
+  
+  // Price history for momentum confirmation (last N ticks per token)
+  private priceHistory = new Map<string, Array<{ mc: number; ts: number }>>();
 
-  // Min confidence pour déclencher un BUY (ajusté par wallet risk)
-  private readonly BASE_BUY_CONFIDENCE = 0.60;
+  // Per-wallet strategy cache (wallet_address → WalletStrategy)
+  private walletStrategies = new Map<string, WalletStrategy>();
 
   constructor(pool: Pool) {
+    this.pool = pool;
     this.tokenRepo = new TokenEventRepo(pool);
     this.walletRepo = new WalletRepo(pool);
   }
 
   /**
-   * Appelé depuis PumpTradeStream sur chaque trade (tick-level, <100ms latency)
+   * Compute or retrieve per-wallet strategy from historical data.
+   * This is the CORE of v5.0 — each wallet gets custom parameters.
    */
+  private async getWalletStrategy(walletAddress: string, playbook: RuggerPlaybook): Promise<WalletStrategy> {
+    const cached = this.walletStrategies.get(walletAddress);
+    if (cached) return cached;
+
+    // Query historical performance for this specific wallet
+    const result = await this.pool.query(`
+      WITH token_data AS (
+        SELECT
+          te.fdv_at_detection AS baseline,
+          te.peak_mc,
+          te.peak_mc / NULLIF(te.fdv_at_detection, 0) AS peak_ratio,
+          te.time_to_peak_min * 60 AS peak_sec,
+          CASE WHEN te.peak_mc > te.fdv_at_detection * 1.30 THEN true ELSE false END AS is_pump
+        FROM token_events te
+        WHERE te.creator_wallet = $1
+          AND te.fdv_at_detection > 0
+          AND te.peak_mc IS NOT NULL
+      )
+      SELECT
+        COUNT(*) AS sample_size,
+        COUNT(*) FILTER (WHERE is_pump) AS pump_count,
+        -- Pump tokens: where they peak
+        COALESCE(PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY peak_ratio) FILTER (WHERE is_pump), 1.3) AS p25_pump,
+        COALESCE(PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY peak_ratio) FILTER (WHERE is_pump), 1.5) AS median_pump,
+        COALESCE(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY peak_ratio) FILTER (WHERE is_pump), 2.0) AS p75_pump,
+        -- Time to peak on pumps
+        COALESCE(AVG(peak_sec) FILTER (WHERE is_pump), 30) AS avg_peak_sec,
+        COALESCE(PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY peak_sec) FILTER (WHERE is_pump), 60) AS p75_peak_sec,
+        -- Non-pump tokens: how much they drop
+        COALESCE(AVG(CASE WHEN NOT is_pump THEN peak_ratio END), 1.0) AS avg_nopump_ratio,
+        -- Max observed drop on non-pumps (worst case loss)
+        COALESCE(MIN(CASE WHEN NOT is_pump THEN peak_ratio END), 0.8) AS worst_nopump_ratio
+      FROM token_data
+    `, [walletAddress]);
+
+    const r = result.rows[0];
+    const sampleSize = parseInt(r.sample_size);
+    const pumpCount = parseInt(r.pump_count);
+    const winRate = sampleSize > 0 ? pumpCount / sampleSize : 0;
+    const medianPump = parseFloat(r.median_pump);
+    const avgPeakSec = parseFloat(r.avg_peak_sec);
+    const p75PeakSec = parseFloat(r.p75_peak_sec);
+    const avgNoPumpRatio = parseFloat(r.avg_nopump_ratio);
+
+    // Playbook-level timing data (if available from trade_events)
+    const pbRugSec = playbook.avg_time_to_rug_sec ?? (playbook.avg_time_to_rug_min * 60);
+
+    // ── ENTRY PARAMETERS ──
+    // Enter early in the pump: require at least +10% above baseline
+    // But don't enter past the P25 pump mark (first quartile of winning pumps)
+    // This means we enter in the bottom 25% of the pump → maximum upside
+    const minPumpPct = 0.10;  // minimum +10% to confirm real pump
+    const maxEntryRatio = Math.max(medianPump * 0.85, 1.50);  // enter below 85% of median pump, floor 1.5x
+    const maxEntrySec = Math.min(p75PeakSec * 1.5, 300);  // generous time window
+
+    // ── EXIT PARAMETERS ──
+    const targetRatio = medianPump;  // target the median pump for partial exit
+    const maxHoldSec = Math.max(pbRugSec * 0.9, avgPeakSec * 3, 60);  // exit well before rug
+
+    // ── RISK PARAMETERS ──
+    // Stop-loss: based on how much non-pump tokens drop
+    // If non-pumps stay flat (ratio ~1.0) → tight SL works (10%)
+    // If non-pumps crash hard (ratio ~0.3) → wider SL needed but means bigger losses
+    const typicalLossPct = Math.max(0.08, 1 - avgNoPumpRatio + 0.05);
+    const stopLossPct = Math.min(typicalLossPct, 0.25);  // cap at 25%
+    const trailingStopPct = Math.max(stopLossPct * 1.2, 0.10);  // trailing slightly tighter
+
+    // Cascade: scale threshold by how noisy the wallet's tokens are
+    // High win rate wallets → fewer false cascades → lower threshold
+    // Low win rate → lots of selling on non-pumps → higher threshold
+    const cascadeThreshold = winRate > 0.5 ? 4 : winRate > 0.3 ? 5 : 6;
+
+    // ── EV CALCULATION ──
+    // Expected value = winRate * avgWinPct - (1-winRate) * avgLossPct
+    const avgWinPct = Math.max(0, (medianPump / 1.7 - 1) * 100 * 0.5);  // realistic: enter at 1.7x baseline
+    const avgLossPct = Math.min(stopLossPct * 100, 15);  // cap loss at SL or 15%
+    const evPerTrade = winRate * avgWinPct - (1 - winRate) * avgLossPct;
+
+    const strategy: WalletStrategy = {
+      minPumpPct,
+      maxEntryRatio,
+      maxEntrySec,
+      targetRatio,
+      maxHoldSec,
+      stopLossPct,
+      trailingStopPct,
+      cascadeThreshold,
+      winRate,
+      evPerTrade,
+      sampleSize,
+    };
+
+    this.walletStrategies.set(walletAddress, strategy);
+
+    logger.info({
+      wallet: walletAddress.slice(0, 8),
+      winRate: (winRate * 100).toFixed(0) + '%',
+      ev: evPerTrade.toFixed(1) + '%',
+      maxEntry: (maxEntryRatio * 100 - 100).toFixed(0) + '%',
+      sl: (stopLossPct * 100).toFixed(0) + '%',
+      trailing: (trailingStopPct * 100).toFixed(0) + '%',
+      target: ((medianPump - 1) * 100).toFixed(0) + '%',
+      maxHold: maxHoldSec.toFixed(0) + 's',
+      sample: sampleSize,
+    }, '📊 Wallet strategy computed');
+
+    return strategy;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // TRADE EVENT HANDLER
+  // ─────────────────────────────────────────────────────────────
+
   onTrade(tokenAddress: string, txType: 'buy' | 'sell', mcUsd: number, volUsd: number, trader: string): void {
     let state = this.liveState.get(tokenAddress);
     if (!state) {
@@ -91,7 +240,6 @@ export class TradeExecutor {
       this.liveState.set(tokenAddress, state);
     }
 
-    const now = new Date();
     if (txType === 'buy') {
       state.buyCount++;
       state.buyVol += volUsd;
@@ -102,44 +250,53 @@ export class TradeExecutor {
       state.sellVol += volUsd;
       state.uniqueSellers.add(trader);
       state.recentSells++;
-      if (!state.firstSellAt) state.firstSellAt = now;
+      if (!state.firstSellAt) state.firstSellAt = new Date();
     }
-    state.lastSeenAt = now;
+    state.lastSeenAt = new Date();
 
-    // Cascade detection: 5+ sells consécutifs sans buy intercalé AND significant volume
-    // 3 micro-sells is normal noise on low-MC tokens; only flag real dumps
-    if (txType === 'sell' && state.recentSells >= 5 && state.recentBuys === 0
+    // Dynamic cascade threshold from wallet strategy
+    const cached = this.rideCache.get(tokenAddress);
+    const cascadeThresh = cached?.strategy?.cascadeThreshold ?? 5;
+    
+    if (txType === 'sell' && state.recentSells >= cascadeThresh && state.recentBuys === 0
         && state.sellVol > state.buyVol * 0.5) {
       state.cascadeDetected = true;
     }
     if (txType === 'buy') {
       state.recentSells = 0;
       state.recentBuys = 0;
-      // Don't reset cascade — once detected, it stays (prevents false re-entry)
     }
 
-    // Real-time evaluation for RIDE tokens (sub-second entry window)
+    // Track price history for momentum confirmation
+    let history = this.priceHistory.get(tokenAddress);
+    if (!history) {
+      history = [];
+      this.priceHistory.set(tokenAddress, history);
+    }
+    history.push({ mc: mcUsd, ts: Date.now() });
+    // Keep only last 30 seconds of history
+    const cutoff = Date.now() - 30000;
+    while (history.length > 0 && history[0].ts < cutoff) history.shift();
+    
     this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
   }
 
-  /**
-   * Real-time evaluation triggered from onTrade() for RIDE tokens.
-   * Bypasses DexScreener polling latency (~3-4min) to hit the 0-30s entry window.
-   */
+  isLiveTracked(tokenAddress: string): boolean {
+    return this.rideCache.get(tokenAddress)?.isRide === true;
+  }
+
   private async maybeEvaluateLive(tokenAddress: string, currentMC: number): Promise<void> {
     if (this.evaluating.has(tokenAddress)) return;
 
-    // Check cache — skip non-RIDE tokens immediately
     let cached = this.rideCache.get(tokenAddress);
     if (cached && !cached.isRide) return;
 
     this.evaluating.add(tokenAddress);
     try {
-      // First encounter: lookup wallet strategy
       if (!cached) {
         const token = await this.tokenRepo.getByAddress(tokenAddress);
         if (!token) {
-          this.rideCache.set(tokenAddress, { isRide: false, detectedAt: new Date() });
+          this.rideCache.set(tokenAddress, { isRide: false, detectedAt: new Date(), fdvAtDetection: 0, walletAddress: '', strategy: null });
           return;
         }
         const wallet = await this.walletRepo.getByAddress(token.creator_wallet);
@@ -149,37 +306,52 @@ export class TradeExecutor {
               : wallet.rugger_playbook as RuggerPlaybook)
           : null;
         const isRide = playbook?.recommended_strategy === 'RIDE';
-        cached = { isRide, detectedAt: token.detected_at ?? new Date() };
+        
+        let strategy: WalletStrategy | null = null;
+        if (isRide && playbook) {
+          strategy = await this.getWalletStrategy(token.creator_wallet, playbook);
+          // Skip wallets with negative EV
+          if (strategy.evPerTrade <= 0) {
+            logger.debug({ wallet: token.creator_wallet.slice(0, 8), ev: strategy.evPerTrade.toFixed(1) }, 'Skipping negative EV wallet');
+            this.rideCache.set(tokenAddress, { isRide: false, detectedAt: new Date(), fdvAtDetection: 0, walletAddress: token.creator_wallet, strategy: null });
+            return;
+          }
+        }
+        
+        cached = {
+          isRide: isRide && strategy !== null && strategy.evPerTrade > 0,
+          detectedAt: token.detected_at ?? new Date(),
+          fdvAtDetection: token.fdv_at_detection ?? 0,
+          walletAddress: token.creator_wallet,
+          strategy,
+        };
         this.rideCache.set(tokenAddress, cached);
-        if (!isRide) return;
-        logger.info({ token: tokenAddress.slice(0, 8), mc: currentMC.toFixed(0) }, '🎯 RIDE token detected — live evaluation active');
+        if (!cached.isRide) return;
+        logger.info({ token: tokenAddress.slice(0, 8), mc: currentMC.toFixed(0), ev: strategy!.evPerTrade.toFixed(1) + '%' }, '🎯 RIDE token — per-wallet strategy active');
       }
 
-      // Compute elapsed time from detection
       const elapsedMs = Date.now() - cached.detectedAt.getTime();
       const elapsedMinutes = elapsedMs / 60000;
 
-      // Only evaluate during the entry/exit window (first 10 min)
       if (elapsedMinutes > 10) {
         this.rideCache.delete(tokenAddress);
         return;
       }
 
-      // Set first MC if not already set
       if (!this.firstMC.has(tokenAddress)) {
         this.firstMC.set(tokenAddress, currentMC);
       }
 
-      // Run the full evaluation (PaperTradeExecutor override handles logging)
       await this.evaluateTrade(tokenAddress, elapsedMinutes, currentMC);
     } finally {
       this.evaluating.delete(tokenAddress);
     }
   }
 
-  /**
-   * Évaluation principale — appelée toutes les 10s depuis TokenTracker
-   */
+  // ─────────────────────────────────────────────────────────────
+  // MAIN EVALUATION
+  // ─────────────────────────────────────────────────────────────
+
   async evaluateTrade(
     tokenAddress: string,
     elapsedMinutes: number,
@@ -192,34 +364,47 @@ export class TradeExecutor {
 
       const pos = this.openPositions.get(tokenAddress);
       if (pos) {
-        if (currentMC > pos.highestMC) pos.highestMC = currentMC;
+        if (currentMC > pos.highestMC && currentMC < pos.highestMC * 5) {
+          pos.highestMC = currentMC;
+        }
         if (currentMC < pos.lowestMCAfterEntry) pos.lowestMCAfterEntry = currentMC;
         pos.tradeCount++;
       }
 
-      const token = await this.tokenRepo.getByAddress(tokenAddress);
-      if (!token) return this.none('Token not found');
+      const _elapsedSec = elapsedMinutes * 60;
+      const cached = this.rideCache.get(tokenAddress);
+      if (!cached?.isRide || !cached.strategy) {
+        // Fallback: lookup from DB
+        const token = await this.tokenRepo.getByAddress(tokenAddress);
+        if (!token) return this.none('Token not found');
 
-      const wallet = await this.walletRepo.getByAddress(token.creator_wallet);
-      if (!wallet) return this.none('Wallet not found');
+        const wallet = await this.walletRepo.getByAddress(token.creator_wallet);
+        if (!wallet) return this.none('Wallet not found');
 
-      const playbook: RuggerPlaybook | null = wallet.rugger_playbook
-        ? (typeof wallet.rugger_playbook === 'string'
-            ? JSON.parse(wallet.rugger_playbook)
-            : wallet.rugger_playbook)
-        : null;
+        const playbook: RuggerPlaybook | null = wallet.rugger_playbook
+          ? (typeof wallet.rugger_playbook === 'string'
+              ? JSON.parse(wallet.rugger_playbook) : wallet.rugger_playbook)
+          : null;
+        if (!playbook || playbook.recommended_strategy !== 'RIDE') {
+          return this.none('Not RIDE strategy');
+        }
 
-      if (!playbook) return this.none('No playbook');
-
-      if (playbook.recommended_strategy !== 'RIDE') {
-        return this.none(`Strategy ${playbook.recommended_strategy} — RIDE only`, playbook.recommended_strategy);
+        return this.none('Strategy not loaded — waiting for live path');
       }
 
-      // Validation minimale du playbook
-      const validation = this.validatePlaybook(playbook);
-      if (!validation.ok) return this.none(validation.reason!, 'RIDE');
+      const ws = cached.strategy;
+      const baselineMC = cached.fdvAtDetection > 0 ? cached.fdvAtDetection : (this.firstMC.get(tokenAddress) ?? currentMC);
+      const state = this.liveState.get(tokenAddress);
+      const elapsedSec = _elapsedSec;
+      const mcRatio = currentMC / Math.max(baselineMC, 1);
 
-      return this.evaluateRide(playbook, elapsedMinutes, tokenAddress, currentMC, token.creator_wallet);
+      // ── MANAGE OPEN POSITION ──
+      if (pos) {
+        return this.managePosition(tokenAddress, pos, ws, currentMC, elapsedSec, state);
+      }
+
+      // ── EVALUATE ENTRY ──
+      return this.evaluateEntry(tokenAddress, ws, currentMC, baselineMC, mcRatio, elapsedSec, state, cached.walletAddress);
 
     } catch (err) {
       logger.error({ err, tokenAddress }, 'TradeExecutor error');
@@ -228,317 +413,166 @@ export class TradeExecutor {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // VALIDATION
+  // POSITION MANAGEMENT (per-wallet parameters)
   // ─────────────────────────────────────────────────────────────
 
-  private validatePlaybook(p: RuggerPlaybook): { ok: boolean; reason?: string } {
-    if ((p.avg_peak_mc ?? 0) < 2000)
-      return { ok: false, reason: `avg_peak_mc $${p.avg_peak_mc?.toFixed(0)} < $2000` };
-    if (p.consistency_score < 0.7)
-      return { ok: false, reason: `consistency ${p.consistency_score.toFixed(2)} < 0.70` };
-    if ((p.avg_pump_multiple ?? 0) < 1.5)
-      return { ok: false, reason: `pump multiple ${p.avg_pump_multiple?.toFixed(1)}x < 1.5x` };
-    // Si creator_sold_rate > 80% → trop risqué pour RIDE
-    if ((p.creator_sold_rate ?? 0) > 0.8)
-      return { ok: false, reason: `creator_sold_rate ${((p.creator_sold_rate ?? 0) * 100).toFixed(0)}% > 80% — trop risqué` };
-    return { ok: true };
-  }
-
-  // ─────────────────────────────────────────────────────────────
-  // SCORING MULTI-FACTEUR
-  // ─────────────────────────────────────────────────────────────
-
-  private computeSignals(
-    p: RuggerPlaybook,
-    elapsedSec: number,
+  private managePosition(
+    tokenAddress: string,
+    pos: OpenPosition,
+    ws: WalletStrategy,
     currentMC: number,
-    _firstMC: number,
+    _elapsedSec: number,
     state: LiveTradeState | undefined
-  ): SignalBreakdown {
+  ): TradeSignal {
 
-    // 1. TIMING SCORE — à quelle position sommes-nous dans la fenêtre attendue ?
-    const avgPeakSec = p.avg_time_to_peak_sec ?? (p.avg_time_to_peak_min * 60);
-    const stdPeakSec = p.std_time_to_peak_sec ?? (p.std_time_to_peak_min * 60);
-    const entryWindowStart = Math.max(0, avgPeakSec - stdPeakSec * 1.5);
-    const entryWindowEnd   = avgPeakSec + stdPeakSec * 0.5; // légèrement avant le peak
-
-    let timingScore = 0;
-    if (elapsedSec < entryWindowStart) {
-      // Trop tôt — score proportionnel à l'approche de la fenêtre
-      timingScore = elapsedSec / Math.max(entryWindowStart, 1) * 0.5;
-    } else if (elapsedSec <= entryWindowEnd) {
-      // Dans la fenêtre → pic à 1.0 au milieu
-      const mid = (entryWindowStart + entryWindowEnd) / 2;
-      const halfWidth = (entryWindowEnd - entryWindowStart) / 2;
-      timingScore = 1.0 - Math.abs(elapsedSec - mid) / Math.max(halfWidth, 1) * 0.3;
-    } else {
-      // Après la fenêtre — décroît rapidement
-      timingScore = Math.max(0, 1.0 - (elapsedSec - entryWindowEnd) / Math.max(stdPeakSec, 30));
+    // 1. CASCADE — immediate exit
+    if (state?.cascadeDetected) {
+      this.closePosition(tokenAddress);
+      return this.sell(100, 1.0, 'RIDE',
+        `🌊 CASCADE (${state.sellCount}s/${state.buyCount}b, thresh=${ws.cascadeThreshold})`,
+        this.emptySignals());
     }
 
-    // 2. MOMENTUM SCORE — buy pressure live depuis trade_events
-    let momentumScore = 0.5; // neutre si pas de données live
-    if (state && (state.buyCount + state.sellCount) > 3) {
-      const bsr = state.buyVol / Math.max(state.sellVol, 1);
-      const uniqueBuyerRatio = state.uniqueBuyers.size / Math.max(state.buyCount, 1);
-      // Pression forte = bsr > 1.5, acheteurs variés
-      momentumScore = Math.min(1.0,
-        (Math.min(bsr, 3.0) / 3.0) * 0.6 +
-        uniqueBuyerRatio * 0.4
-      );
-      // Cascade détectée → momentum très négatif
-      if (state.cascadeDetected) momentumScore = 0.1;
-      // Premier sell déjà arrivé → attention
-      if (state.firstSellAt) {
-        const sellDelaySec = (Date.now() - state.firstSellAt.getTime()) / 1000;
-        const expectedDelaySec = p.avg_first_sell_delay_sec ?? 30;
-        // Si le sell arrive bien plus tôt que d'habitude → signal négatif
-        if (sellDelaySec < expectedDelaySec * 0.5) {
-          momentumScore *= 0.7;
-        }
+    // 2. STOP-LOSS — per-wallet threshold
+    const dropFromEntry = (pos.entryMC - currentMC) / pos.entryMC;
+    if (dropFromEntry >= ws.stopLossPct && pos.tradeCount >= 2) {
+      this.closePosition(tokenAddress);
+      return this.sell(100, 1.0, 'RIDE',
+        `🛑 SL ${(dropFromEntry*100).toFixed(1)}% > ${(ws.stopLossPct*100).toFixed(0)}% (wallet-specific)`,
+        this.emptySignals());
+    }
+
+    // 3. TRAILING STOP — per-wallet threshold, only if pump confirmed
+    if (pos.highestMC > pos.entryMC * 1.10) {
+      const dropFromHigh = (pos.highestMC - currentMC) / pos.highestMC;
+      if (dropFromHigh >= ws.trailingStopPct) {
+        const pnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
+        this.closePosition(tokenAddress);
+        return this.sell(100, 1.0, 'RIDE',
+          `📉 TRAILING ${(dropFromHigh*100).toFixed(1)}% from $${pos.highestMC.toFixed(0)} → $${currentMC.toFixed(0)} (P&L ${pnl}%)`,
+          this.emptySignals());
       }
     }
 
-    // 3. CONSISTENCY SCORE — fiabilité du wallet
-    // Préférer la précision secondes si dispo
-    const consistScore = p.consistency_score_sec ?? p.consistency_score;
-
-    // 4. RISK SCORE (inversé : 1.0 = faible risque, 0.0 = danger)
-    let riskScore = 1.0;
-    // Creator qui vend souvent → risque élevé
-    riskScore -= (p.creator_sold_rate ?? 0) * 0.3;
-    // Cascade habituelle forte → risque élevé
-    riskScore -= (p.avg_cascade_score ?? 0) * 0.2;
-    // Rug très rapide (< 30s) → difficile à sortir
-    const avgRugSec = p.avg_rug_duration_sec ?? 999;
-    if (avgRugSec < 30) riskScore -= 0.3;
-    else if (avgRugSec < 60) riskScore -= 0.1;
-    // MC actuel > avg_peak_mc → on est peut-être déjà au peak
-    if (currentMC > p.avg_peak_mc * 0.9) riskScore -= 0.2;
-    riskScore = Math.max(0, Math.min(1, riskScore));
-
-    // 5. WALLET SIGNATURE SCORE — est-ce que ce token ressemble au pattern habituel ?
-    let walletScore = 0.5;
-    if (state && p.avg_buy_wallet_count) {
-      // Nb d'acheteurs dans la norme historique ?
-      const buyerRatio = state.uniqueBuyers.size / p.avg_buy_wallet_count;
-      walletScore = Math.min(1.0, buyerRatio * 0.8 + 0.2);
-    }
-    // Micro-buy pattern habituel chez ce rugger ?
-    if (p.micro_buy_rate && p.micro_buy_rate > 0.5 && state) {
-      // Attendre confirmation du pattern avant d'entrer
-      walletScore *= 0.9;
+    // 4. MAX HOLD TIME — per-wallet
+    const holdSec = (Date.now() - pos.entryTime.getTime()) / 1000;
+    if (holdSec > ws.maxHoldSec) {
+      const pnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
+      this.closePosition(tokenAddress);
+      return this.sell(100, 1.0, 'RIDE',
+        `⏱ MAX HOLD ${holdSec.toFixed(0)}s > ${ws.maxHoldSec.toFixed(0)}s (P&L ${pnl}%)`,
+        this.emptySignals());
     }
 
+    // 5. HOLD
+    const pnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
+    const high = ((pos.highestMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
     return {
-      timing_score: Math.max(0, Math.min(1, timingScore)),
-      momentum_score: Math.max(0, Math.min(1, momentumScore)),
-      consistency_score: Math.max(0, Math.min(1, consistScore)),
-      risk_score: riskScore,
-      wallet_score: Math.max(0, Math.min(1, walletScore)),
+      action: 'HOLD', confidence: 0.5, playbook_strategy: 'RIDE',
+      reason: `HOLD ${pnl}% (high ${high}%) | hold=${holdSec.toFixed(0)}s/${ws.maxHoldSec.toFixed(0)}s | SL=${(ws.stopLossPct*100).toFixed(0)}% TS=${(ws.trailingStopPct*100).toFixed(0)}%`
     };
   }
 
-  private aggregateConfidence(s: SignalBreakdown): number {
-    // Poids : consistency et risk sont les plus importants
-    return (
-      s.timing_score      * 0.25 +
-      s.momentum_score    * 0.20 +
-      s.consistency_score * 0.30 +
-      s.risk_score        * 0.15 +
-      s.wallet_score      * 0.10
-    );
-  }
-
   // ─────────────────────────────────────────────────────────────
-  // RIDE EVALUATION
+  // ENTRY EVALUATION (per-wallet parameters)
   // ─────────────────────────────────────────────────────────────
 
-  private evaluateRide(
-    p: RuggerPlaybook,
-    elapsedMinutes: number,
+  private evaluateEntry(
     tokenAddress: string,
+    ws: WalletStrategy,
     currentMC: number,
-    creatorWallet: string
+    baselineMC: number,
+    mcRatio: number,
+    elapsedSec: number,
+    state: LiveTradeState | undefined,
+    walletAddress: string
   ): TradeSignal {
-    const elapsedSec = elapsedMinutes * 60;
-    const state = this.liveState.get(tokenAddress);
-    const pos = this.openPositions.get(tokenAddress);
 
-    const firstMCval = this.firstMC.get(tokenAddress) ?? currentMC;
-    const signals = this.computeSignals(p, elapsedSec, currentMC, firstMCval, state);
-    const confidence = this.aggregateConfidence(signals);
-
-    // Timing absolu : fenêtre de sortie en secondes
-    const avgRugSec   = p.avg_time_to_rug_sec ?? (p.avg_time_to_rug_min * 60);
-    const stdRugSec   = p.std_time_to_rug_sec ?? (p.std_time_to_rug_min * 60);
-    const exitStartSec = Math.max(0, avgRugSec - stdRugSec * 0.8);
-    const exitEndSec   = avgRugSec + stdRugSec * 0.3;
-
-    // Stop-loss adaptatif selon vitesse du rug historique
-    const rugDurSec = p.avg_rug_duration_sec ?? 60;
-    const stopLossPct = rugDurSec < 15 ? 0.03   // rug ultra-rapide → SL très serré (3%)
-                      : rugDurSec < 30 ? 0.05   // rug rapide → SL serré (5%)
-                      : rugDurSec < 60 ? 0.07   // rug normal → SL modéré (7%)
-                      :                  0.10;  // rug lent → SL large (10%)
-
-    const trailingStopPct = stopLossPct * 1.5; // trailing toujours plus large que SL initial
-
-    // ── POSITION OUVERTE ──────────────────────────────────────
-    if (pos) {
-      // 1. Cascade détectée en live → sortie immédiate
-      if (state?.cascadeDetected) {
-        this.closePosition(tokenAddress);
-        return this.sell(100, confidence, 'RIDE',
-          `🌊 CASCADE live (${state.sellCount} sells / ${state.buyCount} buys) — sortie urgente`,
-          signals);
-      }
-
-      // 2. Stop-loss depuis entry
-      const dropFromEntry = (pos.entryMC - currentMC) / pos.entryMC;
-      if (dropFromEntry >= stopLossPct) {
-        this.closePosition(tokenAddress);
-        return this.sell(100, 1.0, 'RIDE',
-          `🛑 STOP-LOSS ${(dropFromEntry*100).toFixed(1)}% > ${(stopLossPct*100).toFixed(0)}% seuil (rug_dur=${rugDurSec.toFixed(0)}s)`,
-          signals);
-      }
-
-      // 3. Trailing stop depuis highest
-      const dropFromHigh = (pos.highestMC - currentMC) / pos.highestMC;
-      if (dropFromHigh >= trailingStopPct && pos.highestMC > pos.entryMC * 1.03) {
-        this.closePosition(tokenAddress);
-        return this.sell(100, 1.0, 'RIDE',
-          `📉 TRAILING STOP ${(dropFromHigh*100).toFixed(1)}% (high $${pos.highestMC.toFixed(0)} → $${currentMC.toFixed(0)})`,
-          signals);
-      }
-
-      // 4. Premier sell du créateur → sortie immédiate si creator_sold_rate > 50%
-      if (state?.firstSellAt && (p.creator_sold_rate ?? 0) > 0.5) {
-        const sellDelaySec = (Date.now() - state.firstSellAt.getTime()) / 1000;
-        const expectedDelaySec = p.avg_first_sell_delay_sec ?? 999;
-        if (sellDelaySec > expectedDelaySec * 0.8) {
-          this.closePosition(tokenAddress);
-          return this.sell(100, 0.9, 'RIDE',
-            `👤 CREATOR SELL détecté (rate=${((p.creator_sold_rate??0)*100).toFixed(0)}%, delay=${sellDelaySec.toFixed(0)}s)`,
-            signals);
-        }
-      }
-
-      // 5. Fenêtre de sortie temporelle (secondes)
-      if (elapsedSec >= exitStartSec) {
-        const windowLen = Math.max(exitEndSec - exitStartSec, 1);
-        const progress = Math.min(1.0, (elapsedSec - exitStartSec) / windowLen);
-        const pct = Math.round(progress * 100);
-
-        if (elapsedSec > exitEndSec) {
-          this.closePosition(tokenAddress);
-          return this.sell(100, 1.0, 'RIDE',
-            `⏱ Fenêtre terminée (>${(exitEndSec/60).toFixed(1)}min) — force close`,
-            signals);
-        }
-
-        return this.sell(pct, confidence * (0.7 + progress * 0.3), 'RIDE',
-          `📤 Sortie progressive ${pct}% (fenêtre ${(exitStartSec/60).toFixed(1)}-${(exitEndSec/60).toFixed(1)}min)`,
-          signals);
-      }
-
-      // 6. Confidence chute fortement → sortie défensive
-      if (confidence < 0.35 && pos.tradeCount > 3) {
-        this.closePosition(tokenAddress);
-        return this.sell(100, confidence, 'RIDE',
-          `⚠️ Confidence chutée à ${(confidence*100).toFixed(0)}% — sortie défensive`,
-          signals);
-      }
-
-      // HOLD
-      return {
-        action: 'HOLD', confidence, playbook_strategy: 'RIDE', signals,
-        reason: `HOLD — conf=${(confidence*100).toFixed(0)}% timing=${(signals.timing_score*100).toFixed(0)}% mom=${(signals.momentum_score*100).toFixed(0)}% risk=${(signals.risk_score*100).toFixed(0)}%`
-      };
-    }
-
-    // ── PAS DE POSITION : évaluer l'entrée ───────────────────
-
-    // No re-entry on tokens we already sold (prevents cascade → re-buy → rug loop)
+    // No re-entry
     if (this.closedTokens.has(tokenAddress)) {
       return this.none('Token déjà sorti — pas de re-entry', 'RIDE');
     }
 
-    // Trop tard
-    const avgPeakSec = p.avg_time_to_peak_sec ?? (p.avg_time_to_peak_min * 60);
-    const stdPeakSec = p.std_time_to_peak_sec ?? (p.std_time_to_peak_min * 60);
-    const maxEntrySec = avgPeakSec + stdPeakSec * 0.5;
-    if (elapsedSec > maxEntrySec) {
-      return this.none(`⏰ Trop tard (${elapsedSec.toFixed(0)}s > ${maxEntrySec.toFixed(0)}s max)`, 'RIDE');
+    // Too late (per-wallet timing)
+    if (elapsedSec > ws.maxEntrySec) {
+      return this.none(`⏰ Trop tard (${elapsedSec.toFixed(0)}s > ${ws.maxEntrySec.toFixed(0)}s)`, 'RIDE');
     }
 
-    // Pump insuffisant (token mort ou pas encore décollé)
-    const firstMCval2 = this.firstMC.get(tokenAddress) ?? currentMC;
-    const mcRise = (currentMC - firstMCval2) / Math.max(firstMCval2, 1);
-    if (mcRise < 0.03 && elapsedSec > 30) {
-      return this.none(`Pump < 3% après ${elapsedSec.toFixed(0)}s — token plat`, 'RIDE');
+    // Pump not confirmed (need +10% above baseline minimum)
+    const pumpPct = mcRatio - 1;
+    if (pumpPct < ws.minPumpPct) {
+      return this.none(`Pump ${(pumpPct*100).toFixed(1)}% < ${(ws.minPumpPct*100).toFixed(0)}% min`, 'RIDE');
     }
 
-    // Déjà au-delà du peak attendu
-    if (currentMC > p.avg_peak_mc * 0.95) {
-      return this.none(`MC $${currentMC.toFixed(0)} ≥ 95% du avg_peak $${p.avg_peak_mc.toFixed(0)} — entrée manquée`, 'RIDE');
+    // Too high — past the safe entry zone (per-wallet P25 of winning pumps)
+    if (mcRatio > ws.maxEntryRatio) {
+      return this.none(`Ratio ${mcRatio.toFixed(2)}x > ${ws.maxEntryRatio.toFixed(2)}x max entry`, 'RIDE');
     }
 
-    // Cascade déjà en cours → ne pas entrer
+    // Cascade already in progress
     if (state?.cascadeDetected) {
-      return this.none('CASCADE en cours — pas d\'entrée', 'RIDE');
+      return this.none('CASCADE en cours', 'RIDE');
     }
 
-    // Confidence insuffisante
-    const minConfidence = this.computeMinConfidence(p);
-    if (confidence < minConfidence) {
-      return this.none(
-        `Conf ${(confidence*100).toFixed(0)}% < ${(minConfidence*100).toFixed(0)}% requis | t=${(signals.timing_score*100).toFixed(0)}% m=${(signals.momentum_score*100).toFixed(0)}% r=${(signals.risk_score*100).toFixed(0)}%`,
-        'RIDE'
-      );
+    // Negative momentum — more selling than buying
+    if (state && state.sellCount > state.buyCount * 1.5 && state.sellCount > 3) {
+      return this.none(`Sell pressure (${state.sellCount}s > ${state.buyCount}b)`, 'RIDE');
     }
 
-    // ✅ BUY
+    // MOMENTUM CONFIRMATION: MC must be rising over last 3 seconds
+    // This filters bot spikes ($2500→$3000 in 0.5s then dump) from real pumps (sustained rise)
+    const history = this.priceHistory.get(tokenAddress);
+    if (history && history.length >= 3) {
+      const now = Date.now();
+      const recent3s = history.filter(h => h.ts > now - 3000);
+      if (recent3s.length >= 2) {
+        const firstPrice = recent3s[0].mc;
+        const lastPrice = recent3s[recent3s.length - 1].mc;
+        const trend = (lastPrice - firstPrice) / firstPrice;
+        // If price is FALLING over last 3s → bot spike cooling off → DON'T ENTER
+        if (trend < -0.02) {
+          return this.none(`📉 Momentum négatif ${(trend*100).toFixed(1)}% sur 3s — spike bot`, 'RIDE');
+        }
+      }
+      // Also: require at least 3s of data before entering (no instant buys)
+      const oldestTick = history[0].ts;
+      const dataAge = (now - oldestTick) / 1000;
+      if (dataAge < 2.0) {
+        return this.none(`⏳ Attente confirmation (${dataAge.toFixed(1)}s < 2s min)`, 'RIDE');
+      }
+    } else {
+      return this.none('⏳ Pas assez de ticks pour confirmer momentum', 'RIDE');
+    }
+
+    // ✅ BUY — all per-wallet checks passed
     this.openPositions.set(tokenAddress, {
       entryMC: currentMC,
       entryTime: new Date(),
       highestMC: currentMC,
       lowestMCAfterEntry: currentMC,
       tradeCount: 0,
+      walletAddress,
     });
+
+    const evStr = ws.evPerTrade.toFixed(1);
+    const wrStr = (ws.winRate * 100).toFixed(0);
+    const slStr = (ws.stopLossPct * 100).toFixed(0);
+    const targetStr = ((ws.targetRatio - 1) * 100).toFixed(0);
 
     logger.info({
       token: tokenAddress.slice(0, 8),
-      wallet: creatorWallet.slice(0, 8),
+      wallet: walletAddress.slice(0, 8),
       mc: currentMC.toFixed(0),
-      elapsedSec: elapsedSec.toFixed(0),
-      confidence: (confidence * 100).toFixed(0) + '%',
-      signals: {
-        timing: (signals.timing_score*100).toFixed(0)+'%',
-        momentum: (signals.momentum_score*100).toFixed(0)+'%',
-        consistency: (signals.consistency_score*100).toFixed(0)+'%',
-        risk: (signals.risk_score*100).toFixed(0)+'%',
-      }
-    }, '🟢 BUY SIGNAL');
+      baseline: baselineMC.toFixed(0),
+      pump: (pumpPct * 100).toFixed(1) + '%',
+      ev: evStr + '%',
+      winRate: wrStr + '%',
+    }, '🟢 BUY — per-wallet strategy');
 
     return {
-      action: 'BUY', confidence, percentage: 100, playbook_strategy: 'RIDE', signals,
-      reason: `BUY — conf=${(confidence*100).toFixed(0)}% | +${(mcRise*100).toFixed(1)}% pump | t=${(signals.timing_score*100).toFixed(0)}% m=${(signals.momentum_score*100).toFixed(0)}% c=${(signals.consistency_score*100).toFixed(0)}% r=${(signals.risk_score*100).toFixed(0)}%`
+      action: 'BUY', confidence: Math.min(ws.winRate + 0.3, 0.95), percentage: 100, playbook_strategy: 'RIDE',
+      reason: `BUY — +${(pumpPct*100).toFixed(1)}% pump | EV=${evStr}% WR=${wrStr}% SL=${slStr}% target=+${targetStr}% maxHold=${ws.maxHoldSec.toFixed(0)}s`
     };
-  }
-
-  /**
-   * Seuil de confidence minimum dynamique selon le profil de risque du wallet
-   */
-  private computeMinConfidence(p: RuggerPlaybook): number {
-    let min = this.BASE_BUY_CONFIDENCE;
-    // Wallet qui vend souvent → exiger plus de certitude
-    if ((p.creator_sold_rate ?? 0) > 0.5) min += 0.05;
-    // Cascade forte habituelle → plus de certitude
-    if ((p.avg_cascade_score ?? 0) > 0.6) min += 0.05;
-    // Rug très rapide → plus de certitude (pas le temps de réagir)
-    if ((p.avg_rug_duration_sec ?? 999) < 20) min += 0.10;
-    return Math.min(0.80, min);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -553,23 +587,29 @@ export class TradeExecutor {
     return { action: 'SELL', confidence, percentage: pct, reason, playbook_strategy: strategy, signals };
   }
 
+  private emptySignals(): SignalBreakdown {
+    return { timing_score: 0, momentum_score: 0, consistency_score: 0, risk_score: 0, wallet_score: 0 };
+  }
+
   private closePosition(tokenAddress: string): void {
     const pos = this.openPositions.get(tokenAddress);
     if (pos) {
-      const holdMin = (Date.now() - pos.entryTime.getTime()) / 60000;
+      const holdSec = (Date.now() - pos.entryTime.getTime()) / 1000;
       const pnl = ((pos.highestMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
       logger.info({
         token: tokenAddress.slice(0, 8),
+        wallet: pos.walletAddress.slice(0, 8),
         entryMC: pos.entryMC.toFixed(0),
         highMC: pos.highestMC.toFixed(0),
-        holdMin: holdMin.toFixed(2),
+        holdSec: holdSec.toFixed(0),
         maxPnlPct: pnl + '%'
       }, '🔴 POSITION CLOSED');
       this.openPositions.delete(tokenAddress);
-    this.closedTokens.add(tokenAddress); // prevent re-entry
+      this.closedTokens.add(tokenAddress);
     }
     this.firstMC.delete(tokenAddress);
     this.liveState.delete(tokenAddress);
+    this.priceHistory.delete(tokenAddress);
   }
 
   closePositionIfOpen(tokenAddress: string): void {
