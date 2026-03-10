@@ -625,94 +625,71 @@ export class TradeExecutor {
     const history = this.priceHistory.get(tokenAddress);
     
     // ══════════════════════════════════════════════════════════════
-    // PHASED ENTRY — based on real pump data analysis:
-    //   T+0-2s:  Bot spike to ~1.4x then dump (DON'T BUY)
-    //   T+3-8s:  Dip back toward baseline = BEST ENTRY (buy the dip)
-    //   T+5-15s: Organic pump starts (enter if rising)
-    //   T+15s+:  If never pumped +10% → skip (it's a dud)
+    // CONFIDENCE-BASED ENTRY — NO trade without market confirmation
+    //
+    // DB analysis (902 tokens, 14 days):
+    //   - Baseline (no filter): 10% pump rate
+    //   - ≥3 buys + ≥2 unique buyers in 10s: 55-60% pump rate
+    //   - DUD tokens get 0.1 buys; PUMP tokens get 2.2 buys in 10s
+    //
+    // RULE: Do NOT buy unless market confirms demand first.
     // ══════════════════════════════════════════════════════════════
 
-    // PHASE 0 (T+0-2s): OBSERVATION — watch the bot spike, don't enter
+    const buyCount = state?.buyCount ?? 0;
+    const uniqueBuyerCount = state?.uniqueBuyers?.size ?? 0;
+    const buyVol = state?.buyVol ?? 0;
+    
+    // ── PHASE 0 (T+0-2s): OBSERVE — never buy during bot spike
     if (elapsedSec < 3) {
-      return this.none(`👁️ PHASE 0: observation (${elapsedSec.toFixed(1)}s) — bot spike zone`, 'RIDE');
+      return this.none(`👁️ OBSERVE (${elapsedSec.toFixed(1)}s) — collecting market data`, 'RIDE');
     }
 
-    // Track peak seen so far (to detect dip after spike)
-    let peakSeen = 1.0;
-    if (history && history.length > 0) {
-      peakSeen = Math.max(...history.map(h => h.mc)) / Math.max(baselineMC, 1);
+    // ── MARKET CONFIDENCE: require ≥3 buys from ≥2 unique wallets
+    const minBuys = 3;
+    const minBuyers = 2;
+    
+    if (buyCount < minBuys || uniqueBuyerCount < minBuyers) {
+      if (elapsedSec > 20) {
+        return this.none(`💀 NO INTEREST: ${buyCount}b/${uniqueBuyerCount}w après ${elapsedSec.toFixed(0)}s — skip`, 'RIDE');
+      }
+      return this.none(`⏳ CONFIRMING: ${buyCount}/${minBuys} buys, ${uniqueBuyerCount}/${minBuyers} buyers — attente`, 'RIDE');
     }
     
-    // PHASE 1 (T+3-8s): DIP ENTRY — buy when price dips after bot spike
-    if (elapsedSec >= 3 && elapsedSec <= 8) {
-      // Best signal: price WAS high (bots spiked it) AND now back near baseline
-      
-      if (peakSeen >= 1.08 && mcRatio <= 1.08) {
-        // Perfect: bot spike confirmed (was 1.15x+) AND dipped back ≤1.15x
-        // This is the cheapest real entry point
-      } else if (mcRatio <= 1.05) {
-        // Price at/near baseline — flat start, enter cheap
-        // Some tokens don't get bot-sniped heavily
-      } else if (mcRatio > 1.08 && elapsedSec < 5) {
-        // Still in bot spike territory (>1.15x before T+5s) — wait for dip
-        return this.none(`⏳ Phase 1: attente dip (${mcRatio.toFixed(2)}x > 1.08x, peak=${peakSeen.toFixed(2)}x)`, 'RIDE');
-      } else if (mcRatio > ws.maxEntryRatio) {
-        return this.none(`Ratio ${mcRatio.toFixed(2)}x > ${ws.maxEntryRatio.toFixed(2)}x max entry`, 'RIDE');
-      }
-      // else: 1.05-1.15x in T+3-8s window — acceptable entry
+    // ── PRICE: don't buy above max entry ratio
+    if (mcRatio > ws.maxEntryRatio) {
+      return this.none(`Ratio ${mcRatio.toFixed(2)}x > ${ws.maxEntryRatio.toFixed(2)}x max entry`, 'RIDE');
     }
 
-    // PHASE 2 (T+8-15s): MOMENTUM ENTRY — only if price is rising
-    if (elapsedSec > 8 && elapsedSec <= 15) {
-      if (mcRatio > ws.maxEntryRatio) {
-        return this.none(`Ratio ${mcRatio.toFixed(2)}x > ${ws.maxEntryRatio.toFixed(2)}x max entry`, 'RIDE');
-      }
-      // Require rising momentum (organic demand starting)
-      if (history && history.length >= 3) {
-        const now = Date.now();
-        const recent = history.filter(h => h.ts > now - 3000);
-        if (recent.length >= 2) {
-          const trend = (recent[recent.length - 1].mc - recent[0].mc) / recent[0].mc;
-          if (trend < 0.01) {
-            return this.none(`📉 Phase 2: momentum flat/neg (${(trend*100).toFixed(1)}%) — attente`, 'RIDE');
-          }
+    // ── PRICE: don't buy during active bot spike (>1.15x before T+5s)
+    if (mcRatio > 1.15 && elapsedSec < 5) {
+      return this.none(`⏳ Bot spike zone (${mcRatio.toFixed(2)}x) — attente dip`, 'RIDE');
+    }
+
+    // ── MOMENTUM: price should not be crashing
+    if (history && history.length >= 3) {
+      const now = Date.now();
+      const recent3s = history.filter(h => h.ts > now - 3000);
+      if (recent3s.length >= 2) {
+        const trend = (recent3s[recent3s.length - 1].mc - recent3s[0].mc) / recent3s[0].mc;
+        if (trend < -0.05) {
+          return this.none(`📉 CRASHING ${(trend*100).toFixed(1)}% — pas d'entrée en chute`, 'RIDE');
         }
       }
     }
 
-    // PHASE 3 (T+15s+): LAST CHANCE — only enter if token showed real pump
-    if (elapsedSec > 15) {
-      if (peakSeen < 1.10) {
-        // Token never pumped +10% in 15s → it's a dud (84% of tokens)
-        return this.none(`💀 DUD: peak ${(peakSeen*100-100).toFixed(0)}% in ${elapsedSec.toFixed(0)}s — skip`, 'RIDE');
-      }
-      if (mcRatio > ws.maxEntryRatio) {
-        return this.none(`Ratio ${mcRatio.toFixed(2)}x > ${ws.maxEntryRatio.toFixed(2)}x max entry`, 'RIDE');
-      }
-      // Must be rising (organic demand proven)
-      if (history && history.length >= 3) {
-        const now = Date.now();
-        const recent = history.filter(h => h.ts > now - 5000);
-        if (recent.length >= 2) {
-          const trend = (recent[recent.length - 1].mc - recent[0].mc) / recent[0].mc;
-          if (trend < 0.02) {
-            return this.none(`📉 Phase 3: pump stalled (${(trend*100).toFixed(1)}%)`, 'RIDE');
-          }
-        }
-      }
-    }
-
-    // ── COMMON FILTERS ──
-    
-    // Cascade already in progress
+    // ── CASCADE / SELL PRESSURE
     if (state?.cascadeDetected) {
       return this.none('CASCADE en cours', 'RIDE');
     }
-
-    // Negative momentum — more selling than buying
     if (state && state.sellCount > state.buyCount * 1.5 && state.sellCount > 3) {
       return this.none(`Sell pressure (${state.sellCount}s > ${state.buyCount}b)`, 'RIDE');
     }
+    
+    // ── TIMEOUT: 30s max entry window
+    if (elapsedSec > 30) {
+      return this.none(`⏰ Trop tard (${elapsedSec.toFixed(0)}s) — fenêtre passée`, 'RIDE');
+    }
+
 
     // ✅ BUY — phased entry confirmed
     this.openPositions.set(tokenAddress, {
@@ -728,7 +705,7 @@ export class TradeExecutor {
 
     const evStr = ws.evPerTrade.toFixed(1);
     const wrStr = (ws.winRate * 100).toFixed(0);
-    const slStr = (ws.stopLossPct * 100).toFixed(0);
+    // const slStr = (ws.stopLossPct * 100).toFixed(0);
     const targetStr = ((ws.targetRatio - 1) * 100).toFixed(0);
 
     logger.info({
@@ -737,13 +714,16 @@ export class TradeExecutor {
       mc: currentMC.toFixed(0),
       baseline: baselineMC.toFixed(0),
       pump: (pumpPct * 100).toFixed(1) + '%',
+      buys: buyCount,
+      buyers: uniqueBuyerCount,
+      buyVol: buyVol.toFixed(0),
       ev: evStr + '%',
       winRate: wrStr + '%',
-    }, '🟢 BUY — per-wallet strategy');
+    }, '🟢 BUY — market-confirmed entry');
 
     return {
       action: 'BUY', confidence: Math.min(ws.winRate + 0.3, 0.95), percentage: 100, playbook_strategy: 'RIDE',
-      reason: `BUY — +${(pumpPct*100).toFixed(1)}% pump | EV=${evStr}% WR=${wrStr}% SL=${slStr}% target=+${targetStr}% maxHold=${ws.maxHoldSec.toFixed(0)}s`
+      reason: `BUY — ${buyCount}b/${uniqueBuyerCount}w $${buyVol.toFixed(0)}vol | ${mcRatio.toFixed(2)}x base | EV=${evStr}% WR=${wrStr}% target=+${targetStr}% maxHold=${ws.maxHoldSec.toFixed(0)}s`
     };
   }
 
