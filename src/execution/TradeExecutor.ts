@@ -63,6 +63,10 @@ export class TradeExecutor {
   private firstMC = new Map<string, number>();
   private liveState = new Map<string, LiveTradeState>();
 
+  // Cache for RIDE wallet detection (avoid repeated DB lookups on every tick)
+  private rideCache = new Map<string, { isRide: boolean; detectedAt: Date }>();
+  private evaluating = new Set<string>(); // prevent concurrent evaluations
+
   // Min confidence pour déclencher un BUY (ajusté par wallet risk)
   private readonly BASE_BUY_CONFIDENCE = 0.60;
 
@@ -74,7 +78,7 @@ export class TradeExecutor {
   /**
    * Appelé depuis PumpTradeStream sur chaque trade (tick-level, <100ms latency)
    */
-  onTrade(tokenAddress: string, txType: 'buy' | 'sell', _mcUsd: number, volUsd: number, trader: string): void {
+  onTrade(tokenAddress: string, txType: 'buy' | 'sell', mcUsd: number, volUsd: number, trader: string): void {
     let state = this.liveState.get(tokenAddress);
     if (!state) {
       state = {
@@ -109,6 +113,64 @@ export class TradeExecutor {
       state.recentSells = 0;
       state.recentBuys = 0;
       state.cascadeDetected = false;
+    }
+
+    // Real-time evaluation for RIDE tokens (sub-second entry window)
+    this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
+  }
+
+  /**
+   * Real-time evaluation triggered from onTrade() for RIDE tokens.
+   * Bypasses DexScreener polling latency (~3-4min) to hit the 0-30s entry window.
+   */
+  private async maybeEvaluateLive(tokenAddress: string, currentMC: number): Promise<void> {
+    if (this.evaluating.has(tokenAddress)) return;
+
+    // Check cache — skip non-RIDE tokens immediately
+    let cached = this.rideCache.get(tokenAddress);
+    if (cached && !cached.isRide) return;
+
+    this.evaluating.add(tokenAddress);
+    try {
+      // First encounter: lookup wallet strategy
+      if (!cached) {
+        const token = await this.tokenRepo.getByAddress(tokenAddress);
+        if (!token) {
+          this.rideCache.set(tokenAddress, { isRide: false, detectedAt: new Date() });
+          return;
+        }
+        const wallet = await this.walletRepo.getByAddress(token.creator_wallet);
+        const playbook: RuggerPlaybook | null = wallet?.rugger_playbook
+          ? (typeof wallet.rugger_playbook === 'string'
+              ? JSON.parse(wallet.rugger_playbook) as RuggerPlaybook
+              : wallet.rugger_playbook as RuggerPlaybook)
+          : null;
+        const isRide = playbook?.recommended_strategy === 'RIDE';
+        cached = { isRide, detectedAt: token.detected_at ?? new Date() };
+        this.rideCache.set(tokenAddress, cached);
+        if (!isRide) return;
+        logger.info({ token: tokenAddress.slice(0, 8), mc: currentMC.toFixed(0) }, '🎯 RIDE token detected — live evaluation active');
+      }
+
+      // Compute elapsed time from detection
+      const elapsedMs = Date.now() - cached.detectedAt.getTime();
+      const elapsedMinutes = elapsedMs / 60000;
+
+      // Only evaluate during the entry/exit window (first 10 min)
+      if (elapsedMinutes > 10) {
+        this.rideCache.delete(tokenAddress);
+        return;
+      }
+
+      // Set first MC if not already set
+      if (!this.firstMC.has(tokenAddress)) {
+        this.firstMC.set(tokenAddress, currentMC);
+      }
+
+      // Run the full evaluation (PaperTradeExecutor override handles logging)
+      await this.evaluateTrade(tokenAddress, elapsedMinutes, currentMC);
+    } finally {
+      this.evaluating.delete(tokenAddress);
     }
   }
 

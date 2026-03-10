@@ -91,7 +91,9 @@ export class PlaybookBuilder {
       const avgLiquidityAtPeak = liquiditiesAtPeak.length > 0 ? this.mean(liquiditiesAtPeak) : 0;
       const avgPeakDuration = peakDurations.length > 0 ? this.mean(peakDurations) : 0;
       const stdPeakDuration = peakDurations.length > 0 ? this.stdDev(peakDurations) : 0;
-      const avgPumpMultiple = pumpMultiples.length > 0 ? this.mean(pumpMultiples) : 3.0;
+      // No fallback: if no real pumps found, avgPumpMultiple = 1.0 (no pump)
+      // This ensures determineStrategy() correctly returns WATCH instead of RIDE
+      const avgPumpMultiple = pumpMultiples.length > 0 ? this.mean(pumpMultiples) : 1.0;
       const consistencyScore = this.computeConsistency(timesToRug);
 
       // ── v4.4 Trade-level aggregates ────────────────────────────
