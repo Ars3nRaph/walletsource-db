@@ -189,7 +189,7 @@ async function loadPaperTrades() {
     // Table
     const tbody = document.getElementById('pt-tbody');
     if (!data.trades.length) {
-      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#666">Aucun trade enregistré</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#666">Aucun trade enregistré</td></tr>';
       return;
     }
 
@@ -211,6 +211,7 @@ async function loadPaperTrades() {
         <td class="${pnlClass}">${pnlStr}</td>
         <td><span class="badge ${badgeClass}">${t.status}</span></td>
         <td style="color:#888;font-size:0.75rem">${sellReason}</td>
+        <td><button onclick="showChart('${t.token_full}', '${t.token}')" style="background:#2a2a4a;border:1px solid #444;color:#4fc3f7;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:0.75rem;white-space:nowrap" onmouseover="this.style.background='#3a3a5a'" onmouseout="this.style.background='#2a2a4a'">📈 Chart</button></td>
       </tr>`;
     }).join('');
 
@@ -222,3 +223,213 @@ async function loadPaperTrades() {
 // Charger au démarrage et toutes les 10s
 loadPaperTrades();
 setInterval(loadPaperTrades, 10000);
+
+// ── Trade Chart Modal ─────────────────────────────────────────────────────
+let tradeChart = null;
+
+function closeChart() {
+  document.getElementById('chart-modal').style.display = 'none';
+  if (tradeChart) { tradeChart.destroy(); tradeChart = null; }
+}
+
+// Close on Escape or background click
+document.getElementById('chart-modal').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('chart-modal')) closeChart();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeChart(); });
+
+async function showChart(tokenFull, tokenShort) {
+  try {
+    const res = await fetch(`/api/paper-trades/${encodeURIComponent(tokenFull)}/chart`);
+    const data = await res.json();
+    if (!data.success || !data.ticks.length) {
+      alert('Pas de données pour ce token');
+      return;
+    }
+
+    const modal = document.getElementById('chart-modal');
+    modal.style.display = 'flex';
+
+    const ctx = document.getElementById('trade-chart').getContext('2d');
+    if (tradeChart) tradeChart.destroy();
+
+    const ticks = data.ticks;
+    const labels = ticks.map(t => t.time.toFixed(1) + 's');
+    const prices = ticks.map(t => t.mc);
+    const buyTick = data.buy;
+    const sellTick = data.sell;
+    const baseline = data.baseline;
+
+    // Colors based on relative position to entry
+    const entryMC = buyTick ? buyTick.mc : prices[0];
+    const pointColors = prices.map(p => p >= entryMC ? '#00e676' : '#ff5252');
+
+    // Annotations
+    const annotations = {};
+
+    if (buyTick) {
+      const buyIdx = ticks.findIndex(t => t.action === 'BUY');
+      annotations.buyPoint = {
+        type: 'point',
+        xValue: buyIdx,
+        yValue: buyTick.mc,
+        backgroundColor: '#00e676',
+        borderColor: '#fff',
+        borderWidth: 2,
+        radius: 8,
+      };
+      annotations.buyLabel = {
+        type: 'label',
+        xValue: buyIdx,
+        yValue: buyTick.mc,
+        content: ['🟢 BUY', '$' + Math.round(buyTick.mc).toLocaleString()],
+        color: '#00e676',
+        font: { size: 11, weight: 'bold' },
+        position: 'start',
+        yAdjust: -25,
+      };
+    }
+
+    if (sellTick) {
+      const sellIdx = ticks.findIndex(t => t.action === 'SELL');
+      const sellColor = sellTick.mc >= entryMC ? '#00e676' : '#ff5252';
+      annotations.sellPoint = {
+        type: 'point',
+        xValue: sellIdx,
+        yValue: sellTick.mc,
+        backgroundColor: sellColor,
+        borderColor: '#fff',
+        borderWidth: 2,
+        radius: 8,
+      };
+      // Clean sell reason for display
+      const reason = sellTick.reason
+        .replace(/\(.*?\)/g, '')
+        .replace(/P&L.*$/, '')
+        .trim()
+        .slice(0, 35);
+      annotations.sellLabel = {
+        type: 'label',
+        xValue: sellIdx,
+        yValue: sellTick.mc,
+        content: ['🔴 SELL', '$' + Math.round(sellTick.mc).toLocaleString(), reason],
+        color: sellColor,
+        font: { size: 10, weight: 'bold' },
+        position: 'end',
+        yAdjust: 25,
+      };
+    }
+
+    if (baseline) {
+      annotations.baselineLine = {
+        type: 'line',
+        yMin: baseline,
+        yMax: baseline,
+        borderColor: 'rgba(255, 193, 7, 0.4)',
+        borderWidth: 1,
+        borderDash: [6, 4],
+        label: {
+          display: true,
+          content: 'Baseline $' + Math.round(baseline).toLocaleString(),
+          position: 'start',
+          color: '#ffc107',
+          font: { size: 10 },
+          backgroundColor: 'rgba(0,0,0,0.6)',
+        }
+      };
+    }
+
+    // Peak line
+    const peakMC = Math.max(...prices);
+    const peakIdx = prices.indexOf(peakMC);
+    annotations.peakLine = {
+      type: 'line',
+      yMin: peakMC,
+      yMax: peakMC,
+      borderColor: 'rgba(0, 230, 118, 0.25)',
+      borderWidth: 1,
+      borderDash: [4, 4],
+      label: {
+        display: true,
+        content: 'Peak $' + Math.round(peakMC).toLocaleString(),
+        position: 'end',
+        color: '#00e676',
+        font: { size: 10 },
+        backgroundColor: 'rgba(0,0,0,0.6)',
+      }
+    };
+
+    tradeChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Market Cap (USD)',
+          data: prices,
+          borderColor: '#4fc3f7',
+          backgroundColor: 'rgba(79, 195, 247, 0.08)',
+          borderWidth: 2,
+          pointRadius: 2,
+          pointBackgroundColor: pointColors,
+          fill: true,
+          tension: 0.2,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { intersect: false, mode: 'index' },
+        plugins: {
+          legend: { display: false },
+          annotation: { annotations },
+          tooltip: {
+            callbacks: {
+              title: (items) => 'T+' + labels[items[0].dataIndex],
+              label: (item) => {
+                const mc = item.raw;
+                const pnl = entryMC > 0 ? ((mc - entryMC) / entryMC * 100).toFixed(1) : '0';
+                return `MC: $${Math.round(mc).toLocaleString()} (${pnl > 0 ? '+' : ''}${pnl}%)`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            title: { display: true, text: 'Temps depuis création', color: '#888' },
+            ticks: { color: '#666', maxTicksLimit: 15 },
+            grid: { color: 'rgba(255,255,255,0.05)' },
+          },
+          y: {
+            title: { display: true, text: 'Market Cap (USD)', color: '#888' },
+            ticks: {
+              color: '#666',
+              callback: (v) => '$' + (v >= 1000 ? (v/1000).toFixed(1) + 'k' : v)
+            },
+            grid: { color: 'rgba(255,255,255,0.05)' },
+          }
+        }
+      }
+    });
+
+    // Title & info
+    document.getElementById('chart-title').textContent = `📈 ${tokenShort}`;
+    const pnl = buyTick && sellTick ? ((sellTick.mc - buyTick.mc) / buyTick.mc * 100).toFixed(1) : null;
+    const peakPnl = buyTick ? ((peakMC - buyTick.mc) / buyTick.mc * 100).toFixed(1) : null;
+    const captured = pnl && peakPnl && parseFloat(peakPnl) > 0 ? (parseFloat(pnl) / parseFloat(peakPnl) * 100).toFixed(0) : null;
+    const duration = sellTick ? (sellTick.time - (buyTick?.time || 0)).toFixed(1) : null;
+
+    let infoHtml = '';
+    if (buyTick) infoHtml += `<span>🟢 Entrée: <b>$${Math.round(buyTick.mc).toLocaleString()}</b> (T+${buyTick.time.toFixed(1)}s)</span>`;
+    if (sellTick) infoHtml += `<span>🔴 Sortie: <b>$${Math.round(sellTick.mc).toLocaleString()}</b> (T+${sellTick.time.toFixed(1)}s)</span>`;
+    if (pnl) infoHtml += `<span style="color:${parseFloat(pnl) >= 0 ? '#00e676' : '#ff5252'}">P&L: <b>${pnl > 0 ? '+' : ''}${pnl}%</b></span>`;
+    if (peakPnl) infoHtml += `<span>Peak: <b>+${peakPnl}%</b></span>`;
+    if (captured) infoHtml += `<span>Capturé: <b>${captured}%</b> du peak</span>`;
+    if (duration) infoHtml += `<span>Durée: <b>${duration}s</b></span>`;
+    if (sellTick) infoHtml += `<span style="color:#ffc107">Raison: ${sellTick.reason.slice(0, 60)}</span>`;
+    document.getElementById('chart-info').innerHTML = infoHtml;
+
+  } catch (err) {
+    console.error('Chart error:', err);
+    alert('Erreur chargement chart: ' + err.message);
+  }
+}

@@ -536,3 +536,52 @@ app.get('/api/graphs/verdict', async (req, res) => {
 // GET /graphs/* - Serve graph pages
 app.get('/graphs', (req, res) => res.sendFile(path.join(__dirname, 'graphs.html')));
 app.get('/graphs/*', (req, res) => res.sendFile(path.join(__dirname, 'graphs.html')));
+
+// GET /api/paper-trades/:token/chart - Price history for chart
+app.get('/api/paper-trades/:token/chart', async (req, res) => {
+  try {
+    const tokenPrefix = req.params.token;
+    const logPath = process.env.PAPER_TRADING_LOG_FILE || './data/paper-trades.log';
+    let entries = [];
+    try {
+      const content = await fs.readFile(logPath, 'utf-8');
+      entries = content.trim().split('\n').filter(l => l.length > 0).map(l => JSON.parse(l));
+    } catch { return res.json({ success: true, ticks: [], buy: null, sell: null }); }
+
+    // Filter for this token (match prefix or full)
+    const tokenEntries = entries.filter(e => 
+      e.token === tokenPrefix || e.token.startsWith(tokenPrefix) || tokenPrefix.startsWith(e.token?.slice(0,12))
+    );
+
+    if (!tokenEntries.length) return res.json({ success: true, ticks: [], buy: null, sell: null });
+
+    // All ticks (BUY, SELL, HOLD, NONE with strategy=RIDE)
+    const ticks = tokenEntries
+      .filter(e => ['BUY', 'SELL', 'HOLD'].includes(e.action))
+      .map(e => ({
+        time: parseFloat(e.elapsed_min) * 60,
+        mc: parseFloat(e.current_mc),
+        action: e.action,
+        reason: e.reason || ''
+      }))
+      .sort((a, b) => a.time - b.time);
+
+    const buy = ticks.find(t => t.action === 'BUY') || null;
+    const sell = ticks.find(t => t.action === 'SELL') || null;
+
+    // Also get baseline from rideCache via DB
+    let baseline = null;
+    try {
+      const fullToken = tokenEntries[0].token;
+      const dbResult = await pool.query(
+        'SELECT fdv_at_detection FROM token_events WHERE token_address = $1 LIMIT 1',
+        [fullToken]
+      );
+      if (dbResult.rows.length) baseline = parseFloat(dbResult.rows[0].fdv_at_detection);
+    } catch {}
+
+    res.json({ success: true, ticks, buy, sell, baseline });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
