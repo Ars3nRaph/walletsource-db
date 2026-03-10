@@ -66,6 +66,7 @@ export class TradeExecutor {
   // Cache for RIDE wallet detection (avoid repeated DB lookups on every tick)
   private rideCache = new Map<string, { isRide: boolean; detectedAt: Date }>();
   private evaluating = new Set<string>(); // prevent concurrent evaluations
+  private closedTokens = new Set<string>(); // tokens already sold — no re-entry ever
 
   // Min confidence pour déclencher un BUY (ajusté par wallet risk)
   private readonly BASE_BUY_CONFIDENCE = 0.60;
@@ -105,14 +106,16 @@ export class TradeExecutor {
     }
     state.lastSeenAt = now;
 
-    // Cascade detection: 3+ sells consécutifs sans buy intercalé
-    if (txType === 'sell' && state.recentSells >= 3 && state.recentBuys === 0) {
+    // Cascade detection: 5+ sells consécutifs sans buy intercalé AND significant volume
+    // 3 micro-sells is normal noise on low-MC tokens; only flag real dumps
+    if (txType === 'sell' && state.recentSells >= 5 && state.recentBuys === 0
+        && state.sellVol > state.buyVol * 0.5) {
       state.cascadeDetected = true;
     }
     if (txType === 'buy') {
       state.recentSells = 0;
       state.recentBuys = 0;
-      state.cascadeDetected = false;
+      // Don't reset cascade — once detected, it stays (prevents false re-entry)
     }
 
     // Real-time evaluation for RIDE tokens (sub-second entry window)
@@ -456,6 +459,11 @@ export class TradeExecutor {
 
     // ── PAS DE POSITION : évaluer l'entrée ───────────────────
 
+    // No re-entry on tokens we already sold (prevents cascade → re-buy → rug loop)
+    if (this.closedTokens.has(tokenAddress)) {
+      return this.none('Token déjà sorti — pas de re-entry', 'RIDE');
+    }
+
     // Trop tard
     const avgPeakSec = p.avg_time_to_peak_sec ?? (p.avg_time_to_peak_min * 60);
     const stdPeakSec = p.std_time_to_peak_sec ?? (p.std_time_to_peak_min * 60);
@@ -558,6 +566,7 @@ export class TradeExecutor {
         maxPnlPct: pnl + '%'
       }, '🔴 POSITION CLOSED');
       this.openPositions.delete(tokenAddress);
+    this.closedTokens.add(tokenAddress); // prevent re-entry
     }
     this.firstMC.delete(tokenAddress);
     this.liveState.delete(tokenAddress);
