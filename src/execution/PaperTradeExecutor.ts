@@ -60,6 +60,11 @@ export class PaperTradeExecutor extends TradeExecutor {
   /**
    * Log paper trade to file (v4.2 spot with stagnation detection)
    */
+  protected onSweepClose(token: string, signal: TradeSignal, mc: number): void {
+    // Fire-and-forget log for sweep closes
+    void this.logPaperTrade(token, 0, mc, signal);
+  }
+
   private async logPaperTrade(
     tokenAddress: string,
     elapsedMinutes: number,

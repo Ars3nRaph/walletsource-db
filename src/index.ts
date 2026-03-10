@@ -49,6 +49,7 @@ class WalletSourceDB {
         const te = this.tokenTracker.tradeExecutor;
         this.forensicWorker.pumpTradeStream.setTradeExecutor(te);
         this.forensicWorker.tradeExecutor = te;  // v5.1: instant RIDE entry
+        te.startPositionSweep();  // v5.3.1: periodic stale position cleanup
         logger.info('PumpTradeStream → TradeExecutor wired');
       }
 

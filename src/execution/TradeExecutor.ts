@@ -100,6 +100,51 @@ export class TradeExecutor {
   }>();
   private evaluating = new Set<string>();
   private closedTokens = new Set<string>();
+  private sweepInterval: NodeJS.Timeout | null = null;
+
+  /** Start periodic position sweep (call after construction) */
+  startPositionSweep(): void {
+    if (this.sweepInterval) return;
+    this.sweepInterval = setInterval(() => this.sweepStalePositions(), 5000);
+  }
+
+  stopPositionSweep(): void {
+    if (this.sweepInterval) { clearInterval(this.sweepInterval); this.sweepInterval = null; }
+  }
+
+  private sweepStalePositions(): void {
+    const now = Date.now();
+    for (const [tokenAddress, pos] of this.openPositions.entries()) {
+      const holdSec = (now - pos.entryTime.getTime()) / 1000;
+      const cached = this.rideCache.get(tokenAddress);
+      const ws = cached ? this.walletStrategies.get(cached.walletAddress) : null;
+      const maxHold = ws?.maxHoldSec ?? 180;
+      
+      // Stale: no ticks for 30s+ AND held > 15s
+      // Or: past max hold time
+      if (holdSec > maxHold || (holdSec > 15 && pos.tradeCount < 3)) {
+        const lastMC = pos.lowestMCAfterEntry || pos.entryMC;
+        const realPnl = ((lastMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
+        
+        logger.info({
+          token: tokenAddress.slice(0, 8),
+          holdSec: holdSec.toFixed(0),
+          tradeCount: pos.tradeCount,
+          pnl: realPnl + '%',
+        }, '🧹 SWEEP: closing stale position');
+        
+        // Force-close by calling evaluateTrade with last known MC
+        // This triggers managePosition which will hit MAX HOLD or other exit
+        // If that doesn't work, force-close here
+        const sweepResult = this.sell(100, 1.0, 'RIDE',
+          `🧹 SWEEP: stale (${holdSec.toFixed(0)}s, ${pos.tradeCount} ticks, P&L ${realPnl}%)`,
+          this.emptySignals());
+        this.closePosition(tokenAddress);
+        // Emit to paper trade log via overrideable method
+        this.onSweepClose(tokenAddress, sweepResult, lastMC);
+      }
+    }
+  }
   
   // Price history for momentum confirmation (last N ticks per token)
   private priceHistory = new Map<string, Array<{ mc: number; ts: number }>>();
@@ -700,6 +745,11 @@ export class TradeExecutor {
       action: 'BUY', confidence: Math.min(ws.winRate + 0.3, 0.95), percentage: 100, playbook_strategy: 'RIDE',
       reason: `BUY — +${(pumpPct*100).toFixed(1)}% pump | EV=${evStr}% WR=${wrStr}% SL=${slStr}% target=+${targetStr}% maxHold=${ws.maxHoldSec.toFixed(0)}s`
     };
+  }
+
+  /** Override in PaperTradeExecutor to log sweep closes */
+  protected onSweepClose(_token: string, _signal: TradeSignal, _mc: number): void {
+    // base: no-op. PaperTradeExecutor overrides to log.
   }
 
   // ─────────────────────────────────────────────────────────────
