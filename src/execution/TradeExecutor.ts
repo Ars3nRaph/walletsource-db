@@ -540,9 +540,24 @@ export class TradeExecutor {
         this.emptySignals());
     }
 
-    // GRACE PERIOD — first 8s, let the token breathe
+    // GRACE PERIOD — first 8s, no stop loss BUT trailing on big gains
+    // v7.2: peaks happen DURING grace (hold 1-3s), then crash 20-25%.
+    // Fix: if peak >= +15% and dropping 15% from peak -> secure profit immediately
     if (holdSecAdaptive < 8) {
-      // No SL during grace period, just track
+      const graceGain = (pos.highestMC - pos.entryMC) / pos.entryMC;
+      const graceDropFromPeak = pos.highestMC > 0 ? (pos.highestMC - currentMC) / pos.highestMC : 0;
+
+      // GRACE TRAIL: peak hit +15% and now -15% from peak -> lock profit
+      if (graceGain > 0.15 && graceDropFromPeak > 0.15) {
+        const realPnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
+        const capturedPct = pos.highestMC > pos.entryMC
+          ? ((currentMC - pos.entryMC) / (pos.highestMC - pos.entryMC) * 100).toFixed(0) : '0';
+        this.closePosition(tokenAddress);
+        return this.sell(100, 1.0, 'RIDE',
+          `\ud83d\udd12 GRACE TRAIL -${(graceDropFromPeak*100).toFixed(0)}% from peak $${pos.highestMC.toFixed(0)} (peak +${(graceGain*100).toFixed(0)}%) | P&L ${realPnl}% (captured ${capturedPct}%)`,
+          this.emptySignals());
+      }
+
       const gpnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
       return {
         action: 'HOLD', confidence: 0.5, playbook_strategy: 'RIDE',
