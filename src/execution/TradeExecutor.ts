@@ -50,6 +50,15 @@ interface LiveTradeState {
   recentBuys: number;
   cascadeDetected: boolean;
   highestMC: number;         // v8.0: track spike MC for dip entry
+  // v8.1: enhanced tracking
+  holderBalances: Map<string, number>;  // wallet → token balance (from newTokenBalance)
+  totalDumpSells: number;               // sells where newTokenBalance = 0 (full dump)
+  repeatBuyers: Map<string, number>;    // wallet → buy count (conviction signal)
+  avgBuySize: number;                   // rolling avg buy volume
+  avgSellSize: number;                  // rolling avg sell volume
+  buyTimestamps: number[];              // for velocity calc (last 10 buy timestamps)
+  bondingCurvePct: number;              // % of bonding curve filled
+  largestHolderPct: number;             // largest holder % of supply
 }
 
 /**
@@ -279,7 +288,7 @@ export class TradeExecutor {
   // TRADE EVENT HANDLER
   // ─────────────────────────────────────────────────────────────
 
-  onTrade(tokenAddress: string, txType: 'buy' | 'sell', mcUsd: number, volUsd: number, trader: string): void {
+  onTrade(tokenAddress: string, txType: 'buy' | 'sell', mcUsd: number, volUsd: number, trader: string, _tokenAmount?: number, newTokenBalance?: number): void {
     let state = this.liveState.get(tokenAddress);
     if (!state) {
       state = {
@@ -287,7 +296,10 @@ export class TradeExecutor {
         uniqueBuyers: new Set(), uniqueSellers: new Set(),
         firstSellAt: null, lastSeenAt: new Date(),
         recentSells: 0, recentBuys: 0, cascadeDetected: false,
-        highestMC: 0
+        highestMC: 0,
+        holderBalances: new Map(), totalDumpSells: 0,
+        repeatBuyers: new Map(), avgBuySize: 0, avgSellSize: 0,
+        buyTimestamps: [], bondingCurvePct: 0, largestHolderPct: 0
       };
       this.liveState.set(tokenAddress, state);
     }
@@ -306,6 +318,43 @@ export class TradeExecutor {
     }
     state.lastSeenAt = new Date();
     if (mcUsd > state.highestMC) state.highestMC = mcUsd;  // v8.0: track spike for dip entry
+
+    // v8.1: Enhanced tracking
+    // Holder balances
+    if (newTokenBalance !== undefined && trader) {
+      state.holderBalances.set(trader, newTokenBalance);
+      if (txType === 'sell' && newTokenBalance === 0) {
+        state.totalDumpSells++;
+      }
+      // Update largest holder %
+      if (state.holderBalances.size > 0) {
+        const totalHeld = Array.from(state.holderBalances.values()).reduce((a, b) => a + b, 0);
+        const maxHeld = Math.max(...state.holderBalances.values());
+        state.largestHolderPct = totalHeld > 0 ? maxHeld / totalHeld : 0;
+      }
+    }
+    // Repeat buyers
+    if (txType === 'buy' && trader) {
+      state.repeatBuyers.set(trader, (state.repeatBuyers.get(trader) ?? 0) + 1);
+    }
+    // Average buy/sell sizes
+    if (txType === 'buy' && volUsd > 0) {
+      state.avgBuySize = state.buyCount > 0 ? state.buyVol / state.buyCount : volUsd;
+    } else if (txType === 'sell' && volUsd > 0) {
+      state.avgSellSize = state.sellCount > 0 ? state.sellVol / state.sellCount : volUsd;
+    }
+    // Buy velocity (keep last 10 timestamps)
+    if (txType === 'buy') {
+      state.buyTimestamps.push(Date.now());
+      if (state.buyTimestamps.length > 10) state.buyTimestamps.shift();
+    }
+    // Bonding curve progress (793K SOL = ~100% on pump.fun)
+    if (mcUsd > 0) {
+      // pump.fun bonding curve completes at ~$69K MC (at ~$150 SOL)
+      // More precise: vSol reaches 85 SOL = migration
+      // We approximate from MC: $69K MC ≈ 100% bonding curve
+      state.bondingCurvePct = Math.min(mcUsd / 69000, 1.0);
+    }
 
     // Dynamic cascade threshold from wallet strategy
     const cached = this.rideCache.get(tokenAddress);

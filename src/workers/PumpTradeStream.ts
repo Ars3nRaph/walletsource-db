@@ -149,7 +149,7 @@ export class PumpTradeStream {
 
     // Notify TradeExecutor with live tick data (before DB insert for minimal latency)
     if (this.tradeExecutor) {
-      this.tradeExecutor.onTrade(mint, txType, marketCapUsd, volumeUsd2, traderPublicKey);
+      this.tradeExecutor.onTrade(mint, txType, marketCapUsd, volumeUsd2, traderPublicKey, event.tokenAmount, event.newTokenBalance);
     }
     const priceUsd = vTokensInBondingCurve > 0
       ? (vSolInBondingCurve / vTokensInBondingCurve) * this.solPrice
@@ -204,11 +204,12 @@ export class PumpTradeStream {
       // Notify TokenTracker via DB flag for real-time trade evaluation
       await this.pool.query(`
         INSERT INTO trade_events (token_address, tx_type, market_cap_usd, price_usd, volume_usd,
-          v_sol, v_tokens, trader_wallet, signature, event_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+          v_sol, v_tokens, trader_wallet, signature, event_at, token_amount, new_token_balance)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), $10, $11)
         ON CONFLICT (signature) DO NOTHING
       `, [mint, txType, marketCapUsd, priceUsd, volumeUsd,
-          vSolInBondingCurve, vTokensInBondingCurve, traderPublicKey, signature]);
+          vSolInBondingCurve, vTokensInBondingCurve, traderPublicKey, signature,
+          event.tokenAmount, event.newTokenBalance]);
 
     } catch (err) {
       logger.debug({ err, token: mint }, 'Trade event insert failed');
