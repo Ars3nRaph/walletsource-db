@@ -49,6 +49,7 @@ interface LiveTradeState {
   recentSells: number;
   recentBuys: number;
   cascadeDetected: boolean;
+  highestMC: number;         // v8.0: track spike MC for dip entry
 }
 
 /**
@@ -285,7 +286,8 @@ export class TradeExecutor {
         buyCount: 0, sellCount: 0, buyVol: 0, sellVol: 0,
         uniqueBuyers: new Set(), uniqueSellers: new Set(),
         firstSellAt: null, lastSeenAt: new Date(),
-        recentSells: 0, recentBuys: 0, cascadeDetected: false
+        recentSells: 0, recentBuys: 0, cascadeDetected: false,
+        highestMC: 0
       };
       this.liveState.set(tokenAddress, state);
     }
@@ -303,6 +305,7 @@ export class TradeExecutor {
       if (!state.firstSellAt) state.firstSellAt = new Date();
     }
     state.lastSeenAt = new Date();
+    if (mcUsd > state.highestMC) state.highestMC = mcUsd;  // v8.0: track spike for dip entry
 
     // Dynamic cascade threshold from wallet strategy
     const cached = this.rideCache.get(tokenAddress);
@@ -532,8 +535,8 @@ export class TradeExecutor {
     //   4. No pump 20s: exit if never reached +8%
     //   5. Max hold 30s: force exit
 
-    // HARD STOP — always active, even during grace period
-    if (dropFromEntry > 0.25) {
+    // HARD STOP — always active, even during grace period (v8.0: -20% from -25%)
+    if (dropFromEntry > 0.20) {
       this.closePosition(tokenAddress);
       return this.sell(100, 1.0, 'RIDE',
         `\u26a0\ufe0f HARD STOP -${(dropFromEntry*100).toFixed(1)}% in ${holdSecAdaptive.toFixed(0)}s`,
@@ -547,8 +550,8 @@ export class TradeExecutor {
       const graceGain = (pos.highestMC - pos.entryMC) / pos.entryMC;
       const graceDropFromPeak = pos.highestMC > 0 ? (pos.highestMC - currentMC) / pos.highestMC : 0;
 
-      // GRACE TRAIL: peak hit +15% and now -15% from peak -> lock profit
-      if (graceGain > 0.15 && graceDropFromPeak > 0.15) {
+      // GRACE TRAIL: peak hit +15% and now -10% from peak -> lock profit (v8.0: tighter from 15%)
+      if (graceGain > 0.15 && graceDropFromPeak > 0.10) {
         const realPnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
         const capturedPct = pos.highestMC > pos.entryMC
           ? ((currentMC - pos.entryMC) / (pos.highestMC - pos.entryMC) * 100).toFixed(0) : '0';
@@ -565,10 +568,10 @@ export class TradeExecutor {
       };
     }
 
-    // TRAILING STOP — 20% from peak (only if peak > +5% above entry)
+    // TRAILING STOP — 25% from peak (only if peak > +10% above entry) (v8.0: wider trail)
     const peakGain = (pos.highestMC - pos.entryMC) / pos.entryMC;
     const dropFromPeak = pos.highestMC > 0 ? (pos.highestMC - currentMC) / pos.highestMC : 0;
-    if (peakGain > 0.05 && dropFromPeak > 0.20) {
+    if (peakGain > 0.10 && dropFromPeak > 0.25) {
       const realPnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
       const capturedPct = pos.highestMC > pos.entryMC
         ? ((currentMC - pos.entryMC) / (pos.highestMC - pos.entryMC) * 100).toFixed(0) : '0';
@@ -587,8 +590,8 @@ export class TradeExecutor {
         this.emptySignals());
     }
 
-    // MAX HOLD — 30s absolute max
-    if (holdSecAdaptive > 30) {
+    // MAX HOLD — 45s absolute max (v8.0: extended from 30s for slow pumps)
+    if (holdSecAdaptive > 45) {
       const pnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
       this.closePosition(tokenAddress);
       return this.sell(100, 1.0, 'RIDE',
@@ -745,14 +748,22 @@ export class TradeExecutor {
       return this.none(`🚫 hWR=${histWR.toFixed(0)}% < 25% — wallet trop faible`, 'RIDE');
     }
 
-    // ── PRICE: don't buy above max entry ratio
-    if (mcRatio > ws.maxEntryRatio) {
-      return this.none(`Ratio ${mcRatio.toFixed(2)}x > ${ws.maxEntryRatio.toFixed(2)}x max entry`, 'RIDE');
+    // ── v8.0 ENTRY PRICE FILTERS
+    // Data: 5184 combos tested on 22 tokens/7 days.
+    // Entering at high ratios = buying the top. 75% WR requires:
+    //   1. Price ≤ 1.5x baseline (never chase a pump)
+    //   2. Price must have dipped ≥ 5% from spike (buy the retrace)
+    
+    // Hard cap: never buy above 1.5x baseline
+    if (mcRatio > 1.5) {
+      return this.none(`🚫 RATIO ${mcRatio.toFixed(2)}x > 1.50x — trop cher`, 'RIDE');
     }
 
-    // ── PRICE: don't buy during active bot spike (>1.15x before T+5s)
-    if (mcRatio > 1.15 && elapsedSec < 5) {
-      return this.none(`⏳ Bot spike zone (${mcRatio.toFixed(2)}x) — attente dip`, 'RIDE');
+    // Dip requirement: track spike and require 5% retrace
+    const spikeMC = state?.highestMC ?? currentMC;
+    const dipFromSpike = spikeMC > 0 ? (spikeMC - currentMC) / spikeMC : 0;
+    if (dipFromSpike < 0.05 && spikeMC > currentMC * 1.02) {
+      return this.none(`⏳ DIP ${(dipFromSpike*100).toFixed(1)}% < 5% from spike $${spikeMC.toFixed(0)} — attente retrace`, 'RIDE');
     }
 
     // ── MOMENTUM: price should not be crashing
