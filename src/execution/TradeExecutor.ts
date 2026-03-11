@@ -519,43 +519,66 @@ export class TradeExecutor {
     const dropFromEntry = (pos.entryMC - currentMC) / pos.entryMC;
     const holdSecAdaptive = (Date.now() - pos.entryTime.getTime()) / 1000;
     
-    // 2a. ADAPTIVE STOP LOSS — based on entry volume (market conviction)
+    // 2a. v7.0 EXIT STRATEGY — Grace period + Hard stop + Trailing
     //
-    // Data-driven insight (13 trades backtest):
-    //   - High volume ($1000+, 9+ wallets): 38% avg pump → needs room → -15% SL
-    //   - Medium volume ($100-999): mixed → -10% SL
-    //   - Low volume (<$100): likely dud → tight -5% SL
-    //   - Bot-inflated entry (>1.08x baseline): always tight -5% SL
+    // Data: 11 paper trades analysis showed adaptive SL killed 5/10 trades,
+    // missing +58%, +116%, +15% pumps. DB confirms pump tokens dip median
+    // 1.00x in T+3-15s, only 4% dip below 0.80x.
     //
-    // Trade #1 lesson: $1042 vol, 9 wallets → quick rug at -7.6% → missed +38%
-    // Trade #2 lesson: $171 vol, 4 wallets → quick rug at -10.8% → saved from -29%
-    const cachedBase = this.rideCache.get(tokenAddress);
-    const entryBaseline = cachedBase?.fdvAtDetection || pos.entryMC;
-    const entryRatio = pos.entryMC / Math.max(entryBaseline, 1);
+    // RULES:
+    //   1. Grace period 8s: NO stop loss (except hard stop)
+    //   2. Hard stop -25%: always active, catastrophe protection
+    //   3. After 8s: trailing 20% from peak (if peak > +5%)
+    //   4. No pump 20s: exit if never reached +8%
+    //   5. Max hold 30s: force exit
 
-    let adaptiveSL: number;
-    if (entryRatio > 1.08) {
-      // Bot-inflated entry: always tight
-      adaptiveSL = 0.05;
-    } else if (pos.entryBuyVol >= 500 && pos.entryBuyerCount >= 5) {
-      // High conviction: strong market interest, give room for dips
-      adaptiveSL = 0.15;
-    } else if (pos.entryBuyVol >= 100 && pos.entryBuyerCount >= 3) {
-      // Medium conviction
-      adaptiveSL = 0.10;
-    } else {
-      // Low conviction: minimal market interest
-      adaptiveSL = 0.06;
+    // HARD STOP — always active, even during grace period
+    if (dropFromEntry > 0.25) {
+      this.closePosition(tokenAddress);
+      return this.sell(100, 1.0, 'RIDE',
+        `\u26a0\ufe0f HARD STOP -${(dropFromEntry*100).toFixed(1)}% in ${holdSecAdaptive.toFixed(0)}s`,
+        this.emptySignals());
     }
 
-    // Quick exit: within first 8s, apply adaptive SL
-    if (holdSecAdaptive < 8 && pos.tradeCount >= 2) {
-      if (dropFromEntry > adaptiveSL) {
-        this.closePosition(tokenAddress);
-        return this.sell(100, 1.0, 'RIDE',
-          `⚡ ADAPTIVE SL -${(dropFromEntry*100).toFixed(1)}% in ${holdSecAdaptive.toFixed(0)}s (vol=$${pos.entryBuyVol.toFixed(0)}/${pos.entryBuyerCount}w → thresh=${(adaptiveSL*100).toFixed(0)}%)`,
-          this.emptySignals());
-      }
+    // GRACE PERIOD — first 8s, let the token breathe
+    if (holdSecAdaptive < 8) {
+      // No SL during grace period, just track
+      const gpnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
+      return {
+        action: 'HOLD', confidence: 0.5, playbook_strategy: 'RIDE',
+        reason: `\u23f3 GRACE ${holdSecAdaptive.toFixed(0)}s/8s | ${gpnl}% | peak ${((pos.highestMC - pos.entryMC) / pos.entryMC * 100).toFixed(1)}%`
+      };
+    }
+
+    // TRAILING STOP — 20% from peak (only if peak > +5% above entry)
+    const peakGain = (pos.highestMC - pos.entryMC) / pos.entryMC;
+    const dropFromPeak = pos.highestMC > 0 ? (pos.highestMC - currentMC) / pos.highestMC : 0;
+    if (peakGain > 0.05 && dropFromPeak > 0.20) {
+      const realPnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
+      const capturedPct = pos.highestMC > pos.entryMC
+        ? ((currentMC - pos.entryMC) / (pos.highestMC - pos.entryMC) * 100).toFixed(0) : '0';
+      this.closePosition(tokenAddress);
+      return this.sell(100, 1.0, 'RIDE',
+        `\ud83d\udcc9 TRAIL -${(dropFromPeak*100).toFixed(0)}% from peak $${pos.highestMC.toFixed(0)} | P&L ${realPnl}% (captured ${capturedPct}%)`,
+        this.emptySignals());
+    }
+
+    // NO PUMP — 20s without reaching +8%, token is dead
+    if (holdSecAdaptive > 20 && peakGain < 0.08) {
+      const pnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
+      this.closePosition(tokenAddress);
+      return this.sell(100, 1.0, 'RIDE',
+        `\u23f0 NO PUMP after ${holdSecAdaptive.toFixed(0)}s (peak +${(peakGain*100).toFixed(1)}% < 8%) | P&L ${pnl}%`,
+        this.emptySignals());
+    }
+
+    // MAX HOLD — 30s absolute max
+    if (holdSecAdaptive > 30) {
+      const pnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
+      this.closePosition(tokenAddress);
+      return this.sell(100, 1.0, 'RIDE',
+        `\u23f1 MAX HOLD ${holdSecAdaptive.toFixed(0)}s | P&L ${pnl}%`,
+        this.emptySignals());
     }
     
     // 2b. HARD STOP: absolute max loss 25% regardless of timing
@@ -689,6 +712,24 @@ export class TradeExecutor {
       return this.none(`🚫 SPAM: wallet created ${spamCount} tokens in 2h (max 3)`, 'RIDE');
     }
 
+
+    // ── VOLUME: minimum $200 buy volume in first 10s
+    // DB: Vol>=200 + hWR>=30 + spam<=3 = 100% WR (16/16 tokens pump)
+    const minEntryVol = 200;
+    if (buyVol < minEntryVol) {
+      if (elapsedSec > 20) {
+        return this.none(`💸 LOW VOL: $${buyVol.toFixed(0)} < $${minEntryVol} after ${elapsedSec.toFixed(0)}s — skip`, 'RIDE');
+      }
+      return this.none(`⏳ VOL: $${buyVol.toFixed(0)}/$${minEntryVol} — attente volume`, 'RIDE');
+    }
+
+    // ── WALLET QUALITY: historical pump rate must be >=30%
+    // DB: hWR>=30 eliminates wallets that rarely pump
+    const histWR = await this.getWalletHistoricalWR(walletAddress);
+    if (histWR < 30) {
+      return this.none(`🚫 hWR=${histWR.toFixed(0)}% < 30% — wallet trop faible`, 'RIDE');
+    }
+
     // ── PRICE: don't buy above max entry ratio
     if (mcRatio > ws.maxEntryRatio) {
       return this.none(`Ratio ${mcRatio.toFixed(2)}x > ${ws.maxEntryRatio.toFixed(2)}x max entry`, 'RIDE');
@@ -760,13 +801,28 @@ export class TradeExecutor {
 
     return {
       action: 'BUY', confidence: Math.min(ws.winRate + 0.3, 0.95), percentage: 100, playbook_strategy: 'RIDE',
-      reason: `BUY — ${buyCount}b/${uniqueBuyerCount}w $${buyVol.toFixed(0)}vol | ${mcRatio.toFixed(2)}x base | EV=${evStr}% WR=${wrStr}% target=+${targetStr}% maxHold=${ws.maxHoldSec.toFixed(0)}s`
+      reason: `BUY — ${buyCount}b/${uniqueBuyerCount}w $${buyVol.toFixed(0)}vol | ${mcRatio.toFixed(2)}x base | EV=${evStr}% WR=${wrStr}% hWR=${histWR.toFixed(0)}% target=+${targetStr}% maxHold=30s`
     };
   }
 
   /** Override in PaperTradeExecutor to log sweep closes */
   protected onSweepClose(_token: string, _signal: TradeSignal, _mc: number): void {
     // base: no-op. PaperTradeExecutor overrides to log.
+  }
+
+  /** Get wallet historical win rate (% of tokens that pumped ≥1.5x) */
+  private async getWalletHistoricalWR(walletAddress: string): Promise<number> {
+    try {
+      const result = await this.pool.query(`
+        SELECT COUNT(*) as total,
+          COUNT(*) FILTER(WHERE peak_mc / NULLIF(fdv_at_detection, 0) >= 1.5) as pumps
+        FROM token_events
+        WHERE creator_wallet = $1 AND fdv_at_detection > 0 AND peak_mc > 0
+      `, [walletAddress]);
+      const total = parseInt(result.rows[0].total) || 0;
+      const pumps = parseInt(result.rows[0].pumps) || 0;
+      return total > 0 ? (pumps / total) * 100 : 0;
+    } catch { return 0; }
   }
 
   /** Count tokens created by wallet in last N hours */
