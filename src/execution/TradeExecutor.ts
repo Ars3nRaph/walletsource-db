@@ -724,10 +724,10 @@ export class TradeExecutor {
     }
 
     // ── WALLET QUALITY: historical pump rate must be >=30%
-    // DB: hWR>=30 eliminates wallets that rarely pump
+    // DB: hWR>=25 eliminates wallets that rarely pump
     const histWR = await this.getWalletHistoricalWR(walletAddress);
-    if (histWR < 30) {
-      return this.none(`🚫 hWR=${histWR.toFixed(0)}% < 30% — wallet trop faible`, 'RIDE');
+    if (histWR < 25) {
+      return this.none(`🚫 hWR=${histWR.toFixed(0)}% < 25% — wallet trop faible`, 'RIDE');
     }
 
     // ── PRICE: don't buy above max entry ratio
