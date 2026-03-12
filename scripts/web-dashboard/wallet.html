@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ride the Rugger v8.1 — Wallet Simulation</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .wallet-header { display:flex; align-items:center; gap:24px; flex-wrap:wrap; margin-bottom:24px; }
+    .balance-card { background:linear-gradient(135deg,#1a1f2e,#0d1117); border:1px solid #30363d; border-radius:16px; padding:24px 32px; min-width:220px; }
+    .balance-card.main { border-color:#58a6ff; box-shadow:0 0 20px rgba(88,166,255,0.1); }
+    .balance-card .label { color:#8b949e; font-size:12px; text-transform:uppercase; letter-spacing:1px; }
+    .balance-card .amount { font-size:32px; font-weight:700; color:#e6edf3; margin:4px 0; }
+    .balance-card .sub { font-size:14px; color:#8b949e; }
+    .pnl-pos { color:#3fb950; } .pnl-neg { color:#f85149; }
+    .metrics-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:24px; }
+    .metric-box { background:#161b22; border:1px solid #21262d; border-radius:10px; padding:14px 16px; text-align:center; }
+    .metric-box .val { font-size:22px; font-weight:700; color:#e6edf3; }
+    .metric-box .lbl { font-size:11px; color:#8b949e; margin-top:2px; text-transform:uppercase; letter-spacing:.5px; }
+    .sizing-section { margin-bottom:28px; }
+    .sizing-section h2 { color:#e6edf3; font-size:18px; margin-bottom:12px; }
+    .sizing-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px; }
+    .sizing-card { background:#161b22; border:1px solid #21262d; border-radius:10px; padding:16px; }
+    .sizing-card h3 { color:#58a6ff; font-size:14px; margin:0 0 10px; }
+    .sizing-card table { width:100%; border-collapse:collapse; font-size:13px; }
+    .sizing-card td,.sizing-card th { padding:5px 8px; text-align:left; }
+    .sizing-card th { color:#8b949e; font-weight:600; border-bottom:1px solid #21262d; }
+    .sizing-card td { color:#c9d1d9; }
+    .boost { color:#3fb950; } .penalty { color:#f85149; }
+    .trades-table { width:100%; border-collapse:collapse; font-size:13px; background:#0d1117; border-radius:12px; overflow:hidden; border:1px solid #21262d; }
+    .trades-table th { background:#161b22; color:#8b949e; padding:12px 10px; text-align:left; font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.5px; border-bottom:1px solid #21262d; position:sticky; top:0; }
+    .trades-table td { padding:10px; border-bottom:1px solid #161b22; color:#c9d1d9; }
+    .trades-table tr:hover td { background:#161b22; }
+    .win { color:#3fb950; font-weight:600; } .loss { color:#f85149; font-weight:600; }
+    .open { color:#d29922; } .skip { color:#484f58; }
+    .badge { display:inline-block; padding:2px 8px; border-radius:12px; font-size:11px; font-weight:600; }
+    .badge-high { background:rgba(63,185,80,.15); color:#3fb950; }
+    .badge-medium-high { background:rgba(88,166,255,.15); color:#58a6ff; }
+    .badge-medium { background:rgba(210,153,34,.15); color:#d29922; }
+    .badge-low { background:rgba(139,148,158,.15); color:#8b949e; }
+    .badge-mc-cap { background:rgba(248,81,73,.12); color:#f85149; font-size:10px; margin-left:4px; }
+    .fee-breakdown { font-size:11px; color:#484f58; }
+    .equity-chart-container { background:#161b22; border:1px solid #21262d; border-radius:12px; padding:20px; margin-bottom:24px; }
+    .equity-chart-container h2 { color:#e6edf3; font-size:16px; margin:0 0 12px; }
+    .config-bar { display:flex; gap:16px; flex-wrap:wrap; background:#161b22; border:1px solid #21262d; border-radius:10px; padding:12px 16px; margin-bottom:20px; font-size:12px; color:#8b949e; }
+    .config-bar .val { color:#58a6ff; font-weight:600; }
+    .nav-links { display:flex; gap:10px; margin-left:auto; }
+    .nav-links a { background:#21262d; border:1px solid #30363d; border-radius:8px; padding:10px 20px; color:#58a6ff; text-decoration:none; font-size:14px; font-weight:600; transition:all .2s; }
+    .nav-links a:hover { border-color:#58a6ff; background:#1c2128; }
+    .nav-links a.active { border-color:#58a6ff; background:rgba(88,166,255,.1); }
+    .empty-state { text-align:center; padding:60px 20px; color:#484f58; font-size:16px; }
+    .empty-state .icon { font-size:48px; margin-bottom:12px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"></script>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🎩 Ride the Rugger v8.1</h1>
+      <p class="subtitle">Wallet Simulation — 100 SOL Paper Portfolio</p>
+      <div class="nav-links">
+        <a href="/">📊 Dashboard</a>
+        <a href="/graphs">📈 Graphs</a>
+        <a href="/wallet" class="active">💰 Wallet</a>
+      </div>
+    </header>
+    <div class="config-bar" id="config-bar"></div>
+    <div class="wallet-header">
+      <div class="balance-card main"><div class="label">Balance</div><div class="amount" id="bal-sol">—</div><div class="sub" id="bal-usd">—</div></div>
+      <div class="balance-card"><div class="label">P&L Total</div><div class="amount" id="pnl-sol">—</div><div class="sub" id="pnl-pct">—</div></div>
+      <div class="balance-card"><div class="label">Fees + Slippage</div><div class="amount" id="fees-total" style="font-size:24px">—</div><div class="sub" id="fees-drag">—</div></div>
+    </div>
+    <div class="metrics-row">
+      <div class="metric-box"><div class="val" id="m-trades">—</div><div class="lbl">Trades</div></div>
+      <div class="metric-box"><div class="val win" id="m-wins">—</div><div class="lbl">Wins</div></div>
+      <div class="metric-box"><div class="val loss" id="m-losses">—</div><div class="lbl">Losses</div></div>
+      <div class="metric-box"><div class="val" id="m-wr">—</div><div class="lbl">Win Rate</div></div>
+      <div class="metric-box"><div class="val" id="m-avg">—</div><div class="lbl">Avg PnL</div></div>
+      <div class="metric-box"><div class="val" id="m-open">—</div><div class="lbl">Open</div></div>
+      <div class="metric-box"><div class="val" id="m-skipped">—</div><div class="lbl">Skipped</div></div>
+    </div>
+    <div class="equity-chart-container"><h2>📈 Equity Curve (SOL)</h2><canvas id="equity-chart" height="80"></canvas></div>
+    <div class="sizing-section" id="sizing-section"></div>
+    <h2 style="color:#e6edf3;font-size:18px;margin-bottom:12px">📋 Trade Log</h2>
+    <div style="overflow-x:auto;border-radius:12px">
+      <table class="trades-table" id="trades-table">
+        <thead><tr><th>#</th><th>Time</th><th>Token</th><th>Tier</th><th>Position</th><th>Buy MC</th><th>Sell MC</th><th>MC Δ</th><th>Fees</th><th>Slip+Pump</th><th>Net PnL</th><th>Balance</th><th>Exit</th></tr></thead>
+        <tbody id="trades-body"></tbody>
+      </table>
+    </div>
+    <div class="empty-state" id="empty-state" style="display:none">
+      <div class="icon">📭</div>
+      <div>Aucun trade encore — en attente des premières entrées v8.1</div>
+      <div style="margin-top:8px;font-size:13px;color:#30363d">Les trades apparaîtront ici en temps réel</div>
+    </div>
+  </div>
+<script>
+let equityChart=null;
+async function loadWallet(){
+  try{
+    const r=await fetch('/api/wallet-sim');const d=await r.json();if(!d.success)throw new Error(d.error);
+    const{config:cfg,summary:s,trades,sizing_rules:rules}=d;
+    document.getElementById('config-bar').innerHTML=[
+      `💰 Initial: <span class="val">${cfg.initial_sol} SOL ($${cfg.initial_usd.toLocaleString()})</span>`,
+      `📊 Slippage: <span class="val">${cfg.slippage_buy_bps/100}% buy / ${cfg.slippage_sell_bps/100}% sell</span>`,
+      `🏷️ Pump Fee: <span class="val">${cfg.pump_fee_bps/100}%</span>`,
+      `⚡ Priority: <span class="val">${cfg.priority_fee_sol} SOL</span>`,
+      `🔒 Max MC: <span class="val">${cfg.max_mc_pct}%</span>`,
+      `💲 SOL: <span class="val">$${cfg.sol_price_usd}</span>`
+    ].map(h=>`<span>${h}</span>`).join('');
+    const pc=s.total_pnl_sol>=0?'pnl-pos':'pnl-neg';
+    document.getElementById('bal-sol').textContent=`${s.final_balance_sol.toFixed(2)} SOL`;
+    document.getElementById('bal-usd').textContent=`≈ $${s.final_balance_usd.toLocaleString()}`;
+    document.getElementById('pnl-sol').innerHTML=`<span class="${pc}">${s.total_pnl_sol>=0?'+':''}${s.total_pnl_sol.toFixed(4)} SOL</span>`;
+    document.getElementById('pnl-pct').innerHTML=`<span class="${pc}">${s.total_pnl_pct>=0?'+':''}${s.total_pnl_pct.toFixed(2)}%</span>`;
+    document.getElementById('fees-total').textContent=`${(s.total_fees_sol+s.total_slippage_sol).toFixed(4)} SOL`;
+    document.getElementById('fees-drag').textContent=`${s.fees_drag_pct}% of capital`;
+    document.getElementById('m-trades').textContent=s.total_trades;
+    document.getElementById('m-wins').textContent=s.wins;
+    document.getElementById('m-losses').textContent=s.losses;
+    document.getElementById('m-wr').textContent=`${s.win_rate_pct}%`;
+    document.getElementById('m-wr').className=`val ${s.win_rate_pct>=60?'win':s.win_rate_pct>=40?'':'loss'}`;
+    document.getElementById('m-avg').textContent=`${s.avg_pnl_pct>=0?'+':''}${s.avg_pnl_pct}%`;
+    document.getElementById('m-avg').className=`val ${s.avg_pnl_pct>=0?'win':'loss'}`;
+    document.getElementById('m-open').textContent=s.open;
+    document.getElementById('m-skipped').textContent=s.skipped;
+    // Sizing rules
+    const sec=document.getElementById('sizing-section');
+    sec.innerHTML=`<h2>⚙️ Règles de Position Sizing</h2><div class="sizing-grid">
+      <div class="sizing-card"><h3>📊 Tiers de Confiance (% du wallet)</h3><table>
+        <tr><th>Tier</th><th>Confidence</th><th>Base</th></tr>
+        ${rules.tiers.map(t=>`<tr><td><span class="badge badge-${t.tier.toLowerCase().replace(/\s+/g,'-')}">${t.tier}</span></td><td>${t.confidence}</td><td>${t.base_pct}</td></tr>`).join('')}
+      </table></div>
+      <div class="sizing-card"><h3>🚀 Boosters</h3><table>
+        <tr><th>Condition</th><th>Boost</th></tr>
+        ${rules.boosters.map(b=>`<tr><td>${b.condition}</td><td class="boost">${b.boost}</td></tr>`).join('')}
+      </table></div>
+      <div class="sizing-card"><h3>⚠️ Penalties</h3><table>
+        <tr><th>Condition</th><th>Impact</th></tr>
+        ${rules.penalties.map(p=>`<tr><td>${p.condition}</td><td class="penalty">${p.penalty}</td></tr>`).join('')}
+      </table></div>
+      <div class="sizing-card"><h3>🔒 Hard Caps</h3><table>
+        <tr><th>Cap</th><th>Description</th></tr>
+        ${rules.caps.map(c=>`<tr><td style="color:#d29922">${c.cap}</td><td>${c.description}</td></tr>`).join('')}
+      </table></div>
+    </div>`;
+    const realTrades=trades.filter(t=>t.action!=='SKIP');
+    if(!realTrades.length&&!trades.length){document.getElementById('empty-state').style.display='';document.getElementById('trades-table').style.display='none';}
+    else{document.getElementById('empty-state').style.display='none';document.getElementById('trades-table').style.display='';}
+    const tbody=document.getElementById('trades-body');
+    tbody.innerHTML=trades.map((t,i)=>{
+      if(t.action==='SKIP')return`<tr style="opacity:.4"><td>${i+1}</td><td>${fmtTime(t.timestamp)}</td><td>${t.token}</td><td colspan="10" class="skip">⏭️ ${t.reason}</td></tr>`;
+      const cls=t.action==='WIN'?'win':t.action==='LOSS'?'loss':'open';
+      const tierCls=`badge-${(t.position_tier||'low').toLowerCase().replace(/\s+/g,'-')}`;
+      const mcCap=t.capped_by_mc?'<span class="badge badge-mc-cap">MC CAP</span>':'';
+      return`<tr>
+        <td>${i+1}</td><td>${fmtTime(t.timestamp)}</td>
+        <td><a href="https://pump.fun/${t.token_full}" target="_blank" style="color:#58a6ff;text-decoration:none">${t.token}</a></td>
+        <td><span class="badge ${tierCls}">${t.position_tier}</span></td>
+        <td>${t.position_sol.toFixed(3)} SOL <span style="color:#484f58">(${t.position_pct}%)</span>${mcCap}</td>
+        <td>$${t.buy_mc.toLocaleString()}</td><td>${t.sell_mc!==null?'$'+t.sell_mc.toLocaleString():'—'}</td>
+        <td class="${cls}">${t.mc_change_pct!==null?(t.mc_change_pct>=0?'+':'')+t.mc_change_pct+'%':'—'}</td>
+        <td class="fee-breakdown">${t.fees_sol.toFixed(4)}</td><td class="fee-breakdown">${t.slippage_sol.toFixed(4)}</td>
+        <td class="${cls}" style="font-weight:700">${t.pnl_sol!==null?(t.pnl_sol>=0?'+':'')+t.pnl_sol.toFixed(4)+' SOL':'—'}</td>
+        <td>${t.balance_after.toFixed(2)}</td>
+        <td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.exit_reason||''}">${fmtExit(t.exit_reason)}</td>
+      </tr>`;
+    }).join('');
+    buildEquityChart(trades,cfg.initial_sol);
+  }catch(err){console.error('Wallet sim error:',err);}
+}
+function fmtTime(ts){if(!ts)return'—';const d=new Date(ts);return d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit',second:'2-digit'})+' '+d.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'});}
+function fmtExit(r){if(!r)return'—';if(r.includes('HARD STOP'))return'🛑 HARD STOP';if(r.includes('GRACE TRAIL'))return'🏃 GRACE TRAIL';if(r.includes('TRAIL'))return'📉 TRAIL';if(r.includes('MAX HOLD'))return'⏰ MAX HOLD';if(r.includes('NO PUMP'))return'😐 NO PUMP';if(r.includes('CASCADE'))return'💀 CASCADE';return r.slice(0,30);}
+function buildEquityChart(trades,initial){
+  const ctx=document.getElementById('equity-chart').getContext('2d');if(equityChart)equityChart.destroy();
+  const rt=trades.filter(t=>t.action!=='SKIP'&&t.balance_after!==undefined);if(!rt.length)return;
+  const labels=['Start',...rt.map((_,i)=>`#${i+1}`)];const data=[initial,...rt.map(t=>t.balance_after)];
+  const colors=rt.map(t=>t.action==='WIN'?'#3fb950':t.action==='LOSS'?'#f85149':'#d29922');
+  equityChart=new Chart(ctx,{type:'line',data:{labels,datasets:[{label:'Balance (SOL)',data,borderColor:'#58a6ff',backgroundColor:'rgba(88,166,255,.05)',borderWidth:2,fill:true,tension:.3,pointBackgroundColor:['#58a6ff',...colors],pointBorderColor:['#58a6ff',...colors],pointRadius:data.length<50?5:3,pointHoverRadius:7}]},options:{responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>`${c.parsed.y.toFixed(4)} SOL`,afterLabel:c=>{if(c.dataIndex===0)return'';const t=rt[c.dataIndex-1];if(!t)return'';return`${t.action} | ${t.token}\nPnL: ${t.pnl_sol!==null?(t.pnl_sol>=0?'+':'')+t.pnl_sol.toFixed(4)+' SOL':'open'}`;}}},annotation:{annotations:{baseline:{type:'line',yMin:initial,yMax:initial,borderColor:'rgba(139,148,158,.3)',borderWidth:1,borderDash:[5,5],label:{display:true,content:`${initial} SOL`,position:'start',color:'#8b949e',font:{size:11}}}}}},scales:{x:{ticks:{color:'#484f58',font:{size:10}},grid:{color:'#21262d'}},y:{ticks:{color:'#8b949e',callback:v=>v.toFixed(1)},grid:{color:'#21262d'}}}}});
+}
+loadWallet();setInterval(loadWallet,10000);
+</script>
+</body>
+</html>
