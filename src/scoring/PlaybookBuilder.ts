@@ -306,8 +306,19 @@ export class PlaybookBuilder {
     // avgPumpMultiple < 1.5 means token barely moves from entry price
     const hasRealPump = avgPumpMultiple >= 1.5;
 
-    // High consistency and sufficient data and real pump → RIDE
+    // v8.1: RIDE criteria expanded — pump quality matters more than timing consistency
+    // Data: 151 WATCH wallets with pump_x≥2.0 and WR≥25% were being ignored.
+    // They produced 1,210 tokens in 3 days, 609 pumped (50% WR) — better than RIDE wallets.
+    // Old: consistency≥0.7 AND samples≥5 AND pump≥1.5x (too strict, missed 63% of good wallets)
+    // New: also include strong pumpers with ≥3 samples regardless of timing consistency
+    
+    // Path 1: Original — high consistency + sufficient data + real pump
     if (consistencyScore >= 0.7 && sampleSize >= 5 && hasRealPump) {
+      return 'RIDE';
+    }
+
+    // Path 2: Strong pumper — avg pump ≥2.0x with ≥3 samples (consistency irrelevant)
+    if (avgPumpMultiple >= 2.0 && sampleSize >= 3 && avgPeakMC >= 2000) {
       return 'RIDE';
     }
 
