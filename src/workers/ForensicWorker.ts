@@ -255,8 +255,11 @@ export class ForensicWorker {
 
       await this.monitoringRepo.enqueue(tokenMint, creatorWallet, MONITORING_DELAY_MINUTES, trackingMode);
 
-      // Subscribe to real-time trade stream (0 credits, push-based)
-      this.pumpTradeStream.subscribe(tokenMint);
+      // v8.1: Only subscribe RIDE tokens to trade stream (preserve 100 slots for what matters)
+      if (strategy === 'RIDE') {
+        this.pumpTradeStream.subscribe(tokenMint);
+        logger.info({ token: tokenMint, strategy }, '🎯 RIDE token subscribed to trade stream');
+      }
 
       logger.info({ token: tokenMint, tracking_mode: trackingMode, rug_count: rugCount, strategy }, 'Token enqueued for monitoring');
     } catch (error) {
@@ -357,8 +360,13 @@ export class ForensicWorker {
 
       await this.monitoringRepo.enqueue(tokenMint, creatorWallet, MONITORING_DELAY_MINUTES, trackingMode);
 
-      // Subscribe to real-time trade stream (0 credits, push-based)
-      this.pumpTradeStream.subscribe(tokenMint);
+      // v8.1: Only subscribe RIDE tokens to trade stream (preserve 100 slots for what matters)
+      // Before: subscribed ALL tokens → 1500+/hour → 100 slot cap → RIDE tokens dropped
+      // After: only RIDE → ~25/hour → always fits in 100 slots
+      if (strategy === 'RIDE') {
+        this.pumpTradeStream.subscribe(tokenMint);
+        logger.info({ token: tokenMint, strategy }, '🎯 RIDE token subscribed to trade stream');
+      }
 
       // v5.3: No instant entry — phased entry waits for T+3-8s dip after bot spike
       // The tradeExecutor will enter via trade ticks from PumpTradeStream
