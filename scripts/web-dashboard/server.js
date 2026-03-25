@@ -298,67 +298,66 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
-// GET /api/paper-trades - Paper trading P&L bilan
+// GET /api/paper-trades - Paper trading P&L bilan (v10.13: reads from PostgreSQL)
 app.get('/api/paper-trades', async (req, res) => {
   try {
-    const logPath = process.env.PAPER_TRADING_LOG_FILE || './data/paper-trades.log';
-    let entries = [];
+    const buyRows = await pool.query(`
+      SELECT token_address, timestamp, mc_usd::float as mc, reason, buy_strategy, strategy_version, quality_score
+      FROM paper_trades WHERE action = 'BUY' ORDER BY timestamp
+    `);
+    const sellRows = await pool.query(`
+      SELECT token_address, timestamp, mc_usd::float as mc, reason, exit_type, pnl_pct::float as pnl_pct, peak_pct::float as peak_pct, buy_strategy
+      FROM paper_trades WHERE action = 'SELL' ORDER BY timestamp
+    `);
 
-    try {
-      const { readFile } = await import('fs/promises');
-      const content = await readFile(logPath, 'utf-8');
-      entries = content.trim().split('\n').filter(l => l.length > 0).map(l => JSON.parse(l));
-    } catch {
-      // No log file yet
+    const sellMap = {};
+    for (const s of sellRows.rows) {
+      if (!sellMap[s.token_address]) sellMap[s.token_address] = [];
+      sellMap[s.token_address].push(s);
     }
 
-    // Grouper par token
-    const byToken = {};
-    for (const e of entries) {
-      if (!byToken[e.token]) byToken[e.token] = [];
-      byToken[e.token].push(e);
-    }
-
-    // Calculer P&L par trade (BUY → SELL pair)
     const trades = [];
-    for (const [token, events] of Object.entries(byToken)) {
-      const buys  = events.filter(e => e.action === 'BUY');
-      const sells = events.filter(e => e.action === 'SELL');
-      if (!buys.length) continue;
-
-      const buy  = buys[0];
-      const sell = sells.find(s => s.timestamp >= buy.timestamp) || null;
-
-      const buyMC  = parseFloat(buy.current_mc);
-      const sellMC = sell ? parseFloat(sell.current_mc) : null;
-      const pnlPct = sellMC !== null && buyMC > 0 ? ((sellMC - buyMC) / buyMC) * 100 : null;
-
+    for (const buy of buyRows.rows) {
+      const sells = sellMap[buy.token_address] || [];
+      const sell = sells.find(s => new Date(s.timestamp) >= new Date(buy.timestamp)) || null;
       trades.push({
-        token: token.slice(0, 12) + '…',
-        token_full: token,
+        token: buy.token_address.slice(0, 12) + '\u2026',
+        token_full: buy.token_address,
         buy_time: buy.timestamp,
-        buy_mc: buyMC,
+        buy_mc: buy.mc,
         buy_reason: buy.reason,
+        entry_strategy: buy.buy_strategy || 'STD',
+        strategy_version: buy.strategy_version,
+        quality_score: buy.quality_score,
         sell_time: sell?.timestamp || null,
-        sell_mc: sellMC,
+        sell_mc: sell?.mc || null,
         sell_reason: sell?.reason || null,
-        pnl_pct: pnlPct !== null ? parseFloat(pnlPct.toFixed(2)) : null,
-        status: sellMC !== null ? (pnlPct >= 0 ? 'WIN' : 'LOSS') : 'OPEN'
+        exit_type: sell?.exit_type || null,
+        pnl_pct: sell?.pnl_pct != null ? parseFloat(sell.pnl_pct.toFixed(2)) : null,
+        peak_pct: sell?.peak_pct != null ? parseFloat(sell.peak_pct.toFixed(2)) : null,
+        status: sell ? (sell.pnl_pct >= 0 ? 'WIN' : 'LOSS') : 'OPEN'
       });
     }
 
-    trades.sort((a, b) => new Date(a.buy_time) - new Date(b.buy_time));
-
     const completed = trades.filter(t => t.pnl_pct !== null);
-    const wins      = completed.filter(t => t.pnl_pct > 0);
-    const losses    = completed.filter(t => t.pnl_pct <= 0);
-    const avgPnl    = completed.length ? completed.reduce((s, t) => s + t.pnl_pct, 0) / completed.length : 0;
-    const totalPnl  = completed.reduce((s, t) => s + t.pnl_pct, 0);
-    const winRate   = completed.length ? (wins.length / completed.length * 100) : 0;
+    const wins = completed.filter(t => t.pnl_pct > 0);
+    const losses = completed.filter(t => t.pnl_pct <= 0);
+    const avgPnl = completed.length ? completed.reduce((s, t) => s + t.pnl_pct, 0) / completed.length : 0;
+    const totalPnl = completed.reduce((s, t) => s + t.pnl_pct, 0);
+    const winRate = completed.length ? (wins.length / completed.length * 100) : 0;
 
-    // Compter signaux bruts (hors NONE/HOLD)
-    const rawBuy  = entries.filter(e => e.action === 'BUY').length;
-    const rawSell = entries.filter(e => e.action === 'SELL').length;
+    const strategies = {};
+    for (const t of completed) {
+      const strat = t.entry_strategy || 'STD';
+      if (!strategies[strat]) strategies[strat] = { count: 0, wins: 0, total_pnl: 0 };
+      strategies[strat].count++;
+      if (t.pnl_pct > 0) strategies[strat].wins++;
+      strategies[strat].total_pnl += t.pnl_pct;
+    }
+    for (const [k, v] of Object.entries(strategies)) {
+      v.win_rate = parseFloat((v.wins / v.count * 100).toFixed(1));
+      v.avg_pnl = parseFloat((v.total_pnl / v.count).toFixed(1));
+    }
 
     res.json({
       success: true,
@@ -373,8 +372,7 @@ app.get('/api/paper-trades', async (req, res) => {
         total_pnl_pct: parseFloat(totalPnl.toFixed(2)),
         best_pct: completed.length ? Math.max(...completed.map(t => t.pnl_pct)) : null,
         worst_pct: completed.length ? Math.min(...completed.map(t => t.pnl_pct)) : null,
-        raw_buy_signals: rawBuy,
-        raw_sell_signals: rawSell
+        strategies
       },
       trades
     });
@@ -382,6 +380,7 @@ app.get('/api/paper-trades', async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
 
 // ━━━ GRAPH API Endpoints ━━━
 
