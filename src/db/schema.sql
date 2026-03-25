@@ -159,3 +159,82 @@ CREATE TABLE calibration_log (
 
 CREATE INDEX idx_calibration_date ON calibration_log(calibrated_at);
 CREATE INDEX idx_calibration_param ON calibration_log(param_name);
+
+-- ============================================
+-- v10.13 Additional Tables (paper trading + trade events)
+-- ============================================
+
+-- 9. trade_events — Individual buy/sell transactions from PumpPortal stream
+CREATE TABLE IF NOT EXISTS trade_events (
+  id BIGSERIAL PRIMARY KEY,
+  token_address TEXT NOT NULL,
+  tx_type TEXT NOT NULL,
+  market_cap_usd REAL,
+  price_usd REAL,
+  volume_usd REAL,
+  v_sol REAL,
+  v_tokens REAL,
+  trader_wallet TEXT,
+  signature TEXT UNIQUE,
+  event_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  token_amount REAL,
+  new_token_balance REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_events_token ON trade_events(token_address, event_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trade_events_event_at ON trade_events(event_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trade_events_trader ON trade_events(trader_wallet, event_at DESC);
+
+-- 10. paper_trades — Paper trading records (BUY/SELL)
+CREATE TABLE IF NOT EXISTS paper_trades (
+  id SERIAL PRIMARY KEY,
+  token_address TEXT NOT NULL,
+  action TEXT NOT NULL CHECK (action IN ('BUY', 'SELL')),
+  strategy TEXT,
+  timestamp TIMESTAMPTZ NOT NULL,
+  elapsed_min NUMERIC(8,2),
+  mc_usd NUMERIC(14,2),
+  confidence NUMERIC(4,3),
+  position_sol NUMERIC(10,6),
+  quality_score SMALLINT,
+  wallet_risk NUMERIC(4,3),
+  buyers INTEGER,
+  ratio NUMERIC(6,3),
+  dumps INTEGER,
+  sell_ratio NUMERIC(6,3),
+  top_holder_pct NUMERIC(6,3),
+  avg_buy_usd NUMERIC(10,2),
+  exit_type TEXT,
+  pnl_pct NUMERIC(10,2),
+  peak_pct NUMERIC(10,2),
+  reason TEXT,
+  buy_strategy TEXT,
+  strategy_version TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pt_token ON paper_trades(token_address);
+CREATE INDEX IF NOT EXISTS idx_pt_action ON paper_trades(action);
+CREATE INDEX IF NOT EXISTS idx_pt_timestamp ON paper_trades(timestamp);
+CREATE INDEX IF NOT EXISTS idx_pt_strategy ON paper_trades(buy_strategy);
+CREATE INDEX IF NOT EXISTS idx_pt_exit ON paper_trades(exit_type);
+
+-- 11. live_trades — Real on-chain trade records
+CREATE TABLE IF NOT EXISTS live_trades (
+  id SERIAL PRIMARY KEY,
+  token_address TEXT NOT NULL,
+  side TEXT NOT NULL CHECK (side IN ('BUY', 'SELL')),
+  sol_in DOUBLE PRECISION,
+  sol_out DOUBLE PRECISION,
+  pnl_sol DOUBLE PRECISION,
+  pnl_pct DOUBLE PRECISION,
+  tx_signature TEXT,
+  reason TEXT,
+  jito_bundle BOOLEAN DEFAULT TRUE,
+  tip_lamports INTEGER,
+  latency_ms INTEGER,
+  executed_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_live_trades_token ON live_trades(token_address);
+CREATE INDEX IF NOT EXISTS idx_live_trades_time ON live_trades(executed_at);

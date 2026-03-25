@@ -109,6 +109,15 @@ class WalletSourceDB {
         logger.info('CartelDetector stopped');
       }
 
+      // 2.5. Save open positions before stopping anything
+      if (this.tokenTracker?.tradeExecutor) {
+        const te = this.tokenTracker.tradeExecutor as any;
+        if (typeof te.gracefulShutdown === 'function') {
+          await te.gracefulShutdown();
+          logger.info('💾 Open positions saved to DB');
+        }
+      }
+
       // 3. Stop TokenTracker
       if (this.tokenTracker) {
         await this.tokenTracker.stop();

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Ride the Rugger v8.1 — Dashboard</title>
+  <title>WalletSource v10.11 — Dashboard</title>
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"></script>
@@ -12,13 +12,13 @@
   <div class="container">
     <!-- Header -->
     <header>
-      <h1>🎩 Ride the Rugger v8.1</h1>
-      <p class="subtitle">Paper Trading &amp; Rugger Intelligence</p>
+      <h1>🎩 WalletSource v10.11</h1>
+      <p class="subtitle">Market Validation • Risk-Adjusted Sizing • Funder Analysis</p>
       <div class="status-badge" id="status-badge">
         <span class="dot"></span>
         <span id="status-text">Connecting...</span>
       </div>
-      <nav style="margin-left:auto"><a href="/graphs" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px 20px;color:#58a6ff;text-decoration:none;font-size:14px;font-weight:600;transition:all .2s" onmouseover="this.style.borderColor='#58a6ff';this.style.background='#1c2128'" onmouseout="this.style.borderColor='#30363d';this.style.background='#21262d'">📊 Graphs</a><a href="/wallet" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px 20px;color:#58a6ff;text-decoration:none;font-size:14px;font-weight:600;transition:all .2s" onmouseover="this.style.borderColor='#58a6ff';this.style.background='#1c2128'" onmouseout="this.style.borderColor='#30363d';this.style.background='#21262d'">💰 Wallet</a></nav>
+      <nav style="margin-left:auto"><a href="/graphs" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px 20px;color:#58a6ff;text-decoration:none;font-size:14px;font-weight:600;transition:all .2s" onmouseover="this.style.borderColor='#58a6ff';this.style.background='#1c2128'" onmouseout="this.style.borderColor='#30363d';this.style.background='#21262d'">📊 Graphs</a><a href="/wallet" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px 20px;color:#58a6ff;text-decoration:none;font-size:14px;font-weight:600;transition:all .2s" onmouseover="this.style.borderColor='#58a6ff';this.style.background='#1c2128'" onmouseout="this.style.borderColor='#30363d';this.style.background='#21262d'">💰 Wallet</a><a href="/tuning" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px 20px;color:#58a6ff;text-decoration:none;font-size:14px;font-weight:600;transition:all .2s" onmouseover="this.style.borderColor='#58a6ff';this.style.background='#1c2128'" onmouseout="this.style.borderColor='#30363d';this.style.background='#21262d'">🧬 Tuning</a> <a href="/monkey" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px 20px;color:#ffad1f;text-decoration:none;font-size:14px;font-weight:600;transition:all .2s" onmouseover="this.style.borderColor='#ffad1f'" onmouseout="this.style.borderColor='#30363d'">🐒 Monkey</a></nav>
     </header>
 
     <!-- Main Stats Grid -->
@@ -96,7 +96,7 @@
       <div class="stat-card">
         <div class="stat-header">
           <span class="icon">📖</span>
-          <h3>Rugger Playbooks</h3>
+          <h3>Wallet Strategies</h3>
         </div>
         <div class="stat-row">
           <span class="label">Total Built</span>
@@ -206,7 +206,7 @@
       <div class="stat-card">
         <div class="stat-header">
           <span class="icon">🚨</span>
-          <h3>Rugger-Specific</h3>
+          <h3>Funder Analysis</h3>
         </div>
         <div class="stat-row">
           <span class="label">3+ RUGs (eligible)</span>
@@ -238,6 +238,115 @@
     </div>
 
 
+
+    <!-- v9.0 Strategy Performance -->
+    <div class="section" id="v9-section">
+      <h2>🎯 v10.11 Strategy Performance</h2>
+      <div class="stats-grid" style="margin-bottom:1rem">
+        <div class="stat-card" style="border-left:3px solid #00e676">
+          <div class="stat-header"><span class="icon">🌟</span><h3>v10-MARKET</h3></div>
+          <div class="stat-row"><span class="label">Wallets</span><span class="value" id="v9-ride-wallets">-</span></div>
+          <div class="stat-row"><span class="label">Clean Wallets</span><span class="value success" id="v9-ride-clean">-</span></div>
+          <div class="stat-row"><span class="label">Tokens</span><span class="value" id="v9-ride-tokens">-</span></div>
+          <div class="stat-row"><span class="label">Pump Rate</span><span class="value success" id="v9-ride-pumprate">-</span></div>
+          <div class="stat-row"><span class="label">Avg P&L</span><span class="value success" id="v9-ride-pnl">-</span></div>
+          <div class="stat-row"><span class="label">3x+ Pumps</span><span class="value" id="v9-ride-3x">-</span></div>
+        </div>
+        <div class="stat-card" style="border-left:3px solid #4fc3f7">
+          <div class="stat-header"><span class="icon">📉</span><h3>FADE (blocked)</h3></div>
+          <div class="stat-row"><span class="label">Wallets</span><span class="value" id="v9-fade-wallets">-</span></div>
+          <div class="stat-row"><span class="label">Tokens</span><span class="value" id="v9-fade-tokens">-</span></div>
+          <div class="stat-row"><span class="label">Pump Rate</span><span class="value info" id="v9-fade-pumprate">-</span></div>
+          <div class="stat-row"><span class="label">Avg P&L</span><span class="value info" id="v9-fade-pnl">-</span></div>
+        </div>
+        <div class="stat-card" style="border-left:3px solid #ffc107">
+          <div class="stat-header"><span class="icon">📊</span><h3>10h Activity</h3></div>
+          <div class="stat-row"><span class="label">Tokens</span><span class="value" id="v9-10h-tokens">-</span></div>
+          <div class="stat-row"><span class="label">SUCCESS</span><span class="value success" id="v9-10h-success">-</span></div>
+          <div class="stat-row"><span class="label">RUG</span><span class="value danger" id="v9-10h-rug">-</span></div>
+          <div class="stat-row"><span class="label">NEUTRAL</span><span class="value" id="v9-10h-neutral">-</span></div>
+        </div>
+      </div>
+
+      <!-- v9.0 Changes -->
+      <div class="stat-card" style="margin-bottom:1rem">
+        <div class="stat-header"><span class="icon">🔧</span><h3>v10.11 Config</h3></div>
+        <div style="padding:0 12px;font-size:0.78rem;color:#c9d1d9;line-height:1.7">
+<b style="color:#58a6ff">Entry:</b> b≥70 • ratio 2.0-3.0x • d&lt;30 • window ≤110s • momentum 5t 3%+<br>
+<b style="color:#3fb950">Sizing:</b> 0.5-(risk×0.4) SOL → RIDE 0.47 • WATCH 0.30 • AVOID 0.21<br>
+<b style="color:#f85149">Blocks:</b> FADE wallets • Toxic funders (FADE/AVOID)<br>
+<b style="color:#d29922">Exit:</b> HS -20% • FLAT trail 20% (≥50% peak) • PUMP3 &lt;50% • Max 10min<br>
+<b style="color:#8b949e">Funder:</b> RPC lookup during OBSERVE • Risk inherited • Ancestry stored<br>
+<b style="color:#8b949e">Disabled:</b> RUGGER strategy • avgBuy filter • Sell pressure filter<br><b style="color:#3fb950">New:</b> ⚡ EARLY ENTRY — ratio 1.2-2.0x, ≥50 buyers, Q2+, max 0.30 SOL
+</div>
+      <script>
+      // Inline v9 loader — fires immediately, doesn't depend on app.js
+      (function(){
+        function v9set(id,txt){var e=document.getElementById(id);if(e)e.textContent=txt;}
+        function v9load(){
+          fetch('/api/v9-stats').then(function(r){return r.json()}).then(function(d){
+            if(!d.success)return;
+            var r=d.ride||{},f=d.fade||{},h=d.recent_10h||{};
+            v9set('v9-ride-wallets',Number(r.wallets||0).toLocaleString());
+            v9set('v9-ride-clean',Number(r.clean_wallets||0).toLocaleString());
+            v9set('v9-ride-tokens',Number(r.tokens||0).toLocaleString());
+            v9set('v9-ride-pumprate',(r.pump_rate||'0')+'%');
+            v9set('v9-ride-3x',Number(r.pumps_3x||0).toLocaleString());
+            var pe=document.getElementById('v9-ride-pnl');
+            if(pe){var p=parseFloat(r.avg_pnl_pct)||0;pe.textContent=(p>=0?'+':'')+p+'%';pe.className='value '+(p>=0?'success':'danger');}
+            v9set('v9-fade-wallets',Number(f.wallets||0).toLocaleString());
+            v9set('v9-fade-tokens',Number(f.tokens||0).toLocaleString());
+            v9set('v9-fade-pumprate',(f.pump_rate||'0')+'%');
+            var fp=document.getElementById('v9-fade-pnl');
+            if(fp){var fv=parseFloat(f.avg_pnl_pct)||0;fp.textContent=(fv>=0?'+':'')+fv+'%';fp.className='value '+(fv>=0?'info':'danger');}
+            v9set('v9-10h-tokens',Number(h.tokens_10h||0).toLocaleString());
+            v9set('v9-10h-success',Number(h.success_10h||0).toLocaleString());
+            v9set('v9-10h-rug',Number(h.rug_10h||0).toLocaleString());
+            v9set('v9-10h-neutral',Number(h.neutral_10h||0).toLocaleString());
+            var ce=document.getElementById('v9-changes');
+            if(ce&&d.changes){ce.innerHTML='<ul style="margin:4px 0;padding-left:20px;list-style:none">'+d.changes.map(function(c){return '<li style="margin:6px 0;padding:4px 0;border-bottom:1px solid #21262d">✅ '+c+'</li>'}).join('')+'</ul>';}
+            var tb=document.getElementById('v9-ride-tbody');
+            if(tb&&d.top_ride&&d.top_ride.length){tb.innerHTML=d.top_ride.map(function(w){
+              var ic=parseInt(w.rug_count)===0;
+              var ty=ic?'<span style="color:#00e676;font-weight:bold">🌟 CLEAN</span>':'<span style="color:#ffc107">🔴 RUGGER</span>';
+              var pr=parseFloat(w.pump_rate)||0;
+              var pc=pr>=50?'success':pr>=30?'info':'';
+              return '<tr><td class="mono" style="font-size:0.7rem">'+w.wallet_address.slice(0,8)+'…'+w.wallet_address.slice(-4)+'</td><td>'+ty+'</td><td>'+w.rug_count+'</td><td style="color:#00e676">'+w.survival_count+'</td><td>'+w.tokens+'</td><td style="color:#00e676">'+w.pumps+'</td><td class="value '+pc+'">'+pr+'%</td><td>$'+parseInt(w.avg_peak_mc||0).toLocaleString()+'</td></tr>';
+            }).join('');}
+          }).catch(function(e){
+            var ce=document.getElementById('v9-changes');
+            if(ce)ce.textContent='Error: '+e.message;
+          });
+        }
+        v9load();
+        setInterval(v9load,15000);
+      })();
+      </script>
+      </div>
+
+      <!-- Top RIDE Wallets Table -->
+      <div class="table-container">
+        <h3 style="color:#58a6ff;margin:0 0 8px 0;font-size:0.9rem">🏆 Top RIDE Wallets</h3>
+        <table class="trades-table" id="v9-ride-table">
+          <thead>
+            <tr>
+              <th>Wallet</th>
+              <th>Type</th>
+              <th>Rugs</th>
+              <th>Survivals</th>
+              <th>Tokens</th>
+              <th>Pumps</th>
+              <th>Pump Rate</th>
+              <th>Avg Peak MC</th>
+            </tr>
+          </thead>
+          <tbody id="v9-ride-tbody">
+            <tr><td colspan="8" style="text-align:center;color:#666">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Paper Trading P&L -->
     <div class="section" id="paper-trades-section">
       <h2>💰 Paper Trading — Bilan P&amp;L</h2>
@@ -268,17 +377,21 @@
 
       <!-- Trades table -->
       <div class="table-container">
+        <!-- Per-Strategy Breakdown -->
+        <div id="strategy-breakdown" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px"></div>
+
         <table class="trades-table" id="pt-table">
           <thead>
             <tr>
               <th>#</th>
+              <th>Stratégie</th>
               <th>Token</th>
               <th>BUY Time</th>
               <th>MC Entrée</th>
               <th>MC Sortie</th>
               <th>P&amp;L</th>
               <th>Statut</th>
-              <th>Raison sortie</th>
+              <th>Exit</th>
               <th>📈</th>
             </tr>
           </thead>

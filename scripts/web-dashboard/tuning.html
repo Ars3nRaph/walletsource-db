@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🧬 Strategy Tuning — Version History</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .nav-bar { display:flex; gap:10px; justify-content:center; margin-top:16px; flex-wrap:wrap; }
+    .nav-bar a { background:#21262d; border:1px solid #30363d; border-radius:8px; padding:10px 20px; color:#58a6ff; text-decoration:none; font-size:14px; font-weight:600; transition:all .2s; }
+    .nav-bar a:hover { border-color:#58a6ff; background:#1c2128; }
+    .nav-bar a.active { border-color:#58a6ff; background:#1c2128; }
+
+    /* Evolution timeline */
+    .evolution-bar { display:flex; align-items:center; gap:8px; margin-bottom:24px; padding:16px; background:var(--bg-secondary,#161b22); border-radius:12px; border:1px solid var(--border,#30363d); overflow-x:auto; }
+    .evo-step { text-align:center; flex-shrink:0; min-width:80px; cursor:pointer; padding:8px; border-radius:8px; transition:background .2s; }
+    .evo-step:hover { background:#ffffff10; }
+    .evo-step.active { background:#1da1f220; border:1px solid #1da1f2; }
+    .evo-step .evo-name { font-size:0.8rem; font-weight:700; }
+    .evo-step .evo-wr { font-size:1.1rem; font-weight:800; }
+    .evo-step .evo-pnl { font-size:0.72rem; }
+    .evo-arrow { color:var(--text-secondary,#8b949e); font-size:1.2rem; flex-shrink:0; }
+    .evo-arrow.up { color:var(--success,#17bf63); }
+    .evo-arrow.down { color:var(--danger,#e0245e); }
+
+    /* Version card — compact with dropdown */
+    .version-card { background:var(--bg-card,#0d1117); border:1px solid var(--border,#30363d); border-radius:12px; margin-bottom:16px; overflow:hidden; }
+    .version-header { display:flex; align-items:center; gap:12px; padding:16px 20px; cursor:pointer; user-select:none; transition:background .15s; }
+    .version-header:hover { background:#ffffff06; }
+    .version-tag { font-size:1rem; font-weight:800; padding:4px 12px; border-radius:6px; background:linear-gradient(135deg,#1da1f2,#17bf63); color:#0f1419; flex-shrink:0; }
+    .version-tag.loss { background:linear-gradient(135deg,#e0245e,#ff6b35); }
+    .version-tag.neutral { background:linear-gradient(135deg,#8899a6,#556677); }
+    .version-header .meta { display:flex; gap:16px; align-items:center; flex-wrap:wrap; flex:1; }
+    .version-header .meta .stat { font-size:0.85rem; font-weight:600; }
+    .version-header .meta .stat.green { color:var(--success,#17bf63); }
+    .version-header .meta .stat.red { color:var(--danger,#e0245e); }
+    .version-header .meta .stat.blue { color:var(--info,#1da1f2); }
+    .version-header .meta .date { font-size:0.75rem; color:var(--text-secondary,#8b949e); margin-left:auto; }
+    .version-header .chevron { font-size:1.2rem; color:var(--text-secondary); transition:transform .2s; flex-shrink:0; }
+    .version-header.open .chevron { transform:rotate(180deg); }
+
+    .version-body { display:none; padding:0 20px 20px; }
+    .version-body.open { display:block; }
+
+    .summary-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(100px,1fr)); gap:8px; margin-bottom:16px; }
+    .summary-item { text-align:center; padding:10px 8px; background:var(--bg-secondary,#161b22); border-radius:8px; }
+    .summary-item .val { font-size:1.2rem; font-weight:700; }
+    .summary-item .lbl { font-size:0.7rem; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.5px; margin-top:2px; }
+    .val.green { color:var(--success,#17bf63); }
+    .val.red { color:var(--danger,#e0245e); }
+    .val.blue { color:var(--info,#1da1f2); }
+
+    .exit-breakdown { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
+    .exit-chip { padding:3px 8px; border-radius:10px; font-size:0.72rem; font-weight:600; background:var(--bg-secondary); border:1px solid var(--border); }
+    .exit-chip.CASCADE { border-color:#e0245e; color:#e0245e; }
+    .exit-chip.HARD_STOP { border-color:#ff6b35; color:#ff6b35; }
+    .exit-chip.NO_PUMP { border-color:#8899a6; color:#8899a6; }
+    .exit-chip.TRAIL { border-color:#17bf63; color:#17bf63; }
+    .exit-chip.TRAILING { border-color:#17bf63; color:#17bf63; }
+    .exit-chip.GRACE_TRAIL { border-color:#1da1f2; color:#1da1f2; }
+    .exit-chip.BREAKEVEN { border-color:#ffad1f; color:#ffad1f; }
+    .exit-chip.MAX_HOLD { border-color:#a855f7; color:#a855f7; }
+    .exit-chip.SWEEP { border-color:#666; color:#888; }
+
+    .tune-changes { background:var(--bg-primary,#010409); border:1px solid #2ea04366; border-radius:8px; padding:10px 14px; margin-bottom:12px; }
+    .tune-changes h4 { color:var(--success); font-size:0.8rem; margin-bottom:6px; }
+    .tune-change-item { font-size:0.78rem; color:var(--text-secondary); padding:1px 0; }
+    .tune-change-item .param { color:var(--info); font-weight:600; }
+    .tune-change-item .old { color:var(--danger); text-decoration:line-through; }
+    .tune-change-item .new { color:var(--success); font-weight:600; }
+
+    /* Trades table — hidden by default */
+    .trades-toggle { cursor:pointer; color:var(--text-secondary); font-size:0.8rem; padding:8px 0; user-select:none; }
+    .trades-toggle:hover { color:var(--info); }
+    .trades-wrap { display:none; }
+    .trades-wrap.open { display:block; }
+
+    .trades-table { width:100%; border-collapse:collapse; font-size:0.78rem; }
+    .trades-table th { text-align:left; padding:6px 8px; color:var(--text-secondary); border-bottom:2px solid var(--border); font-size:0.68rem; text-transform:uppercase; letter-spacing:0.5px; }
+    .trades-table td { padding:6px 8px; border-bottom:1px solid #38444d22; }
+    .trades-table tr:hover td { background:#ffffff06; }
+    .trades-table tr.win td { border-left:3px solid var(--success); }
+    .trades-table tr.loss td { border-left:3px solid var(--danger); }
+    .pnl-badge { padding:2px 6px; border-radius:5px; font-weight:700; font-size:0.78rem; }
+    .pnl-badge.win { background:#17bf6320; color:var(--success); }
+    .pnl-badge.loss { background:#e0245e20; color:var(--danger); }
+    .exit-tag { font-size:0.68rem; padding:2px 5px; border-radius:3px; font-weight:500; }
+    .exit-tag.HARD_STOP { background:#ff6b3520; color:#ff6b35; }
+    .exit-tag.CASCADE { background:#e0245e20; color:#e0245e; }
+    .exit-tag.NO_PUMP { background:#88999a20; color:#8899a6; }
+    .exit-tag.TRAIL,.exit-tag.TRAILING { background:#17bf6320; color:#17bf63; }
+    .exit-tag.BREAKEVEN { background:#ffad1f20; color:#ffad1f; }
+    .exit-tag.SWEEP { background:#55555520; color:#888; }
+    .exit-tag.OTHER { background:#55667720; color:#8899a6; }
+    .token-link { color:var(--accent,#58a6ff); text-decoration:none; font-family:monospace; font-size:0.76rem; }
+    .token-link:hover { text-decoration:underline; }
+
+    /* Params grid */
+    .params-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:6px; margin-top:12px; }
+    .param-row { display:flex; justify-content:space-between; padding:5px 8px; background:var(--bg-secondary); border-radius:5px; font-size:0.78rem; }
+    .param-row .pname { color:var(--text-secondary); }
+    .param-row .pval { color:var(--info); font-weight:600; font-family:monospace; }
+
+    .loading { text-align:center; padding:40px; color:var(--text-secondary); }
+    .empty { text-align:center; padding:30px; color:var(--text-secondary); font-style:italic; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🧬 Strategy Tuning</h1>
+      <p class="subtitle">Versions, trades, optimisations — tout l'historique</p>
+      <div class="nav-bar">
+        <a href="/">📡 Dashboard</a>
+        <a href="/graphs">📊 Graphs</a>
+        <a href="/wallet">💰 Wallet</a>
+        <a href="/tuning" class="active">🧬 Tuning</a> <a href="/monkey" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px 20px;color:#ffad1f;text-decoration:none;font-size:14px;font-weight:600;transition:all .2s" onmouseover="this.style.borderColor='#ffad1f'" onmouseout="this.style.borderColor='#30363d'">🐒 Monkey</a>
+      </div>
+    </header>
+
+    <div id="evolution" class="evolution-bar"><div class="loading">Chargement...</div></div>
+
+    <div class="version-card" id="current-params-card" style="display:none">
+      <div class="version-header" onclick="toggleBody(this)">
+        <span style="font-weight:700;font-size:0.9rem">⚙️ Paramètres Actifs</span>
+        <span class="chevron">▼</span>
+      </div>
+      <div class="version-body" id="params-body">
+        <div class="params-grid" id="params-grid"></div>
+      </div>
+    </div>
+
+    <div id="versions-container"><div class="loading">Chargement des versions...</div></div>
+  </div>
+
+<script>
+(function() {
+  var allVersions = [];
+
+  fetch('/api/tuning-history')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.success) { document.getElementById('versions-container').innerHTML = '<div class="empty">Erreur: ' + (data.error||'') + '</div>'; return; }
+      allVersions = data.versions || [];
+      renderEvolution(allVersions);
+      renderParams(data.current_params);
+      renderVersions(allVersions);
+    })
+    .catch(function(e) { document.getElementById('versions-container').innerHTML = '<div class="empty">Erreur: ' + e.message + '</div>'; });
+
+  function renderEvolution(versions) {
+    var el = document.getElementById('evolution');
+    if (!versions.length) { el.innerHTML = '<div class="empty">Aucune version</div>'; return; }
+    var html = '';
+    for (var i = 0; i < versions.length; i++) {
+      var v = versions[i], s = v.summary;
+      var wrC = s.win_rate >= 50 ? 'green' : s.win_rate >= 30 ? 'blue' : 'red';
+      var pC = s.avg_pnl >= 0 ? 'green' : 'red';
+      if (i > 0) {
+        var prev = versions[i-1].summary;
+        var better = s.avg_pnl > prev.avg_pnl;
+        html += '<div class="evo-arrow ' + (better?'up':'down') + '">' + (better?'→✨':'→') + '</div>';
+      }
+      html += '<div class="evo-step" data-idx="'+i+'" onclick="scrollToVersion('+i+')">' +
+        '<div class="evo-name">' + esc(v.version) + '</div>' +
+        '<div class="evo-wr '+wrC+'">' + s.win_rate + '%</div>' +
+        '<div class="evo-pnl '+pC+'">' + (s.avg_pnl>=0?'+':'') + s.avg_pnl + '%</div>' +
+        '<div style="font-size:0.65rem;color:var(--text-secondary)">' + s.total + 't</div></div>';
+    }
+    el.innerHTML = html;
+  }
+
+  function renderParams(params) {
+    if (!params) return;
+    document.getElementById('current-params-card').style.display = 'block';
+    var grid = document.getElementById('params-grid');
+    var keys = Object.keys(params).sort(), html = '';
+    for (var i = 0; i < keys.length; i++)
+      html += '<div class="param-row"><span class="pname">'+esc(keys[i])+'</span><span class="pval">'+params[keys[i]]+'</span></div>';
+    grid.innerHTML = html;
+  }
+
+  function renderVersions(versions) {
+    var c = document.getElementById('versions-container');
+    if (!versions.length) { c.innerHTML = '<div class="empty">Aucun trade</div>'; return; }
+    var reversed = versions.slice().reverse(), html = '';
+    for (var vi = 0; vi < reversed.length; vi++) {
+      var v = reversed[vi], s = v.summary, idx = versions.length - 1 - vi;
+      var tagClass = s.avg_pnl > 0 ? '' : s.total === 0 ? 'neutral' : 'loss';
+      var wrC = s.win_rate >= 50 ? 'green' : s.win_rate >= 30 ? 'blue' : 'red';
+      var pC = s.avg_pnl >= 0 ? 'green' : 'red';
+      var dateRange = fmtDate(v.first_trade) + (v.last_trade ? ' → ' + fmtDate(v.last_trade) : '');
+
+      html += '<div class="version-card" id="version-'+idx+'">';
+
+      // Compact header with key stats inline
+      html += '<div class="version-header" onclick="toggleBody(this)">';
+      html += '<span class="version-tag '+tagClass+'">'+esc(v.version)+'</span>';
+      html += '<div class="meta">';
+      html += '<span class="stat blue">'+s.total+' trades</span>';
+      html += '<span class="stat '+wrC+'">WR '+s.win_rate+'%</span>';
+      html += '<span class="stat '+pC+'">'+(s.avg_pnl>=0?'+':'')+s.avg_pnl+'% avg</span>';
+      html += '<span class="stat '+(s.total_pnl>=0?'green':'red')+'">'+(s.total_pnl>=0?'+':'')+s.total_pnl+'% total</span>';
+      html += '<span class="date">'+dateRange+'</span>';
+      html += '</div>';
+      html += '<span class="chevron">▼</span>';
+      html += '</div>';
+
+      // Collapsible body
+      html += '<div class="version-body">';
+
+      if (s.total > 0) {
+        // Summary grid
+        html += '<div class="summary-grid">' +
+          si(s.wins,'Wins','green') + si(s.losses,'Losses','red') +
+          si(s.avg_hold_sec+'s','Hold Moyen','blue') +
+          si(s.best_pnl!==null?'+'+s.best_pnl+'%':'-','Meilleur','green') +
+          si(s.worst_pnl!==null?s.worst_pnl+'%':'-','Pire','red') +
+          si(s.clean_count+'/'+s.rugger_count,'Clean/Rug','blue') +
+          '</div>';
+
+        // Exit chips
+        if (v.exit_reasons && Object.keys(v.exit_reasons).length) {
+          html += '<div class="exit-breakdown">';
+          var reasons = Object.entries(v.exit_reasons).sort(function(a,b){return b[1]-a[1]});
+          for (var ri=0;ri<reasons.length;ri++)
+            html += '<span class="exit-chip '+reasons[ri][0]+'">'+reasons[ri][0]+' ×'+reasons[ri][1]+'</span>';
+          html += '</div>';
+        }
+      } else {
+        html += '<div class="empty">Aucun trade complété</div>';
+      }
+
+      // Tune changes
+      if (v.tune_event && v.tune_event.applied && v.tune_event.applied.length) {
+        html += '<div class="tune-changes"><h4>🧬 Changements AutoTuner</h4>';
+        for (var ci=0;ci<v.tune_event.applied.length;ci++) {
+          var ch = v.tune_event.applied[ci];
+          html += '<div class="tune-change-item"><span class="param">'+esc(ch.param)+'</span>: <span class="old">'+ch.old+'</span> → <span class="new">'+ch.new+'</span></div>';
+        }
+        html += '</div>';
+      }
+
+      // Trades table — collapsed by default
+      if (v.trades.length > 0) {
+        html += '<div class="trades-toggle" onclick="toggleTrades(this)">📋 Voir les '+v.trades.length+' trades ▸</div>';
+        html += '<div class="trades-wrap">';
+        html += '<table class="trades-table"><thead><tr>' +
+          '<th>#</th><th>Token</th><th>Buy MC</th><th>Sell MC</th><th>Peak</th><th>P&L</th><th>Hold</th><th>Exit</th><th>Heure</th>' +
+          '</tr></thead><tbody>';
+        for (var ti=0;ti<v.trades.length;ti++) {
+          var t = v.trades[ti], isWin = t.pnl_pct > 0;
+          html += '<tr class="'+(isWin?'win':'loss')+'">'+
+            '<td>'+(ti+1)+'</td>'+
+            '<td><a class="token-link" href="https://pump.fun/'+esc(t.token_full)+'" target="_blank">'+esc(t.token)+'</a></td>'+
+            '<td>$'+fmtMC(t.buy_mc)+'</td>'+
+            '<td>$'+fmtMC(t.sell_mc)+'</td>'+
+            '<td>'+(t.peak_mc?'$'+fmtMC(t.peak_mc)+(t.peak_x?' <small>('+t.peak_x+'x)</small>':''):'-')+'</td>'+
+            '<td><span class="pnl-badge '+(isWin?'win':'loss')+'">'+(isWin?'+':'')+t.pnl_pct+'%</span></td>'+
+            '<td>'+t.hold_sec+'s</td>'+
+            '<td><span class="exit-tag '+esc(t.exit_reason)+'">'+esc(t.exit_reason)+'</span></td>'+
+            '<td style="font-size:0.68rem;color:var(--text-secondary)">'+fmtTime(t.buy_time)+'</td></tr>';
+        }
+        html += '</tbody></table></div>';
+      }
+
+      html += '</div></div>';
+    }
+    c.innerHTML = html;
+  }
+
+  function si(v,l,c) { return '<div class="summary-item"><div class="val '+(c||'')+'">'+v+'</div><div class="lbl">'+l+'</div></div>'; }
+  function fmtDate(ts) { if(!ts) return '-'; var d=new Date(ts); return d.toLocaleDateString('fr-FR',{day:'2-digit',month:'short'}); }
+  function fmtTime(ts) { if(!ts) return ''; var d=new Date(ts); return d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}); }
+  function fmtMC(n) { if(n==null) return '-'; if(n>=1e6) return (n/1e6).toFixed(1)+'M'; if(n>=1e3) return (n/1e3).toFixed(1)+'K'; return n.toFixed(0); }
+  function esc(s) { if(!s) return ''; var d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+})();
+
+function toggleBody(header) {
+  header.classList.toggle('open');
+  var body = header.nextElementSibling;
+  if (body) body.classList.toggle('open');
+}
+function toggleTrades(el) {
+  var wrap = el.nextElementSibling;
+  if (!wrap) return;
+  var open = wrap.classList.toggle('open');
+  el.textContent = open ? '📋 Masquer les trades ▾' : '📋 Voir les '+wrap.querySelectorAll('tr').length+' trades ▸';
+}
+function scrollToVersion(idx) {
+  var el = document.getElementById('version-'+idx);
+  if (el) { el.scrollIntoView({behavior:'smooth',block:'start'}); var h=el.querySelector('.version-header'); if(h&&!h.classList.contains('open')) toggleBody(h); }
+}
+</script>
+</body>
+</html>

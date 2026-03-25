@@ -7,11 +7,18 @@ async function main() {
   const pool = await getDb();
   const builder = new PlaybookBuilder(pool);
 
+  // v9.0: Include clean wallets (rug_count=0, survival>=3) alongside ruggers
   const { rows: wallets } = await pool.query(`
-    SELECT DISTINCT creator_wallet as wallet_address
-    FROM token_events
-    WHERE creator_wallet IS NOT NULL
-      AND verdict IN ('RUG_NO_PAIR', 'RUG_METRICS')
+    SELECT DISTINCT wallet_address FROM (
+      SELECT DISTINCT creator_wallet as wallet_address
+      FROM token_events
+      WHERE creator_wallet IS NOT NULL
+        AND verdict IN ('RUG_NO_PAIR', 'RUG_METRICS')
+      UNION
+      SELECT wallet_address
+      FROM wallet_profiles
+      WHERE rug_count = 0 AND survival_count >= 3
+    ) combined
   `);
 
   console.log(`Total wallets à rebuilder: ${wallets.length}`);

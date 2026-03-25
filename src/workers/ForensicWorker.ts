@@ -52,6 +52,18 @@ export class ForensicWorker {
 
     logger.info({ url: wssUrl.replace(/api-key=[^&]+/, 'api-key=***') }, 'ForensicWorker starting');
     await this.pumpTradeStream.start();
+    
+    // Re-subscribe recovered positions to websocket after restart
+    if (this.tradeExecutor && typeof (this.tradeExecutor as any).getOpenPositionTokens === 'function') {
+      const recoveredTokens = (this.tradeExecutor as any).getOpenPositionTokens() as string[];
+      for (const tok of recoveredTokens) {
+        this.pumpTradeStream.subscribe(tok, true); // priority=true
+      }
+      if (recoveredTokens.length > 0) {
+        logger.info({ count: recoveredTokens.length }, '🔄 Re-subscribed recovered positions to websocket');
+      }
+    }
+    
     await this.connect(wssUrl);
   }
 
@@ -246,19 +258,29 @@ export class ForensicWorker {
 
       let trackingMode: 'deep' | 'medium' | 'fast_verdict';
       if (strategy === 'RIDE' || strategy === 'FADE' || strategy === 'AVOID') {
-        trackingMode = 'deep'; // Known interesting — full 10s/20min tracking
+        trackingMode = 'deep';
+      } else if (isNewWallet && rugCount === 0) {
+        trackingMode = 'deep'; // v9.2: new wallets get deep (potential clean)
+        logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8) }, '🆕 New wallet → deep tracking (Helius path)');
       } else if (rugCount >= 3) {
-        trackingMode = 'medium'; // Known rugger — 30s/10min tracking
+        trackingMode = 'medium';
       } else {
-        trackingMode = 'fast_verdict'; // Unknown/new — 2 checks only (T+3min, T+10min)
+        trackingMode = 'fast_verdict';
+      }
+
+      // Force deep tracking for rugger priority wallets (5s poll instead of 30s)
+      const isRuggerPriority = this.tradeExecutor?.ruggerProfiler?.getProfile(creatorWallet) != null;
+      if (isRuggerPriority && trackingMode !== 'deep') {
+        trackingMode = 'deep';
       }
 
       await this.monitoringRepo.enqueue(tokenMint, creatorWallet, MONITORING_DELAY_MINUTES, trackingMode);
 
-      // v8.1: Only subscribe RIDE tokens to trade stream (preserve 100 slots for what matters)
-      if (strategy === 'RIDE') {
-        this.pumpTradeStream.subscribe(tokenMint);
-        logger.info({ token: tokenMint, strategy }, '🎯 RIDE token subscribed to trade stream');
+      // v10: ALL tokens get trade stream (entry is based on market demand, not wallet reputation)
+      // Rugger wallets get priority subscription (never dropped at capacity)
+      this.pumpTradeStream.subscribe(tokenMint, isRuggerPriority);
+      if (isRuggerPriority) {
+        logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8) }, '🎯 Rugger priority token detected');
       }
 
       logger.info({ token: tokenMint, tracking_mode: trackingMode, rug_count: rugCount, strategy }, 'Token enqueued for monitoring');
@@ -352,28 +374,34 @@ export class ForensicWorker {
       let trackingMode: 'deep' | 'medium' | 'fast_verdict';
       if (strategy === 'RIDE' || strategy === 'FADE' || strategy === 'AVOID') {
         trackingMode = 'deep'; // Known interesting — full 10s/20min tracking
+      } else if (isNewWallet && rugCount === 0) {
+        // v9.2: NEW WALLETS GET DEEP TRACKING
+        // Critical fix: 3 SUCCESS tokens (35x, 89x, 61x) were missed because
+        // new wallets defaulted to fast_verdict. By the time the wallet got
+        // classified as RIDE (after verdict), the trading window was long gone.
+        // New wallets with 0 rugs are potential clean wallets — give them a chance.
+        trackingMode = 'deep';
+        logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8) }, '🆕 New wallet → deep tracking (potential clean)');
       } else if (rugCount >= 3) {
         trackingMode = 'medium'; // Known rugger — 30s/10min tracking
       } else {
-        trackingMode = 'fast_verdict'; // Unknown/new — 2 checks only (T+3min, T+10min)
+        trackingMode = 'fast_verdict'; // Known non-RIDE — 2 checks only
       }
 
       await this.monitoringRepo.enqueue(tokenMint, creatorWallet, MONITORING_DELAY_MINUTES, trackingMode);
 
-      // v8.1: Only subscribe RIDE tokens to trade stream (preserve 100 slots for what matters)
-      // Before: subscribed ALL tokens → 1500+/hour → 100 slot cap → RIDE tokens dropped
-      // After: only RIDE → ~25/hour → always fits in 100 slots
-      if (strategy === 'RIDE') {
-        this.pumpTradeStream.subscribe(tokenMint);
-        logger.info({ token: tokenMint, strategy }, '🎯 RIDE token subscribed to trade stream');
+      // v10: ALL tokens get trade stream (entry based on market demand)
+      const isRuggerPriority2 = this.tradeExecutor?.ruggerProfiler?.getProfile(creatorWallet) != null;
+      this.pumpTradeStream.subscribe(tokenMint, isRuggerPriority2);
+      if (isRuggerPriority2) {
+        logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8) }, '🎯 Rugger priority token detected (PumpPortal)');
       }
 
-      // v5.3: No instant entry — phased entry waits for T+3-8s dip after bot spike
-      // The tradeExecutor will enter via trade ticks from PumpTradeStream
-      if (strategy === 'RIDE' && entryMcUsd && this.tradeExecutor) {
-        // Seed the baseline price for the phased entry system
+      // v5.3: Seed baseline for phased entry system
+      // v10: ALL tokens evaluated
+      if (entryMcUsd && this.tradeExecutor) {
         this.tradeExecutor.onTrade(tokenMint, 'buy', entryMcUsd, 0, 'creator');
-        logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8), baselineMC: Math.round(entryMcUsd) }, '👁️ RIDE watching — phased entry armed');
+        logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8), baselineMC: Math.round(entryMcUsd) }, '👁️ Watching — phased entry armed');
       }
 
       logger.info({ token: tokenMint, tracking_mode: trackingMode, rug_count: rugCount, strategy }, 'Token enqueued for monitoring');

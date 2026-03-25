@@ -42,16 +42,31 @@ export class MonitoringRepo {
            AND mq.check_at <= CURRENT_TIMESTAMP
            AND mq.detected_at > NOW() - INTERVAL '20 minutes'
          ORDER BY
-           -- RIDE wallets first
-           EXISTS(
-             SELECT 1 FROM wallet_profiles wp
-             WHERE wp.wallet_address = mq.creator_wallet
-               AND wp.strategy = 'RIDE'
-               AND wp.rugger_playbook IS NOT NULL
-           ) DESC,
+           -- v9.0: Priority tiers (higher = first)
+           CASE
+             -- Tier 1: RIDE wallets (both playbook-based and clean wallets)
+             WHEN EXISTS(
+               SELECT 1 FROM wallet_profiles wp
+               WHERE wp.wallet_address = mq.creator_wallet
+                 AND wp.strategy = 'RIDE'
+             ) THEN 3
+             -- Tier 2: FADE wallets with playbook
+             WHEN EXISTS(
+               SELECT 1 FROM wallet_profiles wp
+               WHERE wp.wallet_address = mq.creator_wallet
+                 AND wp.strategy = 'FADE'
+                 AND wp.rugger_playbook IS NOT NULL
+             ) THEN 2
+             -- Tier 3: Known wallets (any strategy)
+             WHEN EXISTS(
+               SELECT 1 FROM wallet_profiles wp
+               WHERE wp.wallet_address = mq.creator_wallet
+             ) THEN 1
+             ELSE 0
+           END DESC,
            -- Then freshest tokens first
            mq.detected_at DESC
-         LIMIT 5`
+         LIMIT 10`
       );
 
       logger.debug({ count: result.rows.length }, 'Due tokens retrieved');

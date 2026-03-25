@@ -2,7 +2,38 @@ import type { Pool } from 'pg';
 import type { RuggerPlaybook } from '../types/index.js';
 import { TokenEventRepo } from '../repositories/TokenEventRepo.js';
 import { WalletRepo } from '../repositories/WalletRepo.js';
+import { FunderLookup } from '../api/FunderLookup.js';
+import { RuggerProfiler, RuggerProfile } from './RuggerProfiler.js';
+import { CartelDetector } from './CartelDetector.js';
 import { logger } from '../utils/logger.js';
+import { readFileSync } from 'fs';
+// ━━━ Dynamic Param Loader (AutoTuner) ━━━
+interface TunedParamsCache {
+  version: number;
+  params: Record<string, number>;
+}
+let _tunedCache: TunedParamsCache | null = null;
+let _tunedLastCheck = 0;
+function _getTunedParam(name: string, fallback: number): number {
+  const now = Date.now();
+  // Reload every 30s
+  if (now - _tunedLastCheck > 30_000) {
+    _tunedLastCheck = now;
+    try {
+      const raw = readFileSync('./data/tuned-params.json', 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (!_tunedCache || parsed.version !== _tunedCache.version) {
+        _tunedCache = { version: parsed.version, params: parsed.params };
+        logger.info({ version: parsed.version, keys: Object.keys(parsed.params).length }, '🧬 Loaded tuned params');
+      }
+    } catch {
+      // File doesn't exist yet — use defaults
+    }
+  }
+  return _tunedCache?.params?.[name] ?? fallback;
+}
+
+
 
 export type TradeAction = 'BUY' | 'SELL' | 'HOLD' | 'NONE';
 
@@ -13,6 +44,9 @@ export interface TradeSignal {
   reason: string;
   playbook_strategy?: 'RIDE' | 'FADE' | 'WATCH' | 'AVOID';
   signals?: SignalBreakdown;
+  wallet_risk_score?: number;  // v10.10j: 0-1 risk score from wallet_profiles → position sizing
+  position_sol?: number;       // v10.10j: risk-adjusted position size (0.1-0.5 SOL)
+  quality_score?: number;      // v10.10k: 0-4 market microstructure quality score
 }
 
 interface SignalBreakdown {
@@ -30,11 +64,30 @@ interface OpenPosition {
   lowestMCAfterEntry: number;
   tradeCount: number;
   walletAddress: string;
+    walletRiskScore?: number;
   peakTime: number;           // timestamp when highestMC was set
   hadSignificantPump: boolean; // true if ever reached +20%
   entryBuyVol: number;        // buy volume ($) at entry — drives adaptive SL
   entryBuyCount: number;      // buy count at entry
   entryBuyerCount: number;    // unique buyers at entry
+  entrySellersCount: number;  // v10.10k: unique sellers at entry — for adaptive trail
+  staleTicks: number;         // v10.10: consecutive ticks without new high (>2%)
+  ceilingHigh: number;        // v10.10: rolling high for ceiling detection
+  // v10.10c: Pump cycle tracking for lower-high exit
+  pumpPeaks: number[];        // MC at each pump peak
+  pumpState: 'PUMP' | 'DIP'; // current cycle state
+  cycleHigh: number;          // current pump cycle high
+  dipLow: number;             // current dip low
+  // v10.10d: Post-buy confirmation (10 ticks)
+  tickMCs: number[];            // MC at each tick after buy
+  confirmationDone: boolean;    // true once 10 ticks checked
+  neoStrategy?: boolean;       // NEO strategy flag — uses different exit params
+  cartelStrategy?: boolean;    // CARTEL strategy flag — good wallet convergence
+  earlyStrategy?: boolean;     // EARLY strategy flag
+  // v10.13: 60s post-entry confirmation (STD only)
+  postEntrySignal?: 'STRONG' | 'GOOD' | 'WEAK' | 'SELL_DOM';
+  postEntryChecked?: boolean;  // true once 60s check done
+  addOnBought?: boolean;       // true if add-on position placed on STRONG
 }
 
 interface LiveTradeState {
@@ -59,6 +112,8 @@ interface LiveTradeState {
   buyTimestamps: number[];              // for velocity calc (last 10 buy timestamps)
   bondingCurvePct: number;              // % of bonding curve filled
   largestHolderPct: number;             // largest holder % of supply
+  recentMCs: number[];                   // v10.9: last 5 MC values for momentum
+  rawTrades: { ts: number; type: 'buy'|'sell'; usd: number; trader: string; mc: number; }[];  // v10.11: raw tx log for analysis
 }
 
 /**
@@ -99,20 +154,32 @@ export class TradeExecutor {
   private walletRepo: WalletRepo;
   protected pool: Pool;
 
-  private openPositions = new Map<string, OpenPosition>();
+  protected openPositions = new Map<string, OpenPosition>();
+  private lastBuyTimestamp = 0; // v10.9.2: absolute last buy time
   private firstMC = new Map<string, number>();
   private liveState = new Map<string, LiveTradeState>();
 
   // Cache: token → { isRide, detectedAt, fdvAtDetection, walletAddress, strategy }
-  private rideCache = new Map<string, {
+  protected rideCache = new Map<string, {
     isRide: boolean;
+    isCleanRide: boolean;
     detectedAt: Date;
     fdvAtDetection: number;
     walletAddress: string;
+    walletRiskScore?: number;
     strategy: WalletStrategy | null;
   }>();
   private evaluating = new Set<string>();
-  private closedTokens = new Set<string>();
+  private closedTokens = new Map<string, { exitType: string; exitMC: number; exitTime: number; entryMC: number; peakMC: number; reentryCount: number }>();
+  // v10.10k Circuit Breaker: pause after 3 consecutive hard stops
+  private consecutiveHardStops = 0;
+  private circuitBreakerUntil: number | null = null;
+  private readonly CB_MAX_HS = 4; // v4.18: raised 2→4 (NEO needs more sample before CB fires)
+  private readonly CB_PAUSE_MS = 15 * 60 * 1000; // v4.18: reduced 30min→15min pause
+  public ruggerProfiler: RuggerProfiler;
+  public cartelDetector: CartelDetector;
+  private funderLookup: FunderLookup;
+  private ruggerPositions = new Set<string>(); // Tokens entered via rugger strategy
   private sweepInterval: NodeJS.Timeout | null = null;
 
   /** Start periodic position sweep (call after construction) */
@@ -130,13 +197,23 @@ export class TradeExecutor {
     for (const [tokenAddress, pos] of this.openPositions.entries()) {
       const holdSec = (now - pos.entryTime.getTime()) / 1000;
       const cached = this.rideCache.get(tokenAddress);
-      const ws = cached ? this.walletStrategies.get(cached.walletAddress) : null;
-      const maxHold = ws?.maxHoldSec ?? 180;
+      const ws = cached ? this.walletStrategies.get(cached!.walletAddress) : null;
+      const maxHold = ws?.maxHoldSec ?? 600; // v10.10h: 10min max (was 180s)
       
-      // Stale: no ticks for 30s+ AND held > 15s
-      // Or: past max hold time
-      if (holdSec > maxHold || (holdSec > 15 && pos.tradeCount < 3)) {
-        const lastMC = pos.lowestMCAfterEntry || pos.entryMC;
+      // Stale: no new trades AND past max hold time
+      if (!this.openPositions.has(tokenAddress)) continue;
+      // v10.13: Check time since last tick (not total tick count)
+      const lastTickAge = pos.peakTime ? (now - pos.peakTime) / 1000 : holdSec;
+      // Only sweep if BOTH conditions: past max hold AND very few ticks (truly stale)
+      const isStale = holdSec > maxHold && pos.tradeCount < 5;
+      // OR: held very long (>10min) with no trades for a while
+      const isAbandoned = holdSec > 600 && pos.tradeCount < 10;
+      // v10.13: Token stopped receiving ticks (>5min since last tick + past max hold)
+      const isNoTicks = holdSec > maxHold && lastTickAge > 300;
+      const isNeoTimeout = pos.neoStrategy === true && holdSec > 900;
+      const isCartelTimeout = pos.cartelStrategy === true && holdSec > 900; // NEO v4.23: hard 15min timeout regardless of ticks
+      if (isStale || isAbandoned || isNeoTimeout || isCartelTimeout || isNoTicks) {
+        const lastMC = pos.tickMCs?.length > 0 ? pos.tickMCs[pos.tickMCs.length - 1] : (pos.highestMC || pos.entryMC);
         const realPnl = ((lastMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
         
         logger.info({
@@ -169,6 +246,19 @@ export class TradeExecutor {
     this.pool = pool;
     this.tokenRepo = new TokenEventRepo(pool);
     this.walletRepo = new WalletRepo(pool);
+    this.ruggerProfiler = new RuggerProfiler(pool);
+    this.funderLookup = new FunderLookup();
+    this.cartelDetector = new CartelDetector(pool);
+    // Init cartel detector (async)
+    this.cartelDetector.init().catch(err => 
+      logger.error({ err }, 'Failed to init CartelDetector')
+    );
+    // Load rugger profiles on startup
+    this.ruggerProfiler.refreshProfiles().then(() => {
+      logger.info({ count: this.ruggerProfiler.profileCount }, '🎯 Rugger profiles loaded at startup');
+    }).catch(err => 
+      logger.error({ err }, 'Failed to load rugger profiles')
+    );
   }
 
   /**
@@ -245,7 +335,7 @@ export class TradeExecutor {
     // Cascade: scale threshold by how noisy the wallet's tokens are
     // High win rate wallets → fewer false cascades → lower threshold
     // Low win rate → lots of selling on non-pumps → higher threshold
-    const cascadeThreshold = winRate > 0.5 ? 4 : winRate > 0.3 ? 5 : 6;
+    const cascadeThreshold = 8; // v10.9.4: high threshold, organic tokens have normal sell waves
 
     // ── EV CALCULATION ──
     // Expected value = winRate * avgWinPct - (1-winRate) * avgLossPct
@@ -297,11 +387,20 @@ export class TradeExecutor {
         firstSellAt: null, lastSeenAt: new Date(),
         recentSells: 0, recentBuys: 0, cascadeDetected: false,
         highestMC: 0,
+        recentMCs: [],
+        rawTrades: [],
         holderBalances: new Map(), totalDumpSells: 0,
         repeatBuyers: new Map(), avgBuySize: 0, avgSellSize: 0,
         buyTimestamps: [], bondingCurvePct: 0, largestHolderPct: 0
       };
       this.liveState.set(tokenAddress, state);
+      // v10.13: Cap liveState to prevent OOM (evict oldest non-position tokens)
+      if (this.liveState.size > 1000) {
+        for (const [tok] of this.liveState) {
+          if (this.liveState.size <= 800) break;
+          if (!this.openPositions.has(tok)) this.liveState.delete(tok);
+        }
+      }
     }
 
     if (txType === 'buy') {
@@ -318,6 +417,10 @@ export class TradeExecutor {
     }
     state.lastSeenAt = new Date();
     if (mcUsd > state.highestMC) state.highestMC = mcUsd;  // v8.0: track spike for dip entry
+    // v10.9: track recent MCs for momentum confirmation
+    if (!state.recentMCs) state.recentMCs = [];
+    state.recentMCs.push(mcUsd);
+    if (state.recentMCs.length > 5) state.recentMCs.shift();
 
     // v8.1: Enhanced tracking
     // Holder balances
@@ -335,18 +438,24 @@ export class TradeExecutor {
     }
     // Repeat buyers
     if (txType === 'buy' && trader) {
-      state.repeatBuyers.set(trader, (state.repeatBuyers.get(trader) ?? 0) + 1);
+      state?.repeatBuyers.set(trader, (state?.repeatBuyers.get(trader) ?? 0) + 1);
     }
     // Average buy/sell sizes
     if (txType === 'buy' && volUsd > 0) {
-      state.avgBuySize = state.buyCount > 0 ? state.buyVol / state.buyCount : volUsd;
+      state.avgBuySize = state.buyCount > 0 ? state?.buyVol / state.buyCount : volUsd;
     } else if (txType === 'sell' && volUsd > 0) {
-      state.avgSellSize = state.sellCount > 0 ? state.sellVol / state.sellCount : volUsd;
+      state.avgSellSize = state.sellCount > 0 ? state?.sellVol / state.sellCount : volUsd;
     }
     // Buy velocity (keep last 10 timestamps)
     if (txType === 'buy') {
       state.buyTimestamps.push(Date.now());
       if (state.buyTimestamps.length > 10) state.buyTimestamps.shift();
+    }
+    // v10.11: Store raw trade for post-analysis (kept in memory only, dropped when token expires)
+    if (state.rawTrades.length < 500) {  // v10.13: reduced from 2000 to save memory
+      state.rawTrades.push({ ts: Date.now(), type: txType, usd: volUsd, trader, mc: mcUsd });
+    // v10.12: Feed cartel detector
+    this.cartelDetector.onTrade(tokenAddress, trader, txType);
     }
     // Bonding curve progress (793K SOL = ~100% on pump.fun)
     if (mcUsd > 0) {
@@ -361,7 +470,7 @@ export class TradeExecutor {
     const cascadeThresh = cached?.strategy?.cascadeThreshold ?? 5;
     
     if (txType === 'sell' && state.recentSells >= cascadeThresh && state.recentBuys === 0
-        && state.sellVol > state.buyVol * 0.5) {
+        && state?.sellVol > state?.buyVol * 0.5) {
       state.cascadeDetected = true;
     }
     if (txType === 'buy') {
@@ -380,7 +489,187 @@ export class TradeExecutor {
     const cutoff = Date.now() - 30000;
     while (history.length > 0 && history[0].ts < cutoff) history.shift();
     
+    // ══════════════════════════════════════════════════════════════
+    // REAL-TIME ENTRY CHECK — enter on exact tick, not 5s poll delay
+    // ══════════════════════════════════════════════════════════════
+    if (!this.openPositions.has(tokenAddress) && state) {
+      const rtClosed = this.closedTokens.get(tokenAddress);
+      if (!rtClosed || rtClosed.exitType === 'TRAIL') {
+      const rtCached = this.rideCache.get(tokenAddress);
+      const rtBuyers = state.uniqueBuyers?.size ?? 0;
+      const rtBaselineMC = rtCached?.fdvAtDetection || this.firstMC.get(tokenAddress) || mcUsd;
+      const rtRatio = mcUsd / Math.max(rtBaselineMC, 1);
+      const rtDetectedAt = rtCached?.detectedAt || new Date();
+      const rtElapsedSec = (Date.now() - rtDetectedAt.getTime()) / 1000;
+      const rtDumps = state.totalDumpSells || 0;
+      const rtBuyVol = state.buyVol || 0;
+      const rtSellCount = state.sellCount || 0;
+      const rtBuyCount = state.buyCount || 0;
+      const rtMcs = state.recentMCs || [];
+      
+      // CARTEL: immediate entry when 2+ good wallets detected (T+2-120s)
+      const cartelSig = this.cartelDetector.getSignal(tokenAddress);
+      if (cartelSig && cartelSig.goodWalletCount >= 2 && rtElapsedSec >= 2 && rtElapsedSec <= 120) {
+        // Trigger immediate evaluation — CARTEL has priority
+        this.evaluating.delete(tokenAddress);
+        this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
+      }
+
+      // RUGGER: immediate entry for qualified wallets (T+3-30s)
+      const rtWallet = rtCached?.walletAddress || '';
+      if (false && rtWallet && rtElapsedSec >= 3 && rtElapsedSec <= 30 && !this.ruggerPositions.has(tokenAddress)) { // v10.10i: RUGGER disabled — 0% WR, -30% avg
+        const rProfile = this.ruggerProfiler.getProfile(rtWallet);
+        if (rProfile && mcUsd >= 4000 && mcUsd < rProfile.targetExitMC * 0.85 && mcUsd > rProfile.targetExitMC * 0.5) {
+          // Trigger full evaluation immediately
+          this.evaluating.delete(tokenAddress);
+          this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
+          // Skip rest — evaluateTrade will handle the BUY
+        }
+      }
+      
+      // v10-MARKET: check if all conditions met for instant entry
+      if (rtElapsedSec >= 30 && rtElapsedSec <= 120 
+          && rtBuyers >= 80 && rtBuyers <= 100
+          && rtRatio >= 2.0 && rtRatio <= 3.0
+          && rtDumps < 30
+          && rtSellCount <= rtBuyCount * 0.8) {
+        // Momentum check (5 ticks rising +3%)
+        if (rtMcs.length >= 5) {
+          const last5 = rtMcs.slice(-5);
+          const isRising = last5[1] > last5[0] && last5[2] > last5[1] && last5[3] > last5[2] && last5[4] > last5[3];
+          const momPct = ((last5[4] - last5[0]) / last5[0]) * 100;
+          if (isRising && momPct >= 3.0) {
+            // All conditions met — force immediate evaluation
+            logger.info({
+              token: tokenAddress.slice(0, 8),
+              buyers: rtBuyers,
+              ratio: rtRatio.toFixed(2),
+              mc: mcUsd.toFixed(0),
+              elapsed: rtElapsedSec.toFixed(0),
+            }, '⚡ RT-ENTRY conditions met — forcing evaluation');
+            this.evaluating.delete(tokenAddress);
+            this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
+          }
+        }
+      }
+      } // end rtClosed check
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // REAL-TIME EXIT CHECK — don't wait for poll, check every trade
+    // Prevents rug gaps from destroying profits (D59YZ bug: +226% → 0%)
+    // ══════════════════════════════════════════════════════════════
+    const rtPos = this.openPositions.get(tokenAddress);
+    if (rtPos && mcUsd > 0) {
+      const rtPnl = ((mcUsd - rtPos.entryMC) / rtPos.entryMC) * 100;
+      const rtPeakPnl = ((rtPos.highestMC - rtPos.entryMC) / rtPos.entryMC) * 100;
+      const rtDropFromPeak = rtPos.highestMC > 0 ? (rtPos.highestMC - mcUsd) / rtPos.highestMC : 0;
+      
+      // Compute drop limit — FLAT 20% for all peaks ≥50% (backtest: wallet 108 vs 79 with old tiers)
+      // Peak <50%: NO TRAIL (let it run to 50%+ or hit hard stop)
+      // Peak ≥50%: 20% drop from peak
+      // v10.10k: Adaptive RT-TRAIL based on seller growth
+      const rtCurrentSellers = state?.uniqueSellers?.size || 0;
+      const rtCurrentBuyers = state?.uniqueBuyers?.size || 0;
+      const rtNewSellers = rtCurrentSellers - (rtPos.entrySellersCount || 0);
+      const rtNewBuyers = rtCurrentBuyers - (rtPos.entryBuyerCount || 0);
+      const rtSellerRatio = rtNewBuyers > 15 ? rtNewSellers / rtNewBuyers : -1;
+
+      let rtDropLimit = 0;
+      const rtIsNeo = rtPos.neoStrategy === true;
+      const rtIsCartel = rtPos.cartelStrategy === true;
+      const rtTrailTrigger = (rtIsNeo || rtIsCartel) ? 30 : 50; // NEO: +30%, others: +50%
+      if (rtPeakPnl >= rtTrailTrigger) {
+        if (rtIsCartel) {
+          rtDropLimit = 0.20; // CARTEL: 20% trail
+        } else if (rtIsNeo) {
+          rtDropLimit = 0.15; // NEO: tight 15% trail
+        } else if (rtSellerRatio >= 0 && rtSellerRatio <= 0.20) {
+          rtDropLimit = 0.25; // healthy → wide trail
+        } else if (rtSellerRatio > 0.40) {
+          rtDropLimit = 0.15; // pressure → tight trail
+        } else {
+          rtDropLimit = 0.20; // standard
+        }
+      }
+      // Below 50% peak: rtDropLimit stays 0 = no trailing stop
+      
+      let rtShouldSell = false;
+      let rtReason = '';
+      
+      // 1. Tiered trailing stop
+      if (rtDropLimit > 0 && rtDropFromPeak > rtDropLimit) {
+        const captured = ((rtPos.highestMC * (1 - rtDropLimit) - rtPos.entryMC) / rtPos.entryMC * 100).toFixed(1);
+        rtReason = `⚡ RT-TRAIL — drop -${(rtDropFromPeak*100).toFixed(0)}%>${(rtDropLimit*100).toFixed(0)}% from peak +${rtPeakPnl.toFixed(0)}% | captured ~${captured}% | sellers ${rtSellerRatio >= 0 ? (rtSellerRatio*100).toFixed(0)+'%' : 'n/a'}`;
+        rtShouldSell = true;
+        this.consecutiveHardStops = 0; // CB reset on non-HS exit
+      }
+      
+      // 2. Hard stop (NEO: -15%, others: -20%)
+      const rtHsThreshold = rtPos.neoStrategy ? -25 : -20; // NEO v4.15: -20% (raised from -15%)
+      if (!rtShouldSell && rtPnl <= rtHsThreshold) {
+        rtReason = `⚡ RT-HARD_STOP — P&L ${rtPnl.toFixed(1)}% (threshold ${rtHsThreshold}%) | MC ${mcUsd.toFixed(0)}`;
+        this.consecutiveHardStops++;
+        if (this.consecutiveHardStops >= this.CB_MAX_HS) {
+          this.circuitBreakerUntil = Date.now() + this.CB_PAUSE_MS;
+          console.log(`🛑 CIRCUIT BREAKER — ${this.consecutiveHardStops} HS consécutifs → pause ${this.CB_PAUSE_MS/60000}min`);
+        }
+        rtShouldSell = true;
+      }
+      
+      // 3. Rugger exits
+      if (!rtShouldSell && this.ruggerPositions.has(tokenAddress)) {
+        const rProfile = this.ruggerProfiler.getProfile(rtPos.walletAddress);
+        if (rProfile) {
+          if (mcUsd >= rProfile.targetExitMC) {
+            rtReason = `⚡ RT-RUGGER_TARGET — MC ${mcUsd.toFixed(0)} >= ${rProfile.targetExitMC.toFixed(0)} | P&L +${rtPnl.toFixed(1)}%`;
+            rtShouldSell = true;
+          }
+        }
+      }
+      
+      if (rtShouldSell) {
+        logger.info({ 
+          token: tokenAddress.slice(0, 8), 
+          mc: mcUsd.toFixed(0), 
+          peak: rtPos.highestMC.toFixed(0),
+          pnl: rtPnl.toFixed(1),
+          reason: rtReason.slice(0, 80)
+        }, '⚡ REAL-TIME EXIT triggered');
+        
+        // DIRECT SELL — don't go through async maybeEvaluateLive
+        const rtSellResult = this.sell(100, 1.0, 'RIDE', rtReason, this.emptySignals());
+        this.openPositions.delete(tokenAddress);
+        const rtExitType = rtReason.includes('HARD_STOP') ? 'HARD_STOP' : rtReason.includes('RUGGER') ? 'RUGGER_TARGET' : 'TRAIL';
+        this.closedTokens.set(tokenAddress, { 
+          exitType: rtExitType, exitMC: mcUsd, exitTime: Date.now(), 
+          entryMC: rtPos.entryMC, peakMC: rtPos.highestMC, 
+          reentryCount: rtExitType === 'TRAIL' ? 0 : 99 
+        });
+        this.ruggerPositions.delete(tokenAddress);
+        // Log to paper trades
+        this.onSweepClose(tokenAddress, rtSellResult, mcUsd);
+        return; // Done — position closed instantly
+      }
+    }
+
     this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
+  }
+
+  public onSweepClose(tokenAddress: string, result?: any, mc?: number): void {
+    const pos = this.openPositions.get(tokenAddress);
+    const entryMC = pos?.entryMC || 0;
+    const exitMC = mc || pos?.lowestMCAfterEntry || entryMC;
+    const pnl = entryMC > 0 ? ((exitMC - entryMC) / entryMC * 100).toFixed(1) : '0';
+    this.openPositions.delete(tokenAddress);
+    this.closedTokens.set(tokenAddress, { exitType: 'SWEEP', exitMC: exitMC, exitTime: Date.now(), entryMC, peakMC: pos?.highestMC || 0, reentryCount: 99 });
+    // Log sweep to paper-trades via onTrade if available
+    if (typeof (this as any).onTrade === 'function') {
+      (this as any).onTrade({
+        action: 'SELL', confidence: 1, percentage: 100, playbook_strategy: 'RIDE',
+        reason: `🧹 SWEEP: position fermée (P&L ${pnl}%) — token inactif`
+      }, tokenAddress, exitMC);
+    }
   }
 
   isLiveTracked(tokenAddress: string): boolean {
@@ -391,15 +680,28 @@ export class TradeExecutor {
     if (this.evaluating.has(tokenAddress)) return;
 
     let cached = this.rideCache.get(tokenAddress);
-    if (cached && !cached.isRide) return;
+    // v10: evaluate ALL tokens (entry based on market demand, not wallet)
+    if (cached && cached.isRide === false && !this.openPositions.has(tokenAddress)) {
+      // Only skip if we already checked and no position open
+      // But re-evaluate after 5s in case buyer count changed
+      const state = this.liveState.get(tokenAddress);
+      const buyers = state?.uniqueBuyers?.size ?? 0;
+      // Bypass buyer filter for qualified rugger wallets
+      if (buyers < 15) {
+        const walletAddr = cached?.walletAddress || '';
+        if (!walletAddr || !this.ruggerProfiler.getProfile(walletAddr)) {
+          return; // v10: skip until meaningful buyer count (unless rugger wallet)
+        }
+      }
+    }
 
     this.evaluating.add(tokenAddress);
     try {
       if (!cached) {
         const token = await this.tokenRepo.getByAddress(tokenAddress);
         if (!token) {
-          this.rideCache.set(tokenAddress, { isRide: false, detectedAt: new Date(), fdvAtDetection: 0, walletAddress: '', strategy: null });
-          return;
+          this.rideCache.set(tokenAddress, { isRide: false, isCleanRide: false, detectedAt: new Date(), fdvAtDetection: 0, walletAddress: '', walletRiskScore: 0.5, strategy: null });
+          return; // token not found — skip
         }
         const wallet = await this.walletRepo.getByAddress(token.creator_wallet);
         const playbook: RuggerPlaybook | null = wallet?.rugger_playbook
@@ -407,24 +709,95 @@ export class TradeExecutor {
               ? JSON.parse(wallet.rugger_playbook) as RuggerPlaybook
               : wallet.rugger_playbook as RuggerPlaybook)
           : null;
-        const isRide = playbook?.recommended_strategy === 'RIDE';
+        const _isRide = playbook?.recommended_strategy === 'RIDE';
+        // v9.0: Also check wallet strategy column — wallets can be RIDE via SigmoidScorer
+        const _isRideByStrategy = wallet?.strategy === 'RIDE';
+        // v9.2: New wallets with 0 rugs are potential clean — evaluate them
+        const isNewClean = !wallet?.strategy && (wallet?.rug_count ?? 0) === 0;
+        // v10: ALL tokens are candidates (market demand determines entry, not wallet)
+        // v10.10j: Block FADE/WATCH wallets — backtest: WR 27%, avg -13% (22 trades, 16 losses eliminated)
+        // v10.10j: Store wallet risk score for position sizing
+        let walletRiskScore = wallet?.risk_score ?? 0.5; // default 0.5 for unknown wallets
+        const walletStrat = wallet?.strategy;
+        if (walletStrat === 'FADE') {
+          logger.debug({ wallet: token.creator_wallet.slice(0, 8), strategy: walletStrat, rugs: wallet?.rug_count }, '🚫 v10.10j: FADE wallet blocked');
+          this.rideCache.set(tokenAddress, { isRide: false, isCleanRide: false, detectedAt: new Date(), fdvAtDetection: 0, walletAddress: token.creator_wallet, walletRiskScore, strategy: null });
+          return;
+        }
+
+        // v10.10j: Check funder's risk score (RPC-based, cached from OBSERVE prefetch)
+        const funderResult = await this.funderLookup.getFunder(token.creator_wallet);
+        if (funderResult) {
+          const funderProfile = await this.walletRepo.getByAddress(funderResult.funder);
+          if (funderProfile) {
+            const funderRisk = funderProfile.risk_score ?? 0;
+            const funderRugs = funderProfile.rug_count ?? 0;
+            const funderStrat = funderProfile.strategy;
+            // Inherit worst-of: funder risk or creator risk
+            if (funderRisk > walletRiskScore) {
+              walletRiskScore = Math.max(walletRiskScore, funderRisk * funderResult.confidence);
+              logger.info({ creator: token.creator_wallet.slice(0, 8), funder: funderResult.funder.slice(0, 8), funderRisk: funderRisk.toFixed(2), funderRugs, funderStrat, adjustedRisk: walletRiskScore.toFixed(2) }, '⚠️ v10.10j: Funder risk inherited');
+            }
+            // Block if funder is FADE
+            if (funderStrat === 'FADE' || funderStrat === 'AVOID') {
+              logger.info({ creator: token.creator_wallet.slice(0, 8), funder: funderResult.funder.slice(0, 8), funderStrat, funderRugs }, '🚫 v10.10j: Toxic funder — wallet blocked');
+              this.rideCache.set(tokenAddress, { isRide: false, isCleanRide: false, detectedAt: new Date(), fdvAtDetection: 0, walletAddress: token.creator_wallet, walletRiskScore: 1.0, strategy: null });
+              return;
+            }
+          }
+          // Store ancestry in DB (async, non-blocking)
+          this.storeAncestry(token.creator_wallet, funderResult).catch(() => {});
+        }
+
+        const effectiveRide = true;
         
         let strategy: WalletStrategy | null = null;
-        if (isRide && playbook) {
-          strategy = await this.getWalletStrategy(token.creator_wallet, playbook);
-          // Skip wallets with negative EV
-          if (strategy.evPerTrade <= 0) {
-            logger.debug({ wallet: token.creator_wallet.slice(0, 8), ev: strategy.evPerTrade.toFixed(1) }, 'Skipping negative EV wallet');
-            this.rideCache.set(tokenAddress, { isRide: false, detectedAt: new Date(), fdvAtDetection: 0, walletAddress: token.creator_wallet, strategy: null });
-            return;
+        let isCleanRide = true; // v10: treat all as clean entry path
+        if (effectiveRide) {
+          // v9.0: Handle wallets WITHOUT a playbook or with minimal playbook (sample_size=0)
+          // These are clean/low-rug wallets classified as RIDE by the SigmoidScorer
+          const hasNoPlaybook = !playbook || playbook.sample_size === 0;
+          const isCleanWallet = (wallet?.rug_count ?? 0) <= 1;
+          isCleanRide = hasNoPlaybook && isCleanWallet;
+          // v9.2: Brand new wallets (no strategy) are always clean
+          if (isNewClean) isCleanRide = true;
+          if (isCleanRide) {
+            strategy = {
+              minPumpPct: 0.10,
+              maxEntryRatio: 2.50,
+              maxEntrySec: 30,
+              targetRatio: 2.0,
+              maxHoldSec: 120,
+              stopLossPct: 0.15,
+              trailingStopPct: 0.12,
+              cascadeThreshold: 4,
+              winRate: 0.70,  // 100% historical but conservative estimate
+              evPerTrade: 25,  // high EV from backtest
+              sampleSize: wallet?.survival_count ?? 3,
+            };
+            this.walletStrategies.set(token.creator_wallet, strategy);
+            logger.info({
+              wallet: token.creator_wallet.slice(0, 8),
+              survivalCount: wallet?.survival_count,
+            }, '🌟 CLEAN_RIDE strategy — high-quality clean wallet');
+          } else if (playbook) {
+            strategy = await this.getWalletStrategy(token.creator_wallet, playbook);
+            // Skip wallets with negative EV
+            if (strategy.evPerTrade <= 0) {
+              logger.debug({ wallet: token.creator_wallet.slice(0, 8), ev: strategy.evPerTrade.toFixed(1) }, 'Skipping negative EV wallet');
+              this.rideCache.set(tokenAddress, { isRide: false, isCleanRide: false, detectedAt: new Date(), fdvAtDetection: 0, walletAddress: token.creator_wallet, walletRiskScore: walletRiskScore ?? 0.5, strategy: null });
+              return;
+            }
           }
         }
         
         cached = {
-          isRide: isRide && strategy !== null && strategy.evPerTrade > 0,
+          isRide: effectiveRide && strategy !== null && strategy.evPerTrade > 0,
+          isCleanRide,
           detectedAt: token.detected_at ?? new Date(),
           fdvAtDetection: token.fdv_at_detection ?? 0,
           walletAddress: token.creator_wallet,
+          walletRiskScore,
           strategy,
         };
         this.rideCache.set(tokenAddress, cached);
@@ -470,35 +843,128 @@ export class TradeExecutor {
           pos.highestMC = currentMC;
           pos.peakTime = Date.now();
         }
+        // v10.10: Ceiling detection — track ticks without new high (>2%)
+        if (currentMC > (pos.ceilingHigh || pos.entryMC) * 1.02) {
+          pos.ceilingHigh = currentMC;
+          pos.staleTicks = 0;
+        } else {
+          pos.staleTicks = (pos.staleTicks || 0) + 1;
+        }
+
+        // v10.10c: Pump cycle tracking (for lower-high exit on pump 3)
+        if (!pos.pumpPeaks) { pos.pumpPeaks = []; pos.pumpState = 'PUMP'; pos.cycleHigh = pos.entryMC; pos.dipLow = pos.entryMC; }
+        if (pos.pumpState === 'PUMP') {
+          if (currentMC > pos.cycleHigh) pos.cycleHigh = currentMC;
+          const dropFromCycle = (pos.cycleHigh - currentMC) / pos.cycleHigh;
+          const cyclePnl = (pos.cycleHigh - pos.entryMC) / pos.entryMC * 100;
+          if (dropFromCycle >= 0.05 && cyclePnl > 3) {
+            // Dipped 5% from cycle high → record peak, enter DIP state
+            pos.pumpPeaks.push(pos.cycleHigh);
+            pos.pumpState = 'DIP';
+            pos.dipLow = currentMC;
+          }
+        } else {
+          // DIP state
+          if (currentMC < pos.dipLow) pos.dipLow = currentMC;
+          if (currentMC > pos.dipLow * 1.03) {
+            // Recovering 3% from dip → new pump starting
+            pos.pumpState = 'PUMP';
+            pos.cycleHigh = currentMC;
+          }
+        }
         const currentProfit = (pos.highestMC - pos.entryMC) / pos.entryMC;
         if (currentProfit >= 0.20) pos.hadSignificantPump = true;
         if (currentMC < pos.lowestMCAfterEntry) pos.lowestMCAfterEntry = currentMC;
         pos.tradeCount++;
+        // v10.10d: Track MCs for post-buy confirmation
+        if (pos.tickMCs && !pos.confirmationDone) {
+          pos.tickMCs.push(currentMC);
+        }
+
+        // ══════════════════════════════════════════════════════════════
+        // v10.13: 60s POST-ENTRY CONFIRMATION (STD only)
+        // Backtest: STRONG signal (buy_vol > 5x sell_vol + 15 new buyers) = 83% WR, +62.3%
+        //           SELL_DOM (sell_vol > buy_vol) = 18% WR, -19.1%
+        // Action: SELL_DOM → exit immediately | STRONG → add-on buy (double position)
+        // ══════════════════════════════════════════════════════════════
+        const holdSec60 = (Date.now() - pos.entryTime.getTime()) / 1000;
+        if (!pos.postEntryChecked && !pos.neoStrategy && !pos.cartelStrategy && holdSec60 >= 60 && holdSec60 <= 90) {
+          pos.postEntryChecked = true;
+          const state60 = this.liveState.get(tokenAddress);
+          if (state60?.rawTrades) {
+            const entryTs = pos.entryTime.getTime();
+            const postTrades = state60.rawTrades.filter((t: any) => t.ts >= entryTs && t.ts <= entryTs + 60000);
+            const buyVol60 = postTrades.filter((t: any) => t.type === 'buy').reduce((s: number, t: any) => s + t.usd, 0);
+            const sellVol60 = postTrades.filter((t: any) => t.type === 'sell').reduce((s: number, t: any) => s + t.usd, 0);
+            const postBuyers = new Set(postTrades.filter((t: any) => t.type === 'buy').map((t: any) => t.trader)).size;
+            const volRatio60 = sellVol60 > 0 ? buyVol60 / sellVol60 : (buyVol60 > 0 ? 99 : 0);
+
+            if (sellVol60 > buyVol60) {
+              pos.postEntrySignal = 'SELL_DOM';
+              // SELL_DOM: 18% WR, avg -19.1% → exit immediately
+              const pnl60 = ((currentMC - pos.entryMC) / pos.entryMC * 100);
+              logger.info({ token: tokenAddress.slice(0, 8), buyVol: buyVol60.toFixed(0), sellVol: sellVol60.toFixed(0), postBuyers, pnl: pnl60.toFixed(1) },
+                '🚫 v10.13 SELL_DOM at 60s — exiting STD position');
+              this.openPositions.delete(tokenAddress);
+              return this.sell(100, 0.95, 'RIDE',
+                `🚫 v10.13 SELL_DOM_60s — sell>${'$'}${sellVol60.toFixed(0)} > buy>${'$'}${buyVol60.toFixed(0)} (${postBuyers}b) | P&L ${pnl60.toFixed(1)}%`,
+                this.emptySignals());
+            } else if (volRatio60 > 5 && postBuyers >= 15) {
+              pos.postEntrySignal = 'STRONG';
+              pos.addOnBought = true;
+              // STRONG: 83% WR, +62.3% → add-on buy (double exposure)
+              // Record add-on MC for blended P&L: original entry + add-on at current MC
+              (pos as any).addOnMC = currentMC;
+              (pos as any).addOnSol = (pos as any).originalPositionSol || 0;
+              logger.info({ token: tokenAddress.slice(0, 8), buyVol: buyVol60.toFixed(0), sellVol: sellVol60.toFixed(0), ratio: volRatio60.toFixed(1), postBuyers, mc: currentMC.toFixed(0) },
+                '🔥 v10.13 STRONG CONFIRMATION — doubling position');
+            } else if (volRatio60 > 1 && postBuyers >= 10) {
+              pos.postEntrySignal = 'GOOD';
+            } else {
+              pos.postEntrySignal = 'WEAK';
+            }
+            logger.info({ token: tokenAddress.slice(0, 8), signal: pos.postEntrySignal, volRatio: volRatio60.toFixed(1), postBuyers, buyVol: buyVol60.toFixed(0), sellVol: sellVol60.toFixed(0) },
+              '📊 v10.13 60s confirmation');
+          }
+        }
       }
 
       const _elapsedSec = elapsedMinutes * 60;
-      const cached = this.rideCache.get(tokenAddress);
-      if (!cached?.isRide || !cached.strategy) {
-        // Fallback: lookup from DB
+      let cached = this.rideCache.get(tokenAddress);
+      if (!cached || !cached.strategy) {
+        // v10: create a default strategy for any token (market demand determines entry)
         const token = await this.tokenRepo.getByAddress(tokenAddress);
         if (!token) return this.none('Token not found');
-
-        const wallet = await this.walletRepo.getByAddress(token.creator_wallet);
-        if (!wallet) return this.none('Wallet not found');
-
-        const playbook: RuggerPlaybook | null = wallet.rugger_playbook
-          ? (typeof wallet.rugger_playbook === 'string'
-              ? JSON.parse(wallet.rugger_playbook) : wallet.rugger_playbook)
-          : null;
-        if (!playbook || playbook.recommended_strategy !== 'RIDE') {
-          return this.none('Not RIDE strategy');
-        }
-
-        return this.none('Strategy not loaded — waiting for live path');
+        const detectedAt = token.detected_at ? new Date(token.detected_at) : new Date();
+        const fdv = token.fdv_at_detection ?? (this.firstMC.get(tokenAddress) ?? currentMC);
+        
+        // Auto-create cache entry with v10 default strategy
+        const cacheEntry = {
+          isRide: true,
+          isCleanRide: true,
+          detectedAt,
+          fdvAtDetection: fdv,
+          walletAddress: token.creator_wallet,
+          strategy: {
+            minPumpPct: 0.10,
+            maxEntryRatio: 2.5, // v10.3: reduced from 5.0 → 2.5 (2026-03-13 21:01 UTC) — ratio 2-3x: 9t WR=33% avg +2%, filter out late entries
+            maxEntrySec: 90,
+            targetRatio: 2.0,
+            sampleSize: 0,
+            winRate: 0,
+            evPerTrade: 0,
+            cascadeThreshold: 8,
+            maxHoldSec: 300,
+            stopLossPct: 0.15,
+            trailingStopPct: 0.10,
+          }
+        };
+        this.rideCache.set(tokenAddress, cacheEntry);
+        cached = cacheEntry;
       }
 
-      const ws = cached.strategy;
-      const baselineMC = cached.fdvAtDetection > 0 ? cached.fdvAtDetection : (this.firstMC.get(tokenAddress) ?? currentMC);
+      const ws = cached!.strategy!;
+      const baselineMC = cached!.fdvAtDetection > 0 ? cached!.fdvAtDetection : (this.firstMC.get(tokenAddress) ?? currentMC);
       const state = this.liveState.get(tokenAddress);
       const elapsedSec = _elapsedSec;
       const mcRatio = currentMC / Math.max(baselineMC, 1);
@@ -509,7 +975,7 @@ export class TradeExecutor {
       }
 
       // ── EVALUATE ENTRY ──
-      return await this.evaluateEntry(tokenAddress, ws, currentMC, baselineMC, mcRatio, elapsedSec, state, cached.walletAddress);
+      return await this.evaluateEntry(tokenAddress, ws, currentMC, baselineMC, mcRatio, elapsedSec, state, cached!.walletAddress);
 
     } catch (err) {
       logger.error({ err, tokenAddress }, 'TradeExecutor error');
@@ -526,195 +992,236 @@ export class TradeExecutor {
     pos: OpenPosition,
     ws: WalletStrategy,
     currentMC: number,
-    _elapsedSec: number,
+    elapsedSec: number,
     state: LiveTradeState | undefined
   ): TradeSignal {
 
-    // 1. CASCADE — immediate exit
-    if (state?.cascadeDetected) {
-      this.closePosition(tokenAddress);
-      return this.sell(100, 1.0, 'RIDE',
-        `🌊 CASCADE (${state.sellCount}s/${state.buyCount}b, thresh=${ws.cascadeThreshold})`,
-        this.emptySignals());
-    }
-
-    // 1.5. PROFIT DECAY — token pumped but now stagnating/declining
-    //   If we HAD +20%+ profit but it's been >8s since the peak and profit < 50% of peak profit
-    //   → the pump is over, take what's left before the rug
-    if (pos.hadSignificantPump) {
-      const secSincePeak = (Date.now() - pos.peakTime) / 1000;
-      const currentPnl = (currentMC - pos.entryMC) / pos.entryMC;
-      const peakPnl = (pos.highestMC - pos.entryMC) / pos.entryMC;
-      const retainedPct = peakPnl > 0 ? currentPnl / peakPnl : 0;
-      
-      // If 8s+ since peak AND we've lost more than 50% of peak profits → exit
-      if (secSincePeak > 8 && retainedPct < 0.50 && currentPnl > 0) {
-        const pnlStr = (currentPnl * 100).toFixed(1);
-        const peakStr = (peakPnl * 100).toFixed(1);
-        this.closePosition(tokenAddress);
-        return this.sell(100, 1.0, 'RIDE',
-          `⏳ PROFIT DECAY +${pnlStr}% (was +${peakStr}%, ${secSincePeak.toFixed(0)}s ago, ${(retainedPct*100).toFixed(0)}% retained)`,
-          this.emptySignals());
-      }
-      
-      // If 15s+ since peak AND any profit remaining → take it
-      if (secSincePeak > 15 && currentPnl > 0.02) {
-        const pnlStr = (currentPnl * 100).toFixed(1);
-        this.closePosition(tokenAddress);
-        return this.sell(100, 1.0, 'RIDE',
-          `⏳ STALE PUMP +${pnlStr}% (peak ${(peakPnl*100).toFixed(0)}% was ${secSincePeak.toFixed(0)}s ago — taking profit)`,
-          this.emptySignals());
-      }
-    }
-
-    // 2. ADAPTIVE EXIT — behavior-based, not fixed percentage
-    const dropFromEntry = (pos.entryMC - currentMC) / pos.entryMC;
-    const holdSecAdaptive = (Date.now() - pos.entryTime.getTime()) / 1000;
-    
-    // 2a. v7.0 EXIT STRATEGY — Grace period + Hard stop + Trailing
-    //
-    // Data: 11 paper trades analysis showed adaptive SL killed 5/10 trades,
-    // missing +58%, +116%, +15% pumps. DB confirms pump tokens dip median
-    // 1.00x in T+3-15s, only 4% dip below 0.80x.
-    //
-    // RULES:
-    //   1. Grace period 8s: NO stop loss (except hard stop)
-    //   2. Hard stop -25%: always active, catastrophe protection
-    //   3. After 8s: trailing 20% from peak (if peak > +5%)
-    //   4. No pump 20s: exit if never reached +8%
-    //   5. Max hold 30s: force exit
-
-    // HARD STOP — always active, even during grace period (v8.0: -20% from -25%)
-    if (dropFromEntry > 0.20) {
-      this.closePosition(tokenAddress);
-      return this.sell(100, 1.0, 'RIDE',
-        `\u26a0\ufe0f HARD STOP -${(dropFromEntry*100).toFixed(1)}% in ${holdSecAdaptive.toFixed(0)}s`,
-        this.emptySignals());
-    }
-
-    // GRACE PERIOD — first 8s, no stop loss BUT trailing on big gains
-    // v7.2: peaks happen DURING grace (hold 1-3s), then crash 20-25%.
-    // Fix: if peak >= +15% and dropping 15% from peak -> secure profit immediately
-    if (holdSecAdaptive < 8) {
-      const graceGain = (pos.highestMC - pos.entryMC) / pos.entryMC;
-      const graceDropFromPeak = pos.highestMC > 0 ? (pos.highestMC - currentMC) / pos.highestMC : 0;
-
-      // GRACE TRAIL: peak hit +15% and now -10% from peak -> lock profit (v8.0: tighter from 15%)
-      if (graceGain > 0.15 && graceDropFromPeak > 0.10) {
-        const realPnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
-        const capturedPct = pos.highestMC > pos.entryMC
-          ? ((currentMC - pos.entryMC) / (pos.highestMC - pos.entryMC) * 100).toFixed(0) : '0';
-        this.closePosition(tokenAddress);
-        return this.sell(100, 1.0, 'RIDE',
-          `\ud83d\udd12 GRACE TRAIL -${(graceDropFromPeak*100).toFixed(0)}% from peak $${pos.highestMC.toFixed(0)} (peak +${(graceGain*100).toFixed(0)}%) | P&L ${realPnl}% (captured ${capturedPct}%)`,
-          this.emptySignals());
-      }
-
-      const gpnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
-      return {
-        action: 'HOLD', confidence: 0.5, playbook_strategy: 'RIDE',
-        reason: `\u23f3 GRACE ${holdSecAdaptive.toFixed(0)}s/8s | ${gpnl}% | peak ${((pos.highestMC - pos.entryMC) / pos.entryMC * 100).toFixed(1)}%`
-      };
-    }
-
-    // TRAILING STOP — 25% from peak (only if peak > +10% above entry) (v8.0: wider trail)
-    const peakGain = (pos.highestMC - pos.entryMC) / pos.entryMC;
-    const dropFromPeak = pos.highestMC > 0 ? (pos.highestMC - currentMC) / pos.highestMC : 0;
-    if (peakGain > 0.10 && dropFromPeak > 0.25) {
-      const realPnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
-      const capturedPct = pos.highestMC > pos.entryMC
-        ? ((currentMC - pos.entryMC) / (pos.highestMC - pos.entryMC) * 100).toFixed(0) : '0';
-      this.closePosition(tokenAddress);
-      return this.sell(100, 1.0, 'RIDE',
-        `\ud83d\udcc9 TRAIL -${(dropFromPeak*100).toFixed(0)}% from peak $${pos.highestMC.toFixed(0)} | P&L ${realPnl}% (captured ${capturedPct}%)`,
-        this.emptySignals());
-    }
-
-    // NO PUMP — 20s without reaching +8%, token is dead
-    if (holdSecAdaptive > 20 && peakGain < 0.08) {
-      const pnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
-      this.closePosition(tokenAddress);
-      return this.sell(100, 1.0, 'RIDE',
-        `\u23f0 NO PUMP after ${holdSecAdaptive.toFixed(0)}s (peak +${(peakGain*100).toFixed(1)}% < 8%) | P&L ${pnl}%`,
-        this.emptySignals());
-    }
-
-    // MAX HOLD — 45s absolute max (v8.0: extended from 30s for slow pumps)
-    if (holdSecAdaptive > 45) {
-      const pnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
-      this.closePosition(tokenAddress);
-      return this.sell(100, 1.0, 'RIDE',
-        `\u23f1 MAX HOLD ${holdSecAdaptive.toFixed(0)}s | P&L ${pnl}%`,
-        this.emptySignals());
-    }
-    
-    // 2b. HARD STOP: absolute max loss 25% regardless of timing
-    //     In paper trading prices gap through — this catches the gap
-    if (dropFromEntry >= 0.25) {
-      this.closePosition(tokenAddress);
-      return this.sell(100, 1.0, 'RIDE',
-        `🛑 HARD STOP -${(dropFromEntry*100).toFixed(1)}% (max loss 25%)`,
-        this.emptySignals());
-    }
-    
-    // 2c. NO PUMP TIMEOUT: after 15s, if token never pumped +10% → dead, exit
-    if (holdSecAdaptive > 15 && !pos.hadSignificantPump) {
-      const pnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
-      this.closePosition(tokenAddress);
-      return this.sell(100, 1.0, 'RIDE',
-        `⏰ NO PUMP after ${holdSecAdaptive.toFixed(0)}s (P&L ${pnl}%) — token mort`,
-        this.emptySignals());
-    }
-
-    // 3. PROGRESSIVE TRAILING STOP — widens with profit, tightens as pump matures
-    //    Don't trigger until meaningful profit; let the pump develop
-    const profitPct = (pos.highestMC - pos.entryMC) / pos.entryMC;
-    if (profitPct >= 0.20) {  // activate only after +20% unrealized profit
-      const dropFromHigh = (pos.highestMC - currentMC) / pos.highestMC;
-      
-      // Progressive trailing: wider early, tighter as profit grows
-      // +20-50% profit  → 35% trailing (let it breathe, normal volatility)
-      // +50-100% profit → 28% trailing (decent pump, protect some gains)
-      // +100-200% profit → 22% trailing (big pump, lock in more)
-      // +200%+ profit   → 18% trailing (massive pump, protect hard)
-      let trailingPct: number;
-      if (profitPct < 0.50) trailingPct = 0.35;
-      else if (profitPct < 1.00) trailingPct = 0.28;
-      else if (profitPct < 2.00) trailingPct = 0.22;
-      else trailingPct = 0.18;
-      
-      if (dropFromHigh >= trailingPct) {
-        const realPnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
-        const capturedPct = ((currentMC - pos.entryMC) / (pos.highestMC - pos.entryMC) * 100).toFixed(0);
-        this.closePosition(tokenAddress);
-        return this.sell(100, 1.0, 'RIDE',
-          `📉 TRAILING ${(dropFromHigh*100).toFixed(0)}%>${(trailingPct*100).toFixed(0)}% from $${pos.highestMC.toFixed(0)} | P&L +${realPnl}% (captured ${capturedPct}% of peak)`,
-          this.emptySignals());
-      }
-    }
-
-    // 4. MAX HOLD TIME — per-wallet
     const holdSec = (Date.now() - pos.entryTime.getTime()) / 1000;
-    if (holdSec > ws.maxHoldSec) {
-      const pnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
-      this.closePosition(tokenAddress);
-      return this.sell(100, 1.0, 'RIDE',
-        `⏱ MAX HOLD ${holdSec.toFixed(0)}s > ${ws.maxHoldSec.toFixed(0)}s (P&L ${pnl}%)`,
-        this.emptySignals());
+    const pnlPct = ((currentMC - pos.entryMC) / pos.entryMC) * 100;
+    const peakPnl = ((pos.highestMC - pos.entryMC) / pos.entryMC) * 100;
+    const dropFromPeak = pos.highestMC > 0 ? (pos.highestMC - currentMC) / pos.highestMC : 0;
+    const _isClean = this.rideCache.get(tokenAddress)?.isCleanRide ?? false;
+    const signals: SignalBreakdown = { timing_score: 0, momentum_score: 0, consistency_score: 0, risk_score: 0, wallet_score: 0 };
+
+    // ══════════════════════════════════════════════════════════════
+    // RUGGER EXIT — Target MC based on wallet profile
+    // ══════════════════════════════════════════════════════════════
+    if (this.ruggerPositions.has(tokenAddress)) {
+      const rProfile = this.ruggerProfiler.getProfile(pos.walletAddress);
+      if (rProfile) {
+        const targetMC = rProfile.targetExitMC;
+        const timeStopSec = rProfile.timeStopMin * 60;
+        
+        // 1. TARGET HIT — sell at profit
+        if (currentMC >= targetMC) {
+          this.ruggerPositions.delete(tokenAddress);
+          return this.sell(100, 0.95, 'RIDE',
+            `🎯 RUGGER TARGET — MC ${currentMC.toFixed(0)} >= ${targetMC.toFixed(0)} | P&L ${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s`,
+            signals);
+        }
+        
+        // 2. TIME STOP — exit before average rug time
+        if (holdSec >= timeStopSec) {
+          this.ruggerPositions.delete(tokenAddress);
+          return this.sell(100, 0.90, 'RIDE',
+            `⏱️ RUGGER TIME_STOP — ${holdSec.toFixed(0)}s >= ${timeStopSec.toFixed(0)}s | P&L ${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(1)}%`,
+            signals);
+        }
+        
+        // 3. HARD STOP — limit losses
+        if (pnlPct <= -20) {
+          this.ruggerPositions.delete(tokenAddress);
+          return this.sell(100, 1.0, 'RIDE',
+            `🛑 RUGGER HARD_STOP — P&L ${pnlPct.toFixed(1)}% <= -20% | MC ${currentMC.toFixed(0)}`,
+            signals);
+        }
+        
+        // 4. BONUS: if MC goes WAY above target (>1.5x target), ride with trailing stop
+        if (currentMC > targetMC * 1.5 && dropFromPeak > 0.15) {
+          this.ruggerPositions.delete(tokenAddress);
+          return this.sell(100, 0.90, 'RIDE',
+            `🎯 RUGGER TRAIL — MC ${currentMC.toFixed(0)} (>${(targetMC*1.5).toFixed(0)}), drop -${(dropFromPeak*100).toFixed(0)}% from peak | P&L +${pnlPct.toFixed(1)}%`,
+            signals);
+        }
+        
+        // Hold — waiting for target or time stop
+        return { action: 'HOLD', confidence: 0.5, percentage: 0, playbook_strategy: 'RIDE',
+          reason: `🎯 RUGGER HOLD — MC ${currentMC.toFixed(0)}/${targetMC.toFixed(0)} (${(currentMC/targetMC*100).toFixed(0)}%) | P&L ${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(1)}% | ${holdSec.toFixed(0)}s/${timeStopSec.toFixed(0)}s` };
+      }
+      // Profile disappeared — fall through to standard exit
+      this.ruggerPositions.delete(tokenAddress);
     }
 
-    // 5. HOLD
-    const pnl = ((currentMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
-    const high = ((pos.highestMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
+    // ══════════════════════════════════════════════════════════════
+    // v10 EXIT STRATEGY
+    //
+    // Backtest: Trail -10% from peak → 69.3% WR, avg +52.7% P&L
+    // Median peak at T+24s from detection (very fast)
+    // ══════════════════════════════════════════════════════════════
+
+    // v10.10: Tiered exits (Raph config 2026-03-15 14:59 UTC)
+    // Below +40% peak → only hard stop at -25% from entry
+    // +40% → -15% drop | +50-60% → -20% | +70% → -15% | +80% → -10% | +90-100% → -5% | >100% → -15%
+    // v10.10h: Raph tiered exits 2026-03-17 03:44 UTC
+    // Below +20% peak → hard stop at -20% from ENTRY (handled below)
+    // Optimized tiers (62-trade analysis): no trail <50%, tighter on rockets
+    // v10.10k: Adaptive trail based on seller growth rate post-entry
+    const currentSellers = state?.uniqueSellers?.size || 0;
+    const currentBuyers = state?.uniqueBuyers?.size || 0;
+    const newSellers = currentSellers - (pos.entrySellersCount || 0);
+    const newBuyers = currentBuyers - (pos.entryBuyerCount || 0);
+    const sellerGrowthRatio = newBuyers > 15 ? newSellers / newBuyers : -1; // need 15+ new buyers for signal
+
+    const isNeo = pos.neoStrategy === true;
+    const isCartel = pos.cartelStrategy === true;
+    const trailTrigger = (isNeo || isCartel) ? 25 : 50; // NEO v4.27: 30219225 (catch 25-30% peakers before HS), CARTEL: 25%, others: 50%
+    let dropLimit = 0; // 0 = no trail, rely on hard stop
+    if (peakPnl >= trailTrigger) {
+      if (isCartel) {
+        dropLimit = 0.20; // CARTEL: 20% trail (more room for big moves)
+      } else if (isNeo) {
+        // NEO v4.25: adaptive trail — tight at small peaks, wider for rockets
+        // DB: trail exits 100%+: 7 @+180% | 50-100%: 10 @+66% | 30-50%: 22 @+41% | <30%: 41 @+18%
+        // Goal: let 50%+ peaks breathe (18-22% trail) → capture larger moves, match CARTEL
+        // NEO v4.27: tiered adaptive trail
+        // Trigger lowered 30→25% to save 25-30% peakers from HS
+        // 50-100% tier tightened 18→16% (better capture, math: +2% x43 trades)
+        if (peakPnl >= 100) {
+          dropLimit = 0.22; // Moonshot: 22% trail (100%+ peaks)
+        } else if (peakPnl >= 50) {
+          dropLimit = 0.16; // NEO v4.27: Mid-rocket 50-100%: tightened 18%→16% (+2% capture)
+        } else if (peakPnl >= 30) {
+          dropLimit = 0.12; // Small peak 30-50%: 12% trail (unchanged from v4.26)
+        } else {
+          dropLimit = 0.10; // NEO v4.27: Micro peak 25-30%: 10% tight trail (saves from HS at -25%)
+        }
+      } else if (sellerGrowthRatio >= 0 && sellerGrowthRatio <= 0.20) {
+        dropLimit = 0.25; // ≤20% seller ratio → healthy token, let it run (wider trail)
+      } else if (sellerGrowthRatio > 0.40) {
+        dropLimit = 0.15; // >40% seller ratio → dump pressure, protect gains (tight trail)
+      } else {
+        dropLimit = 0.20; // 20-40% or not enough data → standard FLAT 20%
+      }
+    }
+    // Below 50%: no trailing stop — let it run or hit hard stop
+    // v10.10k: Early exit on high seller pressure below 50% peak
+    if (false && peakPnl < 50) {
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'SELLER_PRESSURE', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops = 0; // CB reset on non-HS exit
+      return this.sell(100, 0.90, 'RIDE', `🚨 v10.10k SELLER_PRESSURE — ${newSellers} new sellers / ${newBuyers} new buyers (${(sellerGrowthRatio*100).toFixed(0)}%) | peak +${peakPnl.toFixed(0)}% | P&L ${pnlPct.toFixed(1)}%`, signals);
+    }
+
+    // 1. Drop stop (tiered) — only if peak reached a tier
+    if (dropLimit > 0 && dropFromPeak > dropLimit) {
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'TRAIL', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops = 0; // CB reset on non-HS exit
+      const capturedPnl = ((pos.highestMC * (1 - dropLimit) - pos.entryMC) / pos.entryMC * 100).toFixed(1);
+      return this.sell(100, 0.95, 'RIDE', `📉 v10 DROP -${(dropFromPeak*100).toFixed(0)}%>${(dropLimit*100).toFixed(0)}% from peak +${peakPnl.toFixed(0)}% | captured ~${capturedPnl}%`, signals);
+    }
+
+    // 2. Hard stop: -25% from ENTRY (only if no drop tier reached)
+    // v10.10: CEILING EXIT — DISABLED after backtest showed it cuts winners
+
+    // v10.10i: PUMP3 EXIT — 3 pumps without reaching trail trigger = token is crab, exit at -7% from 3rd peak
+    // NEO v4.19: NEO trail triggers at +30% → PUMP3 threshold also 30% (was 50%). Faster crab exit, matches trail.
+    // STD/CARTEL keep 50% threshold. STD: no trail below 50%, so 50% is correct for them.
+    const pump3Threshold = isNeo ? 25 : 50; // NEO v4.27: aligned with trail trigger (25%)
+    // v10.13: PUMP3 disabled for STD until 2026-03-25 20:23 UTC (Raph request)
+    const pump3DisabledForSTD = !isNeo && !isCartel && Date.now() < new Date("2026-03-25T20:23:00Z").getTime();
+    if (!pump3DisabledForSTD && pos.pumpPeaks && pos.pumpPeaks.length >= 3 && peakPnl < pump3Threshold) {
+      const thirdPeak = pos.pumpPeaks[2];
+      const dropFrom3rd = (thirdPeak - currentMC) / thirdPeak;
+      if (dropFrom3rd >= 0.07) {
+        this.openPositions.delete(tokenAddress);
+        this.closedTokens.set(tokenAddress, { exitType: 'PUMP3_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops = 0; // CB reset on non-HS exit
+        return this.sell(100, 0.90, 'RIDE',
+          `🔄 v10.10g PUMP3 EXIT — 3 pumps, peak +${peakPnl.toFixed(0)}% <50%, drop -${(dropFrom3rd*100).toFixed(0)}% from pump3 | P&L ${pnlPct.toFixed(1)}%`,
+          signals);
+      }
+    }
+
+    // v10.10c: LOWER HIGH EXIT on pump 3+
+    // If 3rd pump fails to break significantly above 2nd pump → momentum dead, exit
+    // Backtest: p2<50% margin15% → 469 triggers, +5.7% exit, saves +2.9%, WR 54%
+    if (pos.pumpPeaks && pos.pumpPeaks.length >= 2 && pos.pumpState === 'PUMP') {
+      const lastPeak = pos.pumpPeaks[pos.pumpPeaks.length - 1];
+      const lastPeakPnl = (lastPeak - pos.entryMC) / pos.entryMC * 100;
+      // Only apply when previous peaks were small (<50%) — don't cut moonshots
+      if (lastPeakPnl < 50) {
+        // Current pump cycle high vs last recorded peak
+        const margin = (pos.cycleHigh - lastPeak) / lastPeak;
+        if (margin < 0.15) {
+          // Lower high (or barely higher) — check for -10% drop from current cycle high
+          const dropFromCycle = (pos.cycleHigh - currentMC) / pos.cycleHigh;
+          if (dropFromCycle >= 0.10) {
+            this.openPositions.delete(tokenAddress);
+            this.closedTokens.set(tokenAddress, { exitType: 'LOWER_HIGH', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops = 0; // CB reset on non-HS exit
+            return this.sell(100, 0.90, 'RIDE',
+              `📉 v10.10 LOWER HIGH — pump ${pos.pumpPeaks.length + 1} failed (cycle +${((pos.cycleHigh-pos.entryMC)/pos.entryMC*100).toFixed(0)}% vs prev +${lastPeakPnl.toFixed(0)}%) | P&L ${pnlPct.toFixed(1)}%`,
+              signals);
+          }
+        }
+      }
+    }
+
+    const hsThreshold = pos.neoStrategy ? -25 : -20; // NEO v4.15: -20% (raised from -15%, aligns with STD; allow recovery room)
+    if (pnlPct <= hsThreshold) {
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'HARD_STOP', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops++;
+      if (this.consecutiveHardStops >= this.CB_MAX_HS) {
+        this.circuitBreakerUntil = Date.now() + this.CB_PAUSE_MS;
+        console.log(`🛑 CIRCUIT BREAKER — ${this.consecutiveHardStops} HS consécutifs → pause ${this.CB_PAUSE_MS/60000}min`);
+      }
+      const hsLabel = pos.cartelStrategy ? '🤝 CARTEL' : pos.neoStrategy ? '🧠 NEO' : '🛑 v10';
+      return this.sell(100, 1.0, 'RIDE', `${hsLabel} HARD_STOP ${pnlPct.toFixed(1)}% | peak +${peakPnl.toFixed(0)}% (threshold ${hsThreshold}%) | MC ${currentMC.toFixed(0)}`, signals);
+    }
+
+    // 2. MAX HOLD: 5 minutes → force exit
+    if ((isNeo ? holdSec > 870 : holdSec > 600)) { // NEO v4.26: NEO→870s (just before 900s sweep), STD→600s
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'MAX_HOLD', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops = 0; // CB reset
+      return this.sell(100, 0.9, 'RIDE', `⏰ v10 MAX HOLD 5min — P&L ${pnlPct.toFixed(1)}%`, signals);
+    }
+
+    // 3. BREAKEVEN removed in v10.9.9 — redundant with -15% drop stop
+    // Was selling winners too early (e.g. peak +12%, dip to +2% → sold → token pumped +90%)
+
+    // 4. GRACE PERIOD (first 8s): no trailing, just hard stop
+    if (holdSec < 8) {
+      return { action: 'HOLD', confidence: 0.5, reason: `⏳ v10 GRACE ${holdSec.toFixed(0)}s/8s | P&L ${pnlPct.toFixed(1)}% | peak +${peakPnl.toFixed(0)}%`, playbook_strategy: 'RIDE' };
+    }
+
+    // (old trail section removed — replaced by drop stop above)
+
+    // 6. NO_PUMP removed v10.9.9 — 87% of NO_PUMP exits pumped after sell (avg +40%)
+    // Let the -25% hard stop or -15% drop stop handle dead tokens naturally
+
+    // v10.10: DISABLED — cascade kills dips that recover 73% of the time
+    //     // 7. CASCADE DETECTION: sudden sell pressure
+    // v10.10: DISABLED — cascade kills dips that recover 73% of the time
+    //     if (state?.cascadeDetected && holdSec > 30 && pnlPct < -3) { // v10.9.4
+    // v10.10: DISABLED — cascade kills dips that recover 73% of the time
+    //       this.openPositions.delete(tokenAddress);
+    // v10.10: DISABLED — cascade kills dips that recover 73% of the time
+    //       this.closedTokens.set(tokenAddress, { exitType: 'CASCADE', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+    // v10.10: DISABLED — cascade kills dips that recover 73% of the time
+    //       return this.sell(100, 0.9, 'RIDE', `🌊 v10 CASCADE — P&L ${pnlPct.toFixed(1)}%`, signals);
+    // v10.10: DISABLED — cascade kills dips that recover 73% of the time
+    //     }
+
+    // HOLD
     return {
-      action: 'HOLD', confidence: 0.5, playbook_strategy: 'RIDE',
-      reason: `HOLD ${pnl}% (high ${high}%) | hold=${holdSec.toFixed(0)}s/${ws.maxHoldSec.toFixed(0)}s | SL=${(ws.stopLossPct*100).toFixed(0)}% TS=${(ws.trailingStopPct*100).toFixed(0)}%`
+      action: 'HOLD', confidence: 0.5,
+      reason: `📊 v10 HOLD ${holdSec.toFixed(0)}s | P&L ${pnlPct.toFixed(1)}% | peak +${peakPnl.toFixed(0)}% | drop ${(dropFromPeak*100).toFixed(0)}%/15%`,
+      playbook_strategy: 'RIDE'
     };
   }
-
-  // ─────────────────────────────────────────────────────────────
-  // ENTRY EVALUATION (per-wallet parameters)
-  // ─────────────────────────────────────────────────────────────
 
   private async evaluateEntry(
     tokenAddress: string,
@@ -727,121 +1234,480 @@ export class TradeExecutor {
     walletAddress: string
   ): Promise<TradeSignal> {
 
-    // No re-entry
-    if (this.closedTokens.has(tokenAddress)) {
-      return this.none('Token déjà sorti — pas de re-entry', 'RIDE');
+    // Smart re-entry: allow on TRAIL exits only
+    const closedInfo = this.closedTokens.get(tokenAddress);
+    if (closedInfo) {
+      // Block re-entry for non-TRAIL exits (losers)
+      if (closedInfo.exitType !== 'TRAIL') {
+        return this.none(`Token sorti (${closedInfo.exitType}) — pas de re-entry`, 'RIDE');
+      }
+      // Max 1 re-entry per token
+      if (closedInfo.reentryCount >= 1) {
+        return this.none('Token déjà re-entry 1x — max atteint', 'RIDE');
+      }
+      // Cooldown: at least 30s since sell
+      const secSinceSell = (Date.now() - closedInfo.exitTime) / 1000;
+      if (secSinceSell < 30) {
+        return this.none(`Re-entry cooldown ${secSinceSell.toFixed(0)}s/30s`, 'RIDE');
+      }
+      // Re-entry conditions:
+      // 1. Token must be above original entry (still a winning token)
+      if (currentMC < closedInfo.entryMC * 1.05) {
+        return this.none(`Re-entry: MC $${currentMC.toFixed(0)} < entry+5% $${(closedInfo.entryMC*1.05).toFixed(0)}`, 'RIDE');
+      }
+      // 2. Token must show renewed strength: current MC within 30% of peak (not dead)
+      if (closedInfo.peakMC > 0 && currentMC < closedInfo.peakMC * 0.5) {
+        return this.none(`Re-entry: MC $${currentMC.toFixed(0)} < 50% of peak $${closedInfo.peakMC.toFixed(0)} — too dead`, 'RIDE');
+      }
+      // Require momentum (same as first entry: 5 ticks rising)
+      // This is checked below in the normal flow — so we just let it pass through
+      // Mark as re-entry attempt
+      this.closedTokens.set(tokenAddress, { ...closedInfo, reentryCount: closedInfo.reentryCount + 1 });
+      // Log and continue to normal entry evaluation
+      console.log(`🔄 RE-ENTRY candidate ${tokenAddress.slice(0,8)} — prev TRAIL at $${closedInfo.exitMC.toFixed(0)}, MC now ${currentMC.toFixed(0)}`);
     }
 
-    // Too late (per-wallet timing)
-    if (elapsedSec > ws.maxEntrySec) {
-      return this.none(`⏰ Trop tard (${elapsedSec.toFixed(0)}s > ${ws.maxEntrySec.toFixed(0)}s)`, 'RIDE');
+    // v10.12: Split position pools — 2 NEO + 3 CARTEL + 2 STANDARD = 5 max
+    const neoCount = Array.from(this.openPositions.values()).filter(p => p.neoStrategy).length;
+    const cartelOpenCount = Array.from(this.openPositions.values()).filter(p => p.cartelStrategy).length;
+    const stdCount = Array.from(this.openPositions.values()).filter(p => !p.neoStrategy && !p.earlyStrategy && !p.cartelStrategy).length;
+    const MAX_NEO = 3; // v10.13: raised from 2
+    const MAX_CARTEL = 3;
+    const MAX_STD = 3; // v10.13: raised from 2
+    const isNeoEntry = mcRatio < 2.0 && elapsedSec <= 75;
+    if (isNeoEntry && neoCount >= MAX_NEO) {
+      return this.none(`🚫 NEO pool full (${neoCount}/${MAX_NEO}) — skip`, 'RIDE');
+    }
+    if (cartelOpenCount >= MAX_CARTEL) {
+      return this.none(`🚫 CARTEL pool full (${cartelOpenCount}/${MAX_CARTEL}) — skip`, 'RIDE');
+    }
+    if (!isNeoEntry && stdCount >= MAX_STD) {
+      return this.none(`🚫 STD pool full (${stdCount}/${MAX_STD}) — skip`, 'RIDE');
+    }
+    if (this.openPositions.size >= 8) { // v10.13: raised from 5
+      return this.none(`🚫 Max total positions (5) — skip`, 'RIDE');
     }
 
-    const pumpPct = mcRatio - 1;
-    const history = this.priceHistory.get(tokenAddress);
-    
-    // ══════════════════════════════════════════════════════════════
-    // CONFIDENCE-BASED ENTRY — NO trade without market confirmation
-    //
-    // DB analysis (902 tokens, 14 days):
-    //   - Baseline (no filter): 10% pump rate
-    //   - ≥3 buys + ≥2 unique buyers in 10s: 55-60% pump rate
-    //   - DUD tokens get 0.1 buys; PUMP tokens get 2.2 buys in 10s
-    //
-    // RULE: Do NOT buy unless market confirms demand first.
-    // ══════════════════════════════════════════════════════════════
-
-    const buyCount = state?.buyCount ?? 0;
     const uniqueBuyerCount = state?.uniqueBuyers?.size ?? 0;
     const buyVol = state?.buyVol ?? 0;
-    
-    // ── PHASE 0 (T+0-2s): OBSERVE — never buy during bot spike
-    if (elapsedSec < 3) {
-      return this.none(`👁️ OBSERVE (${elapsedSec.toFixed(1)}s) — collecting market data`, 'RIDE');
-    }
+    const buyCount = state?.buyCount ?? 0;
+    const sellCount = state?.sellCount ?? 0;
 
-    // ── MARKET CONFIDENCE: require ≥3 buys from ≥2 unique wallets
-    const minBuys = 3;
-    const minBuyers = 2;
-    
-    if (buyCount < minBuys || uniqueBuyerCount < minBuyers) {
-      if (elapsedSec > 20) {
-        return this.none(`💀 NO INTEREST: ${buyCount}b/${uniqueBuyerCount}w après ${elapsedSec.toFixed(0)}s — skip`, 'RIDE');
-      }
-      return this.none(`⏳ CONFIRMING: ${buyCount}/${minBuys} buys, ${uniqueBuyerCount}/${minBuyers} buyers — attente`, 'RIDE');
-    }
-    
-    // ── SPAM FILTER: wallet must be selective (≤3 tokens in 2h)
-    // Data: spammy wallets (6+ tokens/2h) are duds. Selective wallets pump.
-    // With this filter: 69% WR vs 53% without
-    const spamCount = await this.getWalletSpamCount(walletAddress);
-    if (spamCount > 3) {
-      return this.none(`🚫 SPAM: wallet created ${spamCount} tokens in 2h (max 3)`, 'RIDE');
-    }
+    // ══════════════════════════════════════════════════════════════
+    // v10 STRATEGY: "Market Validation First"
+    //
+    // Backtest (3 days, 1282 tokens):
+    //   20+ unique buyers AND $1K+ vol at T+30s → 99.6% reach 1.5x
+    //   Trail -10% from peak → 69.3% WR, avg +52.7% P&L
+    //
+    // Entry is PURELY based on market demand, not wallet reputation.
+    // ══════════════════════════════════════════════════════════════
 
+    // ═══════════════════════════════════════════════════════════
+    // v10.10 PROGRESSIVE ENTRY — "Enter early on organic tokens"
+    // Instead of waiting for 50 buyers + 2x ratio (paying 81% premium),
+    // enter at 15-20 buyers IF on-chain signals show organic demand.
+    // DB analysis: 60.6% of filtered tokens reach 3x+ vs 38.2% unfiltered.
+    // ═══════════════════════════════════════════════════════════
+    // v10.10h: EARLY ENTRY DISABLED — backtest: ratio<2.0x = WR 34%, net -8.0%, wallet 6.03
+    // Standard path only: b>=80, ratio>=2.0x, d<30 = WR 44%, net +7.2%, wallet 27.57
 
-    // ── VOLUME: minimum $200 buy volume in first 10s
-    // DB: Vol>=200 + hWR>=30 + spam<=3 = 100% WR (16/16 tokens pump)
-    const minEntryVol = 200;
-    if (buyVol < minEntryVol) {
-      if (elapsedSec > 20) {
-        return this.none(`💸 LOW VOL: $${buyVol.toFixed(0)} < $${minEntryVol} after ${elapsedSec.toFixed(0)}s — skip`, 'RIDE');
-      }
-      return this.none(`⏳ VOL: $${buyVol.toFixed(0)}/$${minEntryVol} — attente volume`, 'RIDE');
-    }
+    // ══════════════════════════════════════════════════════════════
+    // RUGGER STRATEGY — Per-wallet predictable behavior exploitation
+    // Backtest: 16 qualified wallets, 1240 trades, WR 63%, avg +27.1% net
+    // Entry: immediate (no buyer threshold needed)
+    // Exit: at P25 target MC of wallet's history, or hard stop -20%
+    // ══════════════════════════════════════════════════════════════
+    if (false && !this.openPositions.has(tokenAddress) && !this.ruggerPositions.has(tokenAddress) && elapsedSec >= 3 && elapsedSec <= 30) {
+      // Refresh profiles periodically
+      await this.ruggerProfiler.refreshProfiles();
+      
+      const ruggerProfile = this.ruggerProfiler.getProfile(walletAddress);
+      if (ruggerProfile) {
+        // Qualified rugger wallet — enter immediately
+        const minEntryMC = ruggerProfile.targetExitMC * 0.5; // Don't enter if already near target
+        if (currentMC >= 4000 && currentMC < ruggerProfile.targetExitMC * 0.85 && currentMC > minEntryMC) {
+          const expectedPnl = ((ruggerProfile.targetExitMC - currentMC) / currentMC * 100).toFixed(0);
+          
+          this.ruggerPositions.add(tokenAddress);
+          this.openPositions.set(tokenAddress, {
+            entryMC: currentMC,
+            entryTime: new Date(),
+            highestMC: currentMC,
+            lowestMCAfterEntry: currentMC,
+            tradeCount: 0,
+            walletAddress,
+            peakTime: Date.now(),
+            hadSignificantPump: false,
+            entryBuyVol: buyVol,
+            entryBuyCount: buyCount,
+            entryBuyerCount: uniqueBuyerCount,
+    entrySellersCount: state?.uniqueSellers?.size || 0,
+            staleTicks: 0,
+            ceilingHigh: currentMC,
+            pumpPeaks: [],
+            pumpState: 'PUMP' as const,
+            cycleHigh: currentMC,
+            dipLow: currentMC,
+            tickMCs: [currentMC],
+            confirmationDone: false,
+          });
 
-    // ── WALLET QUALITY: historical pump rate must be >=30%
-    // DB: hWR>=25 eliminates wallets that rarely pump
-    const histWR = await this.getWalletHistoricalWR(walletAddress);
-    if (histWR < 25) {
-      return this.none(`🚫 hWR=${histWR.toFixed(0)}% < 25% — wallet trop faible`, 'RIDE');
-    }
+          logger.info({
+            token: tokenAddress.slice(0, 8),
+            wallet: walletAddress.slice(0, 8),
+            mc: currentMC.toFixed(0),
+            target: ruggerProfile.targetExitMC.toFixed(0),
+            expectedPnl: `+${expectedPnl}%`,
+            cv: ruggerProfile.cvPeak.toFixed(2),
+            trainWR: `${ruggerProfile.trainWR.toFixed(0)}%`,
+            tokens: ruggerProfile.tokenCount,
+            timeStop: `${ruggerProfile.timeStopMin.toFixed(1)}min`,
+          }, '🎯 RUGGER BUY — predictable wallet exploit');
 
-    // ── v8.0 ENTRY PRICE FILTERS
-    // Data: 5184 combos tested on 22 tokens/7 days.
-    // Entering at high ratios = buying the top. 75% WR requires:
-    //   1. Price ≤ 1.5x baseline (never chase a pump)
-    //   2. Price must have dipped ≥ 5% from spike (buy the retrace)
-    
-    // Hard cap: never buy above 1.5x baseline
-    if (mcRatio > 1.5) {
-      return this.none(`🚫 RATIO ${mcRatio.toFixed(2)}x > 1.50x — trop cher`, 'RIDE');
-    }
-
-    // Dip requirement: track spike and require 5% retrace
-    const spikeMC = state?.highestMC ?? currentMC;
-    const dipFromSpike = spikeMC > 0 ? (spikeMC - currentMC) / spikeMC : 0;
-    if (dipFromSpike < 0.05 && spikeMC > currentMC * 1.02) {
-      return this.none(`⏳ DIP ${(dipFromSpike*100).toFixed(1)}% < 5% from spike $${spikeMC.toFixed(0)} — attente retrace`, 'RIDE');
-    }
-
-    // ── MOMENTUM: price should not be crashing
-    if (history && history.length >= 3) {
-      const now = Date.now();
-      const recent3s = history.filter(h => h.ts > now - 3000);
-      if (recent3s.length >= 2) {
-        const trend = (recent3s[recent3s.length - 1].mc - recent3s[0].mc) / recent3s[0].mc;
-        if (trend < -0.05) {
-          return this.none(`📉 CRASHING ${(trend*100).toFixed(1)}% — pas d'entrée en chute`, 'RIDE');
+          return {
+            action: 'BUY', confidence: 0.90, percentage: 100, playbook_strategy: 'RIDE',
+            reason: `🎯 RUGGER BUY — wallet ${walletAddress.slice(0,8)} (${ruggerProfile.tokenCount}t, CV=${ruggerProfile.cvPeak.toFixed(2)}, trainWR=${ruggerProfile.trainWR.toFixed(0)}%) | MC ${currentMC.toFixed(0)} → target ${ruggerProfile.targetExitMC.toFixed(0)} (+${expectedPnl}%) | timeStop ${ruggerProfile.timeStopMin.toFixed(1)}min`
+          };
         }
       }
     }
 
-    // ── CASCADE / SELL PRESSURE
-    if (state?.cascadeDetected) {
-      return this.none('CASCADE en cours', 'RIDE');
-    }
-    if (state && state.sellCount > state.buyCount * 1.5 && state.sellCount > 3) {
-      return this.none(`Sell pressure (${state.sellCount}s > ${state.buyCount}b)`, 'RIDE');
-    }
-    
-    // ── TIMEOUT: 30s max entry window
-    if (elapsedSec > 30) {
-      return this.none(`⏰ Trop tard (${elapsedSec.toFixed(0)}s) — fenêtre passée`, 'RIDE');
+    // Phase 1 (T+0-30s): OBSERVE — accumulate buyer data
+    if (elapsedSec < 30) {
+      // v10.10j: Prefetch funder during OBSERVE (async, non-blocking)
+      if (walletAddress && uniqueBuyerCount >= 5) {
+        this.funderLookup.prefetch(walletAddress);
+      }
+      if (uniqueBuyerCount >= 5) {
+        return this.none(`👁️ v10 OBSERVE (${elapsedSec.toFixed(0)}s/30s) — ${uniqueBuyerCount} buyers, $${buyVol.toFixed(0)} vol, ${mcRatio.toFixed(1)}x`, 'RIDE');
+      }
+      return this.none(`👁️ v10 OBSERVE (${elapsedSec.toFixed(0)}s)`, 'RIDE');
     }
 
 
-    // ✅ BUY — phased entry confirmed
+    // ══════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════
+    // CARTEL STRATEGY v1.0 — Good wallet convergence signal
+    // Backtest: 2+ good wallets → 72% WR, +51% avg, wallet +233%
+    // Sizing: 2→0.50, 3→0.60, 4+→0.70 SOL
+    // ══════════════════════════════════════════════════════════════
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 2 && elapsedSec <= 120) {
+      const cartelSignal = this.cartelDetector.getSignal(tokenAddress);
+      if (cartelSignal && cartelSignal.goodWalletCount >= 2) {
+        // No circuit breaker for CARTEL — independent signal, not affected by STD/NEO HS
+
+        // FADE block
+        const wRisk = this.rideCache.get(tokenAddress)?.walletRiskScore ?? 0.5;
+        if (wRisk >= 0.65) {
+          return this.none(`🚫 CARTEL: FADE risk=${wRisk.toFixed(2)}`, 'RIDE');
+        }
+
+        // Max concurrent cartel positions
+        const cartelCount = Array.from(this.openPositions.values()).filter(p => p.cartelStrategy).length;
+        if (cartelCount >= 3) {
+          return this.none(`🚫 CARTEL: max 3 concurrent positions`, 'RIDE');
+        }
+
+        const cartelPos = cartelSignal.positionSol;
+
+        this.lastBuyTimestamp = Date.now();
+        this.openPositions.set(tokenAddress, {
+          entryMC: currentMC,
+          entryTime: new Date(),
+          highestMC: currentMC,
+          lowestMCAfterEntry: currentMC,
+          tradeCount: 0,
+          walletAddress,
+          peakTime: Date.now(),
+          hadSignificantPump: false,
+          entryBuyVol: buyVol,
+          entryBuyCount: buyCount,
+          entryBuyerCount: uniqueBuyerCount,
+          entrySellersCount: state?.uniqueSellers?.size || 0,
+          staleTicks: 0,
+          ceilingHigh: currentMC,
+          pumpPeaks: [],
+          pumpState: 'PUMP' as const,
+          cycleHigh: currentMC,
+          dipLow: currentMC,
+          tickMCs: [currentMC],
+          confirmationDone: false,
+          cartelStrategy: true,
+        });
+
+        return {
+          action: 'BUY', confidence: cartelSignal.confidence, percentage: 100, playbook_strategy: 'RIDE',
+          wallet_risk_score: wRisk,
+          position_sol: cartelPos,
+          quality_score: cartelSignal.goodWalletCount,
+          reason: `🤝 CARTEL v1 BUY — ${cartelSignal.goodWalletCount} good wallets | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | ${uniqueBuyerCount}b pos=${cartelPos}SOL`
+        };
+      }
+    }
+
+        // NEO v4 STRATEGY — Live-tuned from 14 real trades
+    // Winners: topH≤12%, dumps≤14, sr≤0.44, Q1+ (5/5 win)
+    // Losers: Q0 garbage (3/3 lost), topH≥13% OR dumps≥15
+    // Key insight: Q0 = no edge, Q1+ = 62.5%+ WR with avg +29%
+    // Exit: HS -15%, Trail 15% after +30% peak (unchanged, working well)
+    // ══════════════════════════════════════════════════════════════
+    if (mcRatio >= 1.0 && mcRatio < 2.0 && elapsedSec >= 15 && elapsedSec <= 120 && !this.openPositions.has(tokenAddress)) { // v4.20: window 15-90s→15-120s (DB: 90-120s slice WR=85% avg=+75%)
+      const neoTopH = state?.largestHolderPct || 0;
+      const neoDumps = state?.totalDumpSells || 0;
+      const neoSellers = state?.uniqueSellers?.size || 0;
+      const neoBuyers = uniqueBuyerCount;
+      const neoSellRatio = neoBuyers > 0 ? neoSellers / neoBuyers : 1;
+      const neoAvgBuy = state?.avgBuySize || 0;
+      const neoRecentBuys = (state?.buyTimestamps || []).filter((t: number) => Date.now() - t < 30000).length;
+      const neoVelocity = neoRecentBuys / 0.5; // buys per minute in last 30s
+      
+      // NEO v4.22 — gate wider: th0.15→0.20 md18→25. DB score 29122→41364 (+42%). WR=82.8% avg=58.7% n=705.
+      // Gate unchanged: sr=0.40 th=0.12 mb=25 md=15 (still optimal entry params)
+      // Gate 1: Basic quality
+      if (neoBuyers >= 20 && neoSellRatio <= 0.44 && neoTopH <= 0.20 && neoDumps <= 25) { // v4.22: gate th0.15→0.20 md18→25 (DB: score 29122→41364 +42%). WR=82.8% avg=58.7% n=705
+        
+        // Circuit breaker
+        if (this.circuitBreakerUntil && Date.now() < this.circuitBreakerUntil) {
+          const remainMin = ((this.circuitBreakerUntil - Date.now()) / 60000).toFixed(1);
+          return this.none(`🛑 NEO CB — pause ${remainMin}min`, 'RIDE');
+        }
+        if (this.circuitBreakerUntil && Date.now() >= this.circuitBreakerUntil) {
+          this.circuitBreakerUntil = null;
+          this.consecutiveHardStops = 0;
+        }
+        
+        // FADE block — threshold raised 0.50→0.65 (default 0.5 was blocking all unknown wallets)
+        // DB: 76.9% of wallets score <0.65, only 38.3% score <0.50. Allows unknowns through.
+        const wRisk = this.rideCache.get(tokenAddress)?.walletRiskScore ?? 0.5;
+        if (wRisk >= 0.65) {
+          return this.none(`🚫 NEO: FADE risk=${wRisk.toFixed(2)}`, 'RIDE');
+        }
+        
+        // Q-Score: 4 signals of organic quality
+        let neoQ = 0;
+        if (neoAvgBuy > 0 && neoAvgBuy <= 10) neoQ++;   // Micro-retail buys (v4.17: tightened $25→$15; DB ≤$10 = 89.8%WR/+74.9% vs $10-25 = 78%/+55.3%)
+        if (neoDumps <= 10) neoQ++;                        // v4.18: Q dump criterion ≤10 (tighter than gate 15, rewards cleaner tokens)
+        if (neoTopH <= 0.08) neoQ++;                       // No whale concentration
+        if (neoSellRatio <= 0.25) neoQ++;                  // Tight sell ratio signal (still 0.25 for Q, gate at 0.35)
+        
+        // BLOCK Q0 entries — live data: 3/3 Q0 = HARD_STOP, no edge
+        if (neoQ === 0) {
+          return this.none(`🚫 NEO: Q0 blocked — sr=${neoSellRatio.toFixed(2)} topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)}`, 'RIDE');
+        }
+        
+        // Aggressive sizing: Q1+ proven winners, scale up with quality
+        // Q1=0.20, Q2=0.35, Q3=0.55, Q4=0.65 (v4.3: more aggressive on high conviction; WR=84.8% supports it)
+        const neoQSizing: Record<number, number> = { 1: 0.15, 2: 0.20, 3: 0.25, 4: 0.25 };
+        const neoPos = neoQSizing[neoQ] || 0.20;
+        
+        this.lastBuyTimestamp = Date.now();
+        this.openPositions.set(tokenAddress, {
+          entryMC: currentMC,
+          entryTime: new Date(),
+          highestMC: currentMC,
+          lowestMCAfterEntry: currentMC,
+          tradeCount: 0,
+          walletAddress,
+          peakTime: Date.now(),
+          hadSignificantPump: false,
+          entryBuyVol: buyVol,
+          entryBuyCount: buyCount,
+          entryBuyerCount: uniqueBuyerCount,
+          entrySellersCount: neoSellers,
+          staleTicks: 0,
+          ceilingHigh: currentMC,
+          pumpPeaks: [],
+          pumpState: 'PUMP' as const,
+          cycleHigh: currentMC,
+          dipLow: currentMC,
+          tickMCs: [currentMC],
+          confirmationDone: false,
+          neoStrategy: true,
+        });
+        
+        return {
+          action: 'BUY', confidence: 0.95, percentage: 100, playbook_strategy: 'RIDE',
+          wallet_risk_score: wRisk,
+          position_sol: neoPos,
+          quality_score: neoQ,
+          reason: `🧠 NEO v4.27 BUY Q${neoQ} — ${neoBuyers}b ${neoSellers}s sr=${neoSellRatio.toFixed(2)} vel=${neoVelocity} | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)} pos=${neoPos}SOL`
+        };
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // EARLY ENTRY (v10.11) — enter at ratio 1.2x with 50+ buyers
+    // DB backtest: 9703 tokens, WR 81%, avg net +130% vs standard 59% WR, +60%
+    // Key insight: waiting for 2.0x ratio loses 2.3x MC inflation → most upside gone
+    // ══════════════════════════════════════════════════════════════
+    if (false && mcRatio >= 1.2) {
+      const earlyTopH = state?.largestHolderPct || 0;
+      const earlyDumps = state?.totalDumpSells || 0;
+      const earlyAvgBuy = state?.avgBuySize || 0;
+      
+      // Hard blocks still apply
+      if (earlyTopH > 0.15) {
+        return this.none(`🚫 EARLY: topHolder ${(earlyTopH*100).toFixed(0)}% > 15%`, 'RIDE');
+      }
+      
+      // v10.11b: Buy/Sell ratio filter — DB: bsr>=1.2 + tb<=8% = 85% WR, +215% net
+      const earlyBSR = sellCount > 0 ? buyCount / sellCount : 99;
+      if (earlyBSR < 1.2) {
+        return this.none(`🚫 EARLY: buy/sell ratio ${earlyBSR.toFixed(2)} < 1.2`, 'RIDE');
+      }
+      
+      // CB removed for EARLY — Raph decision 2026-03-22
+      
+      // Quality score at 50 buyers (same metrics, slightly relaxed thresholds)
+      let earlyQ = 0;
+      if (earlyAvgBuy <= 30) earlyQ++;
+      if (earlyDumps <= 12) earlyQ++;
+      if (earlyTopH <= 0.08) earlyQ++;
+      if (buyVol <= 2000) earlyQ++;
+      
+      // Minimum quality: Q2+ required for early entry (stricter filter to compensate less data)
+      if (earlyQ < 1) {
+        return this.none(`⏳ EARLY: Q${earlyQ} < 2 — not enough quality for early entry`, 'RIDE');
+      }
+      
+      // FADE wallet block
+      const wRisk = this.rideCache.get(tokenAddress)?.walletRiskScore ?? 0.5;
+      if (wRisk >= 0.50) {
+        return this.none(`🚫 EARLY: FADE wallet risk=${wRisk.toFixed(2)}`, 'RIDE');
+      }
+      
+      // Position sizing: same formula but cap at 0.3 SOL for early (more risk)
+      const riskBase = 0.5 - wRisk * 0.4;
+      const qualityMultiplier = [0.3, 0.5, 0.7, 0.9, 1.0][earlyQ];
+      const earlyPos = Math.round(Math.min(0.30, Math.max(0.10, riskBase * qualityMultiplier)) * 100) / 100;
+      
+      this.lastBuyTimestamp = Date.now();
+      this.openPositions.set(tokenAddress, {
+        entryMC: currentMC,
+        entryTime: new Date(),
+        highestMC: currentMC,
+        lowestMCAfterEntry: currentMC,
+        tradeCount: 0,
+        walletAddress,
+        peakTime: Date.now(),
+        hadSignificantPump: false,
+        entryBuyVol: buyVol,
+        entryBuyCount: buyCount,
+        entryBuyerCount: uniqueBuyerCount,
+        entrySellersCount: state?.uniqueSellers?.size || 0,
+        staleTicks: 0,
+        ceilingHigh: currentMC,
+        pumpPeaks: [],
+        pumpState: 'PUMP' as const,
+        cycleHigh: currentMC,
+        dipLow: currentMC,
+        tickMCs: [currentMC],
+        confirmationDone: false,
+        earlyStrategy: true,
+      });
+      
+      return {
+        action: 'BUY', confidence: 0.90, percentage: 100, playbook_strategy: 'RIDE',
+        wallet_risk_score: wRisk,
+        position_sol: earlyPos,
+        quality_score: earlyQ,
+        reason: `⚡ v10.11 EARLY BUY Q${earlyQ} — ${uniqueBuyerCount} buyers, $${buyVol.toFixed(0)} vol, ${mcRatio.toFixed(1)}x base | ${elapsedSec.toFixed(0)}s | dumps=${earlyDumps} topH=${(earlyTopH*100).toFixed(0)}% avgBuy=$${earlyAvgBuy.toFixed(0)} risk=${wRisk.toFixed(2)} pos=${earlyPos}SOL`
+      };
+    }
+
+    // Phase 2 (T+30-90s): EVALUATE — standard entry (fallback if early entry didn't trigger)
+    const MIN_BUYERS = 70; // v10.10k: lowered from 80 to collect data on 70-79 range // v10.10g: backtest 1711t — b>=80 net +2.4%, wallet 13.43
+    const MIN_VOL = 1000;
+
+    // Minimum MC ratio 2.0x for standard entry
+    if (mcRatio < 2.0) { // v10.10: reverted to 2.0 (backtest: baseline wins)
+      if (elapsedSec > 60) {
+        return this.none(`💀 v10: ratio ${mcRatio.toFixed(2)}x < 2.0x after ${elapsedSec.toFixed(0)}s — no momentum`, 'RIDE');
+      }
+      return this.none(`⏳ v10: ratio ${mcRatio.toFixed(2)}x < 2.0x — waiting for momentum`, 'RIDE');
+    }
+
+    // Max MC ratio 2.6x
+    if (mcRatio > 3.0) { // v10.10h: extended from 2.6
+      return this.none(`🚫 v10: ratio ${mcRatio.toFixed(1)}x > 3.0x — trop cher`, 'RIDE');
+    }
+
+    // Token must have shown movement during observe
+    const spikeMC = state?.highestMC ?? currentMC;
+    const hasShownLife = spikeMC > baselineMC * 1.05;
+    if (!hasShownLife && elapsedSec < 60) {
+      return this.none(`⏳ v10: flat token (spike ${(spikeMC/baselineMC).toFixed(2)}x) — waiting`, 'RIDE');
+    }
+    if (!hasShownLife && elapsedSec >= 90) {
+      return this.none(`💀 v10: never moved >5% in ${elapsedSec.toFixed(0)}s — dead`, 'RIDE');
+    }
+
+    // Hard requirement: unique buyer wallets
+    if (uniqueBuyerCount < MIN_BUYERS) {
+      if (elapsedSec > 90) {
+        return this.none(`💀 v10: ${uniqueBuyerCount}/${MIN_BUYERS} buyers after ${elapsedSec.toFixed(0)}s — dead`, 'RIDE');
+      }
+      return this.none(`⏳ v10: ${uniqueBuyerCount}/${MIN_BUYERS} buyers — waiting`, 'RIDE');
+    }
+
+    // Hard requirement: buy volume
+    if (buyVol < MIN_VOL) {
+      if (elapsedSec > 90) {
+        return this.none(`💀 v10: vol $${buyVol.toFixed(0)}/${MIN_VOL} after ${elapsedSec.toFixed(0)}s — dead`, 'RIDE');
+      }
+      return this.none(`⏳ v10: vol $${buyVol.toFixed(0)}/$${MIN_VOL} — waiting`, 'RIDE');
+    }
+
+    // Entry window: max 120s (was 90s — US peak hours need more time)
+    if (elapsedSec > 110) {
+      return this.none(`⏰ v10: too late (${elapsedSec.toFixed(0)}s > 110s)`, 'RIDE');
+    }
+
+//    // Anti-cascade: if sells dominate, skip
+//    if (sellCount > buyCount * 0.8 && sellCount > 5) {
+//      return this.none(`📉 v10: sell pressure ${sellCount}s/${buyCount}b — skip`, 'RIDE');
+//    }
+
+    // Compute confidence tier
+    // v10.10h: Raised cap 100→150 — RT-TRAIL handles volatile tokens better now
+    if (uniqueBuyerCount > 150) {
+      return this.none(`🚫 v10: ${uniqueBuyerCount} buyers > 150 — hype peak, skip`, 'RIDE');
+    }
+    const tier = uniqueBuyerCount >= 50 ? 'HIGH' : uniqueBuyerCount >= 30 ? 'MID' : 'BASE';
+    const confidence = tier === 'HIGH' ? 0.95 : tier === 'MID' ? 0.90 : 0.85;
+
+    // v10.10g: ENTRY FILTER — backtest 1711t: b>=80 + d<30 = wallet 13.43 (+34%)
+    // v10.11: Tightened dumps gate 30→21 (paper: dumps>20 = 131t WR 35% avg -3.5% vs dumps 13-20 = 29t WR 66% avg +6.6%)
+    const totalDumps = state?.totalDumpSells || 0;
+    if (totalDumps >= 30) {
+      return this.none(`🚫 v10.11: ${totalDumps} dumps >= 30 — distribution, skip`, 'RIDE');
+    }
+
+    // v10.10i: avgBuy filter — high avg buy = whale/insider manipulation, not organic demand
+//    // Data: avgBuy<=25 → 16 trades, WR 68.8%, +408% total, 0 wins lost
+//    const avgBuySize = state?.avgBuySize || 0;
+//    if (avgBuySize > 30) {
+//      return this.none(`🚫 v10.10i: avgBuy $${avgBuySize.toFixed(0)} > $30 — whale activity, skip`, 'RIDE');
+//    }
+
+    // v10.9: MOMENTUM CONFIRMATION — price must be rising in last 3 ticks
+    const mcs = state?.recentMCs || [];
+    if (mcs.length >= 5) {
+      const last5 = mcs.slice(-5);
+      const isRising = last5[1] > last5[0] && last5[2] > last5[1] && last5[3] > last5[2] && last5[4] > last5[3];
+      const momentumPct = ((last5[4] - last5[0]) / last5[0]) * 100;
+      if (!isRising || momentumPct < 3.0) {
+        return this.none(`⏸️ v10.9: no momentum (${momentumPct.toFixed(1)}%, rising=${isRising}) — waiting`, 'RIDE');
+      }
+    } else if (mcs.length < 5) {
+      return this.none(`⏸️ v10.9: need 5 ticks for momentum (have ${mcs.length})`, 'RIDE');
+    }
+
+    // v10.9.9: Cooldown removed — max concurrent (2) handles frequency naturally
+
+    // ✅ v10.9.2 BUY — market validated + momentum confirmed
+    this.lastBuyTimestamp = Date.now();
     this.openPositions.set(tokenAddress, {
       entryMC: currentMC,
       entryTime: new Date(),
@@ -854,38 +1720,155 @@ export class TradeExecutor {
       entryBuyVol: buyVol,
       entryBuyCount: buyCount,
       entryBuyerCount: uniqueBuyerCount,
-    });
-
-    const evStr = ws.evPerTrade.toFixed(1);
-    const wrStr = (ws.winRate * 100).toFixed(0);
-    // const slStr = (ws.stopLossPct * 100).toFixed(0);
-    const targetStr = ((ws.targetRatio - 1) * 100).toFixed(0);
+    entrySellersCount: state?.uniqueSellers?.size || 0,
+      staleTicks: 0,
+      ceilingHigh: currentMC,
+    pumpPeaks: [],
+          pumpState: 'PUMP' as const,
+          cycleHigh: currentMC,
+          dipLow: currentMC,
+        tickMCs: [currentMC],
+          confirmationDone: false,
+        });
 
     logger.info({
       token: tokenAddress.slice(0, 8),
-      wallet: walletAddress.slice(0, 8),
-      mc: currentMC.toFixed(0),
-      baseline: baselineMC.toFixed(0),
-      pump: (pumpPct * 100).toFixed(1) + '%',
-      buys: buyCount,
       buyers: uniqueBuyerCount,
-      buyVol: buyVol.toFixed(0),
-      ev: evStr + '%',
-      winRate: wrStr + '%',
-    }, '🟢 BUY — market-confirmed entry');
+      vol: buyVol.toFixed(0),
+      mc: currentMC.toFixed(0),
+      ratio: mcRatio.toFixed(2),
+      tier,
+      elapsed: elapsedSec.toFixed(0),
+    }, '🚀 v10 BUY — market validated');
 
+    // v10.10k: Quality score (0-4) from early market microstructure
+    const avgBuySize = state?.avgBuySize || 0;
+    const qDumps = state?.totalDumpSells || 0;
+    const topHolderPct = state?.largestHolderPct || 0;
+    // v10.10k: Hard block topHolder > 12% — 73% HS rate, saves +2.0 SOL
+    if (topHolderPct > 0.12) {
+      return { action: 'NONE', confidence: 0, percentage: 0, reason: `🚫 topHolder ${(topHolderPct*100).toFixed(0)}% > 12% — whale concentration block` };
+    }
+    let qualityScore = 0;
+    if (avgBuySize <= 25) qualityScore++;
+    if (qDumps <= 18) qualityScore++;
+    if (topHolderPct <= 0.10) qualityScore++;
+    if (buyVol <= 2500) qualityScore++;
+
+    // v10.10k: Combined position sizing — wallet risk × quality score
+    // Wallet risk base: 0.5 - (risk × 0.4) → 0.1-0.5 SOL
+    // Quality multiplier: score 0→0.3, 1→0.5, 2→0.7, 3→0.9, 4→1.0
+    const wRisk = this.rideCache.get(tokenAddress)?.walletRiskScore ?? 0.5;
+    const riskBase = 0.5 - wRisk * 0.4; // 0.1-0.5
+    const qualityMultiplier = [0.3, 0.5, 0.7, 0.9, 1.0][qualityScore];
+    const riskPositionSol = Math.round(Math.min(0.50, Math.max(0.30, riskBase * qualityMultiplier)) * 100) / 100;
+
+    logger.info({
+      token: tokenAddress.slice(0, 8),
+      qualityScore,
+      avgBuy: avgBuySize.toFixed(0),
+      dumps: qDumps,
+      topH: (topHolderPct * 100).toFixed(0) + '%',
+      vol: buyVol.toFixed(0),
+      wRisk: wRisk.toFixed(2),
+      riskBase: riskBase.toFixed(2),
+      qMult: qualityMultiplier.toFixed(1),
+      position: riskPositionSol,
+    }, '🎯 v10.10k Quality Score');
+
+    // v10.10k Circuit Breaker
+    if (this.circuitBreakerUntil && Date.now() < this.circuitBreakerUntil) {
+      const remainMin = ((this.circuitBreakerUntil - Date.now()) / 60000).toFixed(1);
+      return { action: 'NONE', confidence: 0, percentage: 0, reason: `🛑 CIRCUIT BREAKER — pause ${remainMin}min` };
+    }
+    if (this.circuitBreakerUntil && Date.now() >= this.circuitBreakerUntil) {
+      console.log(`✅ Circuit breaker lifted — resuming trading`);
+      this.circuitBreakerUntil = null;
+      this.consecutiveHardStops = 0;
+    }
     return {
-      action: 'BUY', confidence: Math.min(ws.winRate + 0.3, 0.95), percentage: 100, playbook_strategy: 'RIDE',
-      reason: `BUY — ${buyCount}b/${uniqueBuyerCount}w $${buyVol.toFixed(0)}vol | ${mcRatio.toFixed(2)}x base | EV=${evStr}% WR=${wrStr}% hWR=${histWR.toFixed(0)}% target=+${targetStr}% maxHold=30s`
+      action: 'BUY', confidence, percentage: 100, playbook_strategy: 'RIDE',
+      wallet_risk_score: wRisk,
+      position_sol: riskPositionSol,
+      quality_score: qualityScore,
+      reason: `${closedInfo ? "🔄 RE-ENTRY" : "🚀"} v10.10k BUY [${tier}] Q${qualityScore} — ${uniqueBuyerCount} buyers, $${buyVol.toFixed(0)} vol, ${mcRatio.toFixed(1)}x base | ${elapsedSec.toFixed(0)}s | momentum ✓ | dumps=${qDumps} sells=${sellCount}/${buyCount} avgBuy=$${avgBuySize.toFixed(0)} avgSell=$${(state?.avgSellSize || 0).toFixed(0)} topHolder=${(topHolderPct*100).toFixed(0)}% peak=${(state?.highestMC || currentMC).toFixed(0)} risk=${wRisk.toFixed(2)} Q=${qualityScore}×${qualityMultiplier.toFixed(1)} pos=${riskPositionSol}SOL`
     };
   }
 
-  /** Override in PaperTradeExecutor to log sweep closes */
-  protected onSweepClose(_token: string, _signal: TradeSignal, _mc: number): void {
-    // base: no-op. PaperTradeExecutor overrides to log.
+
+  // v10.10h: Save live snapshot to DB for every evaluation
+  async saveSnapshot(tokenAddress: string, elapsedSec: number, currentMC: number, signal: { action: string; reason?: string }): Promise<void> {
+    try {
+      const state = this.liveState.get(tokenAddress);
+      
+      const buyCount = state?.buyCount || 0;
+      const sellCount = state?.sellCount || 0;
+      const uniqueBuyers = state?.uniqueBuyers?.size || 0;
+      const uniqueSellers = state?.uniqueSellers?.size || 0;
+      const buyVol = state?.buyVol || 0;
+      const sellVol = state?.sellVol || 0;
+      const netFlow = buyVol - sellVol;
+      const avgBuySize = state?.avgBuySize || 0;
+      const avgSellSize = state?.avgSellSize || 0;
+      const topHolderPct = state?.largestHolderPct || 0;
+      const repeatBuyerCount = state?.repeatBuyers?.size || 0;
+      const totalDumps = state?.totalDumpSells || 0;
+      const sellRatio = sellCount / Math.max(buyCount + sellCount, 1);
+      const bondingCurve = state?.bondingCurvePct || 0;
+      
+      // Buy velocity: buyers in last 30s (approximate from timestamps)
+      const now = Date.now();
+      const recentBuys = (state?.buyTimestamps || []).filter((t: number) => now - t < 30000).length;
+      const buyVelocity30s = recentBuys / 0.5; // per minute
+      
+      // MC ratio
+      const baselineMC = currentMC / Math.max(state?.highestMC || currentMC, 1) * (state?.highestMC || currentMC);
+      // Approximate: ratio = currentMC / (initial MC guess from first few ticks)
+      const mcs = state?.recentMCs || [];
+      const firstMC = mcs.length > 0 ? mcs[0] : currentMC;
+      const mcRatio = firstMC > 0 ? currentMC / firstMC : 1;
+      
+      // Momentum: last 5 ticks
+      let momentumPct = 0;
+      if (mcs.length >= 5) {
+        const last5 = mcs.slice(-5);
+        momentumPct = ((last5[4] - last5[0]) / Math.max(last5[0], 1)) * 100;
+      }
+      
+      // Only save every 3rd tick for NONE actions to reduce DB load
+      // Always save BUY/SELL
+      if (signal.action === "NONE") {
+        const tickCount = mcs.length;
+        if (tickCount % 3 !== 0) return;
+      }
+      
+      await this.pool.query(
+        `INSERT INTO token_snapshots (
+          token_address, snapshot_at, elapsed_sec, mc_live, source,
+          unique_buyers, unique_sellers, buy_vol_live, sell_vol_live, net_flow,
+          avg_buy_size, avg_sell_size, top_holder_pct, repeat_buyer_count,
+          total_dumps, sell_ratio, buy_velocity_30s, mc_ratio,
+          bonding_curve_pct, momentum_pct, trade_action, action_reason
+        ) VALUES (
+          $1, NOW(), $2, $3, 'live',
+          $4, $5, $6, $7, $8,
+          $9, $10, $11, $12,
+          $13, $14, $15, $16,
+          $17, $18, $19, $20
+        )`,
+        [
+          tokenAddress, elapsedSec, currentMC,
+          uniqueBuyers, uniqueSellers, buyVol, sellVol, netFlow,
+          avgBuySize, avgSellSize, topHolderPct, repeatBuyerCount,
+          totalDumps, sellRatio, buyVelocity30s, mcRatio,
+          bondingCurve, momentumPct, signal.action, (signal.reason || '').slice(0, 200)
+        ]
+      );
+    } catch (err) {
+      logger.error({ err }, 'saveSnapshot error');
+    }
   }
 
-  /** Get wallet historical win rate (% of tokens that pumped ≥1.5x) */
   private async getWalletHistoricalWR(walletAddress: string): Promise<number> {
     try {
       const result = await this.pool.query(`
@@ -915,6 +1898,18 @@ export class TradeExecutor {
   // HELPERS
   // ─────────────────────────────────────────────────────────────
 
+  /** Store funder relationship in wallet_ancestry table */
+  private async storeAncestry(childWallet: string, funder: { funder: string; amountSol: number; confidence: number }): Promise<void> {
+    try {
+      await this.pool.query(
+        `INSERT INTO wallet_ancestry (parent_wallet, child_wallet, funding_tx_hash, funding_amount_sol, depth, confidence)
+         VALUES ($1, $2, 'rpc-lookup', $3, 0, $4)
+         ON CONFLICT (parent_wallet, child_wallet) DO NOTHING`,
+        [funder.funder, childWallet, funder.amountSol, funder.confidence]
+      );
+    } catch { /* non-critical */ }
+  }
+
   private none(reason: string, strategy?: 'RIDE'|'FADE'|'WATCH'|'AVOID'): TradeSignal {
     return { action: 'NONE', confidence: 0, reason, playbook_strategy: strategy };
   }
@@ -927,34 +1922,55 @@ export class TradeExecutor {
     return { timing_score: 0, momentum_score: 0, consistency_score: 0, risk_score: 0, wallet_score: 0 };
   }
 
-  private closePosition(tokenAddress: string): void {
+  private closePosition(tokenAddress: string, lastKnownMC?: number): void {
     const pos = this.openPositions.get(tokenAddress);
     if (pos) {
       const holdSec = (Date.now() - pos.entryTime.getTime()) / 1000;
-      const pnl = ((pos.highestMC - pos.entryMC) / pos.entryMC * 100).toFixed(1);
+      const exitMC = lastKnownMC || pos.lowestMCAfterEntry || pos.entryMC;
+      const pnl = ((exitMC - pos.entryMC) / pos.entryMC * 100);
       logger.info({
         token: tokenAddress.slice(0, 8),
         wallet: pos.walletAddress.slice(0, 8),
         entryMC: pos.entryMC.toFixed(0),
+        exitMC: exitMC.toFixed(0),
         highMC: pos.highestMC.toFixed(0),
         holdSec: holdSec.toFixed(0),
-        maxPnlPct: pnl + '%'
-      }, '🔴 POSITION CLOSED');
+        pnl: pnl.toFixed(1) + '%'
+      }, '🔴 POSITION CLOSED — logging SELL');
       this.openPositions.delete(tokenAddress);
-      this.closedTokens.add(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'TRACKING_END', exitMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: 99 });
+      this.consecutiveHardStops = 0; // CB reset
+
+      // v10.10c: Log SELL to paper-trades so no orphan BUYs
+      this.onSweepClose(tokenAddress, this.sell(100, 1.0, 'RIDE',
+        `🔒 TRACKING END — P&L ${pnl.toFixed(1)}% | peak +${((pos.highestMC - pos.entryMC) / pos.entryMC * 100).toFixed(0)}% | ${holdSec.toFixed(0)}s`,
+        this.emptySignals()), exitMC);
     }
     this.firstMC.delete(tokenAddress);
     this.liveState.delete(tokenAddress);
     this.priceHistory.delete(tokenAddress);
   }
 
-  closePositionIfOpen(tokenAddress: string): void {
-    if (this.openPositions.has(tokenAddress)) this.closePosition(tokenAddress);
+  closePositionIfOpen(tokenAddress: string, lastMC?: number): void {
+    if (this.openPositions.has(tokenAddress)) {
+      const pos = this.openPositions.get(tokenAddress)!;
+      const mc = lastMC || pos.lowestMCAfterEntry || pos.entryMC || 0;
+      // v10.10d: Force a proper SELL via evaluateHold logic before tracking ends
+      const pnl = (mc - pos.entryMC) / pos.entryMC * 100;
+      const peakPnl = (pos.highestMC - pos.entryMC) / pos.entryMC * 100;
+      logger.info({ token: tokenAddress.slice(0, 8), pnl: pnl.toFixed(1), peak: peakPnl.toFixed(0), mc: mc.toFixed(0) },
+        '🔒 TRACKING END — force selling open position');
+      this.closePosition(tokenAddress, mc);
+    }
     this.firstMC.delete(tokenAddress);
     this.liveState.delete(tokenAddress);
   }
 
   hasPosition(tokenAddress: string): boolean {
     return this.openPositions.has(tokenAddress);
+  }
+
+  getOpenPositionTokens(): string[] {
+    return [...this.openPositions.keys()];
   }
 }

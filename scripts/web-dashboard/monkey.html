@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🐒 Monkey Mode</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:#0d1117; color:#c9d1d9; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; overflow:hidden; height:100vh; }
+    .nav-bar { display:flex; gap:10px; justify-content:center; padding:16px; flex-wrap:wrap; position:relative; z-index:10; }
+    .nav-bar a { background:#21262d; border:1px solid #30363d; border-radius:8px; padding:10px 20px; color:#58a6ff; text-decoration:none; font-size:14px; font-weight:600; transition:all .2s; }
+    .nav-bar a:hover { border-color:#58a6ff; background:#1c2128; }
+    .nav-bar a.active { border-color:#ffad1f; background:#1c2128; color:#ffad1f; }
+
+    .scene { display:flex; flex-direction:column; align-items:center; justify-content:center; height:calc(100vh - 80px); position:relative; }
+
+    .monkey { font-size:120px; cursor:pointer; user-select:none; transition:transform .1s; animation:float 3s ease-in-out infinite; position:relative; z-index:5; }
+    .monkey:active { transform:scale(1.3) rotate(10deg); }
+    .monkey.dancing { animation:dance .4s ease-in-out infinite; }
+
+    .speech { background:#161b22; border:1px solid #30363d; border-radius:16px; padding:16px 24px; margin-top:20px; font-size:1.1rem; max-width:400px; text-align:center; position:relative; opacity:0; transition:opacity .3s; }
+    .speech.visible { opacity:1; }
+    .speech::before { content:''; position:absolute; top:-10px; left:50%; transform:translateX(-50%); border-left:10px solid transparent; border-right:10px solid transparent; border-bottom:10px solid #30363d; }
+
+    .stats-ticker { position:fixed; bottom:0; left:0; right:0; background:#161b22; border-top:1px solid #30363d; padding:12px 24px; display:flex; justify-content:center; gap:32px; font-size:0.85rem; z-index:10; }
+    .stats-ticker .stat { text-align:center; }
+    .stats-ticker .stat .val { font-size:1.2rem; font-weight:700; }
+    .stats-ticker .stat .val.green { color:#17bf63; }
+    .stats-ticker .stat .val.red { color:#e0245e; }
+    .stats-ticker .stat .lbl { color:#8b949e; font-size:0.7rem; text-transform:uppercase; }
+
+    .banana { position:absolute; font-size:30px; pointer-events:none; z-index:1; animation:fall linear forwards; }
+    .confetti { position:absolute; width:8px; height:8px; border-radius:50%; pointer-events:none; z-index:1; animation:confettiFall linear forwards; }
+
+    @keyframes float { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-15px); } }
+    @keyframes dance { 0% { transform:rotate(-15deg) scale(1.1); } 25% { transform:rotate(15deg) scale(1.15); } 50% { transform:rotate(-10deg) scale(1.1); } 75% { transform:rotate(10deg) scale(1.15); } 100% { transform:rotate(-15deg) scale(1.1); } }
+    @keyframes fall { 0% { transform:translateY(-60px) rotate(0deg); opacity:1; } 100% { transform:translateY(100vh) rotate(720deg); opacity:0; } }
+    @keyframes confettiFall { 0% { transform:translateY(0) rotate(0deg); opacity:1; } 100% { transform:translateY(300px) translateX(var(--drift)) rotate(720deg); opacity:0; } }
+  </style>
+</head>
+<body>
+  <div class="nav-bar">
+    <a href="/">📡 Dashboard</a>
+    <a href="/graphs">📊 Graphs</a>
+    <a href="/wallet">💰 Wallet</a>
+    <a href="/tuning">🧬 Tuning</a>
+    <a href="/monkey" class="active">🐒 Monkey</a>
+  </div>
+
+  <div class="scene" id="scene">
+    <div class="monkey" id="monkey" onclick="clickMonkey()">🐵</div>
+    <div class="speech" id="speech"></div>
+  </div>
+
+  <div class="stats-ticker" id="ticker">
+    <div class="stat"><div class="val" id="t-trades">-</div><div class="lbl">Trades</div></div>
+    <div class="stat"><div class="val" id="t-wr">-</div><div class="lbl">Win Rate</div></div>
+    <div class="stat"><div class="val" id="t-pnl">-</div><div class="lbl">Avg P&L</div></div>
+    <div class="stat"><div class="val" id="t-total">-</div><div class="lbl">Total P&L</div></div>
+    <div class="stat"><div class="val" id="t-best">-</div><div class="lbl">Best Trade</div></div>
+    <div class="stat"><div class="val" id="t-balance">-</div><div class="lbl">Balance SOL</div></div>
+  </div>
+
+<script>
+var clickCount = 0;
+var phrases = [
+  ["🍌 OOK OOK!", "Le singe approuve ta stratégie."],
+  ["📈 Si un singe peut trader...", "...toi aussi tu peux perdre de l'argent !"],
+  ["🎰 Le singe dit:", "\"Hard stop -10% c'est pour les faibles\""],
+  ["🧠 Sagesse du singe:", "\"Buy high, sell low, c'est un mode de vie\""],
+  ["🔮 Le singe prédit:", "\"Le prochain trade sera... un trade.\""],
+  ["💎 HODL?", "Le singe ne connaît que YOLO."],
+  ["🐒 Fun fact:", "Un singe qui lance des fléchettes bat 80% des traders."],
+  ["🚀 TO THE MOON!", "...ou au fond du ravin. Les deux sont excitants."],
+  ["🤔 Le singe réfléchit:", "\"Pourquoi 20 buyers et pas 19? Ou 21?\""],
+  ["📊 Analyse technique:", "Le singe a dessiné un banana pattern."],
+  ["🍌🍌🍌", "Le singe veut plus de bananes (et un meilleur WR)."],
+  ["💀 RIP", "Le singe a fat-fingé un trade de 100 SOL."],
+  ["🎯 Stratégie du singe:", "\"Si ça monte, c'est bien. Si ça descend, c'est la faute du marché.\""],
+  ["🐵 Le singe observe:", "\"Ton hard stop est plus serré que mon grip sur cette banane.\""],
+  ["⚡ BREAKING:", "Le singe vient de fork pump.fun → chimp.fun"],
+  ["🌙 Ce soir le singe dort tranquille.", "Il ne trade pas le week-end. Malin."],
+];
+
+var monkeyFaces = ['🐵', '🙈', '🙉', '🙊', '🐒', '🦍', '🦧'];
+
+function clickMonkey() {
+  clickCount++;
+  var monkey = document.getElementById('monkey');
+  var speech = document.getElementById('speech');
+
+  // Change face
+  monkey.textContent = monkeyFaces[clickCount % monkeyFaces.length];
+
+  // Show phrase
+  var p = phrases[Math.floor(Math.random() * phrases.length)];
+  speech.innerHTML = '<strong>' + p[0] + '</strong><br>' + p[1];
+  speech.classList.add('visible');
+  setTimeout(function() { speech.classList.remove('visible'); }, 4000);
+
+  // Dance
+  monkey.classList.add('dancing');
+  setTimeout(function() { monkey.classList.remove('dancing'); }, 2000);
+
+  // Spawn bananas
+  for (var i = 0; i < 5; i++) spawnBanana();
+
+  // Every 10 clicks: confetti explosion
+  if (clickCount % 10 === 0) confettiExplosion();
+
+  // Secret: at 50 clicks
+  if (clickCount === 50) {
+    speech.innerHTML = '<strong>🏆 ACHIEVEMENT UNLOCKED</strong><br>Tu as cliqué 50 fois sur un singe au lieu de trader.';
+    speech.classList.add('visible');
+  }
+}
+
+function spawnBanana() {
+  var b = document.createElement('div');
+  b.className = 'banana';
+  b.textContent = '🍌';
+  b.style.left = (Math.random() * 90 + 5) + '%';
+  b.style.top = '10%';
+  b.style.animationDuration = (2 + Math.random() * 3) + 's';
+  document.getElementById('scene').appendChild(b);
+  setTimeout(function() { b.remove(); }, 5000);
+}
+
+function confettiExplosion() {
+  var colors = ['#17bf63','#1da1f2','#e0245e','#ffad1f','#a855f7','#ff6b35'];
+  for (var i = 0; i < 40; i++) {
+    var c = document.createElement('div');
+    c.className = 'confetti';
+    c.style.background = colors[Math.floor(Math.random()*colors.length)];
+    c.style.left = '50%';
+    c.style.top = '40%';
+    c.style.setProperty('--drift', (Math.random()*200-100)+'px');
+    c.style.animationDuration = (1+Math.random()*2)+'s';
+    document.getElementById('scene').appendChild(c);
+    setTimeout(function(el){el.remove()}, 3000, c);
+  }
+}
+
+// Auto-spawn bananas occasionally
+setInterval(function() { if (Math.random() < 0.3) spawnBanana(); }, 3000);
+
+// Load live stats
+function loadStats() {
+  fetch('/api/paper-trades').then(r=>r.json()).then(function(d) {
+    if (!d.success) return;
+    var s = d.summary;
+    document.getElementById('t-trades').textContent = s.completed || 0;
+    var wr = document.getElementById('t-wr');
+    wr.textContent = (s.win_rate_pct||0)+'%';
+    wr.className = 'val '+((s.win_rate_pct||0)>=50?'green':'red');
+    var avg = document.getElementById('t-pnl');
+    avg.textContent = (s.avg_pnl_pct>=0?'+':'')+s.avg_pnl_pct+'%';
+    avg.className = 'val '+(s.avg_pnl_pct>=0?'green':'red');
+    var tot = document.getElementById('t-total');
+    tot.textContent = (s.total_pnl_pct>=0?'+':'')+s.total_pnl_pct+'%';
+    tot.className = 'val '+(s.total_pnl_pct>=0?'green':'red');
+    var best = document.getElementById('t-best');
+    best.textContent = s.best_pct?'+'+s.best_pct+'%':'-';
+    best.className = 'val green';
+  }).catch(function(){});
+
+  fetch('/api/wallet-sim').then(r=>r.json()).then(function(d) {
+    if (!d.success) return;
+    var bal = document.getElementById('t-balance');
+    bal.textContent = d.summary.final_balance_sol.toFixed(2);
+    bal.className = 'val '+(d.summary.final_balance_sol>=10?'green':'red');
+  }).catch(function(){});
+}
+loadStats();
+setInterval(loadStats, 30000);
+</script>
+</body>
+</html>

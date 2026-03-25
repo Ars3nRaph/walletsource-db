@@ -224,7 +224,7 @@ app.get('/api/recent-tokens', async (req, res) => {
         verdict,
         peak_mc,
         detected_at,
-        checked_at
+        snapshot_at
       FROM token_events
       ORDER BY detected_at DESC
       LIMIT $1
@@ -537,48 +537,51 @@ app.get('/api/graphs/verdict', async (req, res) => {
 app.get('/graphs', (req, res) => res.sendFile(path.join(__dirname, 'graphs.html')));
 app.get('/graphs/*', (req, res) => res.sendFile(path.join(__dirname, 'graphs.html')));
 
-// GET /api/paper-trades/:token/chart - Price history for chart
+// GET /api/paper-trades/:token/chart - Price history from DB snapshots + paper_trades
 app.get('/api/paper-trades/:token/chart', async (req, res) => {
   try {
-    const tokenPrefix = req.params.token;
-    const logPath = process.env.PAPER_TRADING_LOG_FILE || './data/paper-trades.log';
-    let entries = [];
-    try {
-      const content = await fs.readFile(logPath, 'utf-8');
-      entries = content.trim().split('\n').filter(l => l.length > 0).map(l => JSON.parse(l));
-    } catch { return res.json({ success: true, ticks: [], buy: null, sell: null }); }
+    const token = req.params.token;
 
-    // Filter for this token (match prefix or full)
-    const tokenEntries = entries.filter(e => 
-      e.token === tokenPrefix || e.token.startsWith(tokenPrefix) || tokenPrefix.startsWith(e.token?.slice(0,12))
+    // Get BUY/SELL from paper_trades
+    const { rows: pts } = await pool.query(
+      `SELECT action, mc_usd, elapsed_min, reason, timestamp
+       FROM paper_trades WHERE token_address = $1 ORDER BY timestamp`, [token]
+    );
+    const buyPt = pts.find(p => p.action === 'BUY');
+    const sellPt = pts.find(p => p.action === 'SELL');
+
+    // Get ALL price ticks: token_snapshots + trade_events combined
+    const { rows: snaps } = await pool.query(
+      `SELECT mc AS mc_live, ts AS snapshot_at, src FROM (
+        SELECT mc_live::numeric AS mc, snapshot_at AS ts, 's' AS src FROM token_snapshots WHERE token_address = $1
+        UNION ALL
+        SELECT market_cap_usd::numeric AS mc, event_at AS ts, 't' AS src FROM trade_events WHERE token_address = $1 AND market_cap_usd > 0
+      ) combined ORDER BY ts`, [token]
     );
 
-    if (!tokenEntries.length) return res.json({ success: true, ticks: [], buy: null, sell: null });
+    // Get detection time for baseline
+    const { rows: evts } = await pool.query(
+      `SELECT fdv_at_detection, detected_at FROM token_events WHERE token_address = $1 LIMIT 1`, [token]
+    );
+    const detectedAt = evts[0]?.detected_at || (snaps[0]?.snapshot_at) || null;
+    const baseline = evts[0] ? parseFloat(evts[0].fdv_at_detection) : null;
 
-    // All ticks (BUY, SELL, HOLD, NONE with strategy=RIDE)
-    const ticks = tokenEntries
-      .filter(e => ['BUY', 'SELL', 'HOLD'].includes(e.action))
-      .map(e => ({
-        time: parseFloat(e.elapsed_min) * 60,
-        mc: parseFloat(e.current_mc),
-        action: e.action,
-        reason: e.reason || ''
-      }))
-      .sort((a, b) => a.time - b.time);
+    // Build ticks from snapshots
+    const t0 = detectedAt ? new Date(detectedAt).getTime() : (snaps[0] ? new Date(snaps[0].snapshot_at).getTime() : 0);
+    const ticks = snaps.map(s => ({
+      time: (new Date(s.snapshot_at).getTime() - t0) / 1000,
+      mc: parseFloat(s.mc_live),
+      action: null,
+      reason: ''
+    }));
 
-    const buy = ticks.find(t => t.action === 'BUY') || null;
-    const sell = ticks.find(t => t.action === 'SELL') || null;
+    // Inject BUY/SELL markers
+    const buy = buyPt ? { time: parseFloat(buyPt.elapsed_min) * 60, mc: parseFloat(buyPt.mc_usd), action: 'BUY', reason: buyPt.reason || '' } : null;
+    const sell = sellPt ? { time: parseFloat(sellPt.elapsed_min) * 60, mc: parseFloat(sellPt.mc_usd), action: 'SELL', reason: sellPt.reason || '' } : null;
 
-    // Also get baseline from rideCache via DB
-    let baseline = null;
-    try {
-      const fullToken = tokenEntries[0].token;
-      const dbResult = await pool.query(
-        'SELECT fdv_at_detection FROM token_events WHERE token_address = $1 LIMIT 1',
-        [fullToken]
-      );
-      if (dbResult.rows.length) baseline = parseFloat(dbResult.rows[0].fdv_at_detection);
-    } catch {}
+    if (buy) ticks.push(buy);
+    if (sell) ticks.push(sell);
+    ticks.sort((a, b) => a.time - b.time);
 
     res.json({ success: true, ticks, buy, sell, baseline });
   } catch (error) {
@@ -588,284 +591,135 @@ app.get('/api/paper-trades/:token/chart', async (req, res) => {
 
 // ━━━ WALLET SIMULATION API ━━━
 
-// GET /api/wallet-sim - Full wallet simulation with realistic fees/slippage
+// GET /api/wallet-sim - Full wallet simulation from DB (paper_trades table)
 app.get('/api/wallet-sim', async (req, res) => {
   try {
-    const INITIAL_SOL = 100;
-    const SOL_PRICE = 150; // approximate, will fetch from recent trades
-    const PRIORITY_FEE_SOL = 0.005;     // Jito tip
-    const BASE_FEE_SOL = 0.000005;      // Solana base tx fee
-    const SLIPPAGE_BPS_BUY = 150;       // 1.5% buy slippage (pump.fun = low liquidity)
-    const SLIPPAGE_BPS_SELL = 200;      // 2.0% sell slippage (selling into thin book)
-    const PUMP_FEE_BPS = 100;           // 1% pump.fun trading fee
-    const MAX_MC_PERCENT = 0.10;        // Never invest more than 10% of MC
+    const INITIAL_SOL = 10;
+    const BUY_SLIP = 0.025, SELL_SLIP = 0.035, PUMP_FEE = 0.01;
+    const JITO_BUY = 0.0001, JITO_SELL = 0.00045, BASE_FEE = 0.000005;
 
-    // Position sizing rules based on confidence signals
-    function calcPositionSize(trade, walletBalance) {
-      const mc = trade.buy_mc;
-      const confidence = trade.confidence || 0.5;
-      const hWR = trade.hWR || 0;
-      const walletPumpX = trade.wallet_pump_x || 2.0;
+    const { rows: buys } = await pool.query(
+      `SELECT token_address, timestamp, mc_usd, confidence, position_sol, quality_score,
+              wallet_risk, buyers, ratio, dumps, sell_ratio, top_holder_pct, avg_buy_usd,
+              reason, buy_strategy, strategy, strategy_version
+       FROM paper_trades WHERE action='BUY' ORDER BY timestamp`
+    );
+    const { rows: sells } = await pool.query(
+      `SELECT token_address, timestamp, mc_usd, exit_type, pnl_pct, peak_pct, reason
+       FROM paper_trades WHERE action='SELL'`
+    );
+    const sellMap = {};
+    for (const s of sells) { sellMap[s.token_address] = sellMap[s.token_address] || []; sellMap[s.token_address].push(s); }
 
-      // Hard cap: 10% of MC
-      const maxFromMC = mc * MAX_MC_PERCENT / SOL_PRICE;
-
-      // Base position: 2-8% of wallet based on confidence tiers
-      let walletPct;
-      if (confidence >= 0.8) walletPct = 0.08;      // Very high confidence
-      else if (confidence >= 0.7) walletPct = 0.06;  // High confidence
-      else if (confidence >= 0.6) walletPct = 0.04;  // Medium confidence
-      else walletPct = 0.02;                          // Low confidence
-
-      // Boost for strong wallet history
-      if (hWR >= 50) walletPct *= 1.3;               // Wallet wins > 50%
-      else if (hWR >= 35) walletPct *= 1.15;          // Decent WR
-
-      // Boost for high pump wallets
-      if (walletPumpX >= 4.0) walletPct *= 1.2;      // Monster pumper
-      else if (walletPumpX >= 3.0) walletPct *= 1.1;  // Strong pumper
-
-      // MC tier penalty (lower MC = riskier)
-      if (mc < 3000) walletPct *= 0.7;               // Very low MC
-      else if (mc < 5000) walletPct *= 0.85;          // Low MC
-
-      // Cap at 10% of wallet
-      walletPct = Math.min(walletPct, 0.10);
-
-      const fromWallet = walletBalance * walletPct;
-      const positionSOL = Math.min(fromWallet, maxFromMC);
-
-      // Minimum viable trade: 0.1 SOL
-      if (positionSOL < 0.1) return { size: 0, reason: 'Below minimum (0.1 SOL)', pct: 0, tier: 'SKIP' };
-
-      const tier = confidence >= 0.8 ? 'HIGH' : confidence >= 0.7 ? 'MEDIUM-HIGH' :
-                   confidence >= 0.6 ? 'MEDIUM' : 'LOW';
-
-      return {
-        size: positionSOL,
-        reason: `${(walletPct * 100).toFixed(1)}% wallet | max ${(maxFromMC).toFixed(2)} SOL (10% MC)`,
-        pct: walletPct,
-        tier,
-        cappedByMC: fromWallet > maxFromMC
-      };
-    }
-
-    // Read paper trades
-    const logPath = process.env.PAPER_TRADING_LOG_FILE || './data/paper-trades.log';
-    let entries = [];
-    try {
-      const content = await fs.readFile(logPath, 'utf-8');
-      entries = content.trim().split('\n').filter(l => l.length > 0).map(l => JSON.parse(l));
-    } catch { }
-
-    // Group by token
-    const byToken = {};
-    for (const e of entries) {
-      if (!byToken[e.token]) byToken[e.token] = [];
-      byToken[e.token].push(e);
-    }
-
-    // Build trade list
     let balance = INITIAL_SOL;
     const tradeLog = [];
-    let totalFeesSol = 0;
-    let totalSlippageSol = 0;
+    let totalFees = 0, totalSlip = 0, totalJito = 0, totalPump = 0;
     let wins = 0, losses = 0;
 
-    const tokenList = Object.entries(byToken)
-      .filter(([_, evts]) => evts.some(e => e.action === 'BUY'))
-      .sort((a, b) => {
-        const ta = a[1].find(e => e.action === 'BUY')?.timestamp || '';
-        const tb = b[1].find(e => e.action === 'BUY')?.timestamp || '';
-        return ta.localeCompare(tb);
-      });
+    for (const buy of buys) {
+      const sell = sellMap[buy.token_address]?.slice(-1)[0];
+      const pos = parseFloat(buy.position_sol) || 0;
+      if (pos <= 0) continue;
+      const buyMC = parseFloat(buy.mc_usd) || 0;
+      const sellMC = sell ? parseFloat(sell.mc_usd) || 0 : null;
 
-    for (const [token, evts] of tokenList) {
-      const buy = evts.find(e => e.action === 'BUY');
-      const sell = evts.find(e => e.action === 'SELL');
-      if (!buy) continue;
+      const bSlip = pos * BUY_SLIP, bPump = pos * PUMP_FEE, bJito = JITO_BUY + BASE_FEE;
+      const effBuy = pos - bSlip - bPump;
+      const before = balance;
+      balance -= (pos + bJito);
 
-      const buyMC = parseFloat(buy.current_mc);
-      const sellMC = sell ? parseFloat(sell.current_mc) : null;
-      const confidence = parseFloat(buy.confidence) || 0.5;
+      let pnlPct = null, pnlSOL = null, exitType = null, exitReason = null;
+      let sSlip = 0, sPump = 0, sJito = 0;
 
-      // Extract hWR from reason string
-      const hWRMatch = buy.reason?.match(/hWR=(\d+)%/);
-      const hWR = hWRMatch ? parseFloat(hWRMatch[1]) : 30;
-
-      // Get wallet pump multiple from DB (approximate from reason)
-      const evMatch = buy.reason?.match(/EV=([\d.]+)%/);
-      const walletPumpX = evMatch ? Math.max(2.0, parseFloat(evMatch[1]) / 10) : 2.0;
-
-      // Position sizing
-      const position = calcPositionSize({
-        buy_mc: buyMC, confidence, hWR, wallet_pump_x: walletPumpX
-      }, balance);
-
-      if (position.size === 0) {
-        tradeLog.push({
-          token: token.slice(0, 12) + '…',
-          token_full: token,
-          action: 'SKIP',
-          reason: position.reason,
-          timestamp: buy.timestamp,
-          balance_before: balance,
-          balance_after: balance
-        });
-        continue;
-      }
-
-      const investSOL = position.size;
-
-      // ── BUY ──
-      const buyFee = BASE_FEE_SOL + PRIORITY_FEE_SOL;
-      const buySlippageSol = investSOL * (SLIPPAGE_BPS_BUY / 10000);
-      const pumpFeeBuySol = investSOL * (PUMP_FEE_BPS / 10000);
-      const totalBuyCost = investSOL + buyFee + buySlippageSol + pumpFeeBuySol;
-
-      // Effective tokens received (less slippage + fees)
-      const effectiveBuySOL = investSOL - buySlippageSol - pumpFeeBuySol;
-
-      const balanceBefore = balance;
-      balance -= totalBuyCost;
-
-      let pnlPct = null;
-      let pnlSOL = null;
-      let sellFee = 0;
-      let sellSlippageSol = 0;
-      let pumpFeeSellSol = 0;
-      let grossReturnSOL = 0;
-      let netReturnSOL = 0;
-      let exitReason = null;
-
-      if (sellMC !== null) {
-        // ── SELL ──
-        // Gross return based on MC change
-        const mcChange = sellMC / buyMC;
-        grossReturnSOL = effectiveBuySOL * mcChange;
-
-        sellFee = BASE_FEE_SOL + PRIORITY_FEE_SOL;
-        sellSlippageSol = grossReturnSOL * (SLIPPAGE_BPS_SELL / 10000);
-        pumpFeeSellSol = grossReturnSOL * (PUMP_FEE_BPS / 10000);
-        netReturnSOL = grossReturnSOL - sellFee - sellSlippageSol - pumpFeeSellSol;
-
-        balance += netReturnSOL;
-        pnlSOL = netReturnSOL - totalBuyCost;
-        pnlPct = (pnlSOL / totalBuyCost) * 100;
-
+      if (sell && sellMC && buyMC > 0) {
+        const gross = effBuy * (sellMC / buyMC);
+        sSlip = gross * SELL_SLIP; sPump = gross * PUMP_FEE; sJito = JITO_SELL + BASE_FEE;
+        const net = gross - sSlip - sPump - sJito;
+        balance += net;
+        pnlSOL = net - pos - bJito;
+        pnlPct = (pnlSOL / pos) * 100;
+        exitType = sell.exit_type;
         exitReason = sell.reason;
-
-        if (pnlSOL > 0) wins++;
-        else losses++;
+        if (pnlSOL > 0) wins++; else losses++;
       }
 
-      const tradeFees = buyFee + sellFee;
-      const tradeSlippage = buySlippageSol + sellSlippageSol + pumpFeeBuySol + pumpFeeSellSol;
-      totalFeesSol += tradeFees;
-      totalSlippageSol += tradeSlippage;
+      const tFee = bJito + sJito, tSlip = bSlip + sSlip + bPump + sPump;
+      totalFees += tFee; totalSlip += tSlip; totalJito += bJito + sJito; totalPump += bPump + sPump;
 
       tradeLog.push({
-        token: token.slice(0, 12) + '…',
-        token_full: token,
-        action: sellMC !== null ? (pnlSOL >= 0 ? 'WIN' : 'LOSS') : 'OPEN',
-        timestamp: buy.timestamp,
-        sell_timestamp: sell?.timestamp || null,
-
-        // Position
-        position_sol: parseFloat(investSOL.toFixed(4)),
-        position_pct: parseFloat((position.pct * 100).toFixed(1)),
-        position_tier: position.tier,
-        capped_by_mc: position.cappedByMC || false,
-
-        // Prices
-        buy_mc: parseFloat(buyMC.toFixed(0)),
-        sell_mc: sellMC !== null ? parseFloat(sellMC.toFixed(0)) : null,
-        mc_change_pct: sellMC !== null ? parseFloat(((sellMC / buyMC - 1) * 100).toFixed(2)) : null,
-
-        // Confidence & signals
-        confidence: parseFloat(confidence.toFixed(3)),
-        hWR,
-        buy_reason: buy.reason,
-        exit_reason: exitReason,
-
-        // Fees breakdown
-        fees_sol: parseFloat(tradeFees.toFixed(6)),
-        slippage_sol: parseFloat(tradeSlippage.toFixed(6)),
-        total_cost_sol: parseFloat(totalBuyCost.toFixed(6)),
-
-        // P&L
-        gross_return_sol: sellMC !== null ? parseFloat(grossReturnSOL.toFixed(6)) : null,
-        net_return_sol: sellMC !== null ? parseFloat(netReturnSOL.toFixed(6)) : null,
+        token: buy.token_address.slice(0, 12) + '…', token_full: buy.token_address,
+        action: sell && pnlSOL !== null ? (pnlSOL >= 0 ? 'WIN' : 'LOSS') : 'OPEN',
+        timestamp: buy.timestamp, sell_timestamp: sell?.timestamp || null,
+        position_sol: parseFloat(pos.toFixed(4)),
+        position_tier: buy.buy_strategy || 'STD',
+        quality_score: buy.quality_score,
+        buy_mc: buyMC ? parseFloat(buyMC.toFixed(0)) : null,
+        sell_mc: sellMC ? parseFloat(sellMC.toFixed(0)) : null,
+        mc_change_pct: sellMC && buyMC > 0 ? parseFloat(((sellMC / buyMC - 1) * 100).toFixed(2)) : null,
+        confidence: parseFloat(buy.confidence) || 0,
+        buy_reason: buy.reason, exit_reason: exitReason, exit_type: exitType,
+        buy_strategy: buy.buy_strategy,
+        strategy_version: buy.strategy_version || buy.buy_strategy,
+        fees_sol: parseFloat(tFee.toFixed(6)), slippage_sol: parseFloat(tSlip.toFixed(6)),
+        jito_sol: parseFloat((bJito + sJito).toFixed(6)),
+        jito_buy_sol: parseFloat(JITO_BUY.toFixed(6)),
+        jito_sell_sol: parseFloat((sell ? JITO_SELL : 0).toFixed(6)),
+        base_fee_sol: parseFloat((BASE_FEE + (sell ? BASE_FEE : 0)).toFixed(6)),
+        pump_fees_sol: parseFloat((bPump + sPump).toFixed(6)),
+        pump_fee_buy_sol: parseFloat(bPump.toFixed(6)),
+        pump_fee_sell_sol: parseFloat(sPump.toFixed(6)),
+        slippage_buy_sol: parseFloat(bSlip.toFixed(6)),
+        slippage_sell_sol: parseFloat(sSlip.toFixed(6)),
+        wallet_impact_pct: pnlSOL !== null ? parseFloat((pnlSOL / before * 100).toFixed(2)) : null,
         pnl_sol: pnlSOL !== null ? parseFloat(pnlSOL.toFixed(6)) : null,
         pnl_pct: pnlPct !== null ? parseFloat(pnlPct.toFixed(2)) : null,
-
-        // Wallet state
-        balance_before: parseFloat(balanceBefore.toFixed(4)),
+        balance_before: parseFloat(before.toFixed(4)),
         balance_after: parseFloat(balance.toFixed(4))
       });
     }
 
-    // Summary
     const completed = tradeLog.filter(t => t.pnl_pct !== null);
     const avgPnl = completed.length ? completed.reduce((s, t) => s + t.pnl_pct, 0) / completed.length : 0;
+    const wr = (wins + losses) > 0 ? parseFloat((wins / (wins + losses) * 100).toFixed(1)) : 0;
+    const drag = balance > INITIAL_SOL ?
+      parseFloat(((totalFees + totalSlip) / (totalFees + totalSlip + balance - INITIAL_SOL) * 100).toFixed(1)) : 0;
 
     res.json({
       success: true,
       config: {
-        initial_sol: INITIAL_SOL,
-        sol_price_usd: SOL_PRICE,
-        initial_usd: INITIAL_SOL * SOL_PRICE,
-        slippage_buy_bps: SLIPPAGE_BPS_BUY,
-        slippage_sell_bps: SLIPPAGE_BPS_SELL,
-        pump_fee_bps: PUMP_FEE_BPS,
-        priority_fee_sol: PRIORITY_FEE_SOL,
-        max_mc_pct: MAX_MC_PERCENT * 100
+        initial_sol: INITIAL_SOL, sol_price_usd: 140,
+        slippage_buy_bps: BUY_SLIP * 10000, slippage_sell_bps: SELL_SLIP * 10000,
+        pump_fee_bps: PUMP_FEE * 10000, priority_fee_sol: JITO_BUY, jito_tip_buy_sol: JITO_BUY, jito_tip_sell_sol: JITO_SELL, max_mc_pct: 10
       },
       summary: {
         final_balance_sol: parseFloat(balance.toFixed(4)),
-        final_balance_usd: parseFloat((balance * SOL_PRICE).toFixed(2)),
         total_pnl_sol: parseFloat((balance - INITIAL_SOL).toFixed(4)),
         total_pnl_pct: parseFloat(((balance / INITIAL_SOL - 1) * 100).toFixed(2)),
-        total_trades: tradeLog.filter(t => t.action !== 'SKIP').length,
-        wins,
-        losses,
+        total_trades: completed.length + tradeLog.filter(t => t.action === 'OPEN').length,
+        wins, losses,
         open: tradeLog.filter(t => t.action === 'OPEN').length,
-        skipped: tradeLog.filter(t => t.action === 'SKIP').length,
-        win_rate_pct: (wins + losses) > 0 ? parseFloat((wins / (wins + losses) * 100).toFixed(1)) : 0,
-        avg_pnl_pct: parseFloat(avgPnl.toFixed(2)),
-        total_fees_sol: parseFloat(totalFeesSol.toFixed(6)),
-        total_slippage_sol: parseFloat(totalSlippageSol.toFixed(6)),
-        fees_drag_pct: parseFloat(((totalFeesSol + totalSlippageSol) / INITIAL_SOL * 100).toFixed(3))
-      },
-      sizing_rules: {
-        description: 'Dynamic position sizing based on confidence + wallet quality + MC',
-        tiers: [
-          { tier: 'HIGH', confidence: '≥ 0.80', base_pct: '8%', description: 'High confidence, strong signals' },
-          { tier: 'MEDIUM-HIGH', confidence: '≥ 0.70', base_pct: '6%', description: 'Good confidence' },
-          { tier: 'MEDIUM', confidence: '≥ 0.60', base_pct: '4%', description: 'Moderate confidence' },
-          { tier: 'LOW', confidence: '< 0.60', base_pct: '2%', description: 'Low confidence, minimum size' }
-        ],
-        boosters: [
-          { condition: 'hWR ≥ 50%', boost: '+30%', description: 'Wallet historical win rate > 50%' },
-          { condition: 'hWR ≥ 35%', boost: '+15%', description: 'Wallet decent win rate' },
-          { condition: 'pump_x ≥ 4.0x', boost: '+20%', description: 'Monster pumper wallet' },
-          { condition: 'pump_x ≥ 3.0x', boost: '+10%', description: 'Strong pumper wallet' }
-        ],
-        penalties: [
-          { condition: 'MC < $3,000', penalty: '-30%', description: 'Very low market cap = high risk' },
-          { condition: 'MC < $5,000', penalty: '-15%', description: 'Low market cap' }
-        ],
-        caps: [
-          { cap: '10% of wallet', description: 'Never risk more than 10% per trade' },
-          { cap: '10% of MC', description: 'Never buy more than 10% of market cap (impact)' },
-          { cap: '0.1 SOL minimum', description: 'Skip trade if position too small' }
-        ]
+        win_rate_pct: wr, avg_pnl_pct: parseFloat(avgPnl.toFixed(2)),
+        total_fees_sol: parseFloat(totalFees.toFixed(6)),
+        total_slippage_sol: parseFloat(totalSlip.toFixed(6)),
+        total_jito_sol: parseFloat(totalJito.toFixed(6)),
+        total_pump_fees_sol: parseFloat(totalPump.toFixed(6)),
+        fees_drag_pct: drag
       },
       trades: tradeLog
     });
-  } catch (error) {
-    console.error('Wallet sim error:', error);
-    res.status(500).json({ success: false, error: error.message });
+  } catch (err) {
+    console.error('wallet-sim error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/neo-config - NEO strategy config
+app.get('/api/neo-config', async (req, res) => {
+  try {
+    const content = await fs.readFile('./data/neo-config.json', 'utf-8');
+    res.json(JSON.parse(content));
+  } catch (err) {
+    res.json({ error: 'No config found' });
   }
 });
 

@@ -1,7 +1,22 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+
+# Data (DB files, logs, trade data)
 data/
-.env
 *.log
-coverage/
+
+# Environment
+.env
+
+# IDE
 .DS_Store
+coverage/
+*.bak
+*.bak.*
+__pycache__/
+
+# PM2
+ecosystem.config.js

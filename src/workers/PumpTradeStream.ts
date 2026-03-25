@@ -4,7 +4,7 @@ import { logger } from '../utils/logger.js';
 import type { TradeExecutor } from '../execution/TradeExecutor.js';
 
 const PUMPPORTAL_WSS_URL = 'wss://pumpportal.fun/api/data';
-const MAX_SUBSCRIPTIONS = 100; // PumpPortal safe limit per connection
+const MAX_SUBSCRIPTIONS = 2000; // v10.13: raised from 500. PumpPortal allows unlimited, concurrent peak ~100
 const RECONNECT_DELAY_MS = 2000;
 
 interface PumpTradeEvent {
@@ -33,8 +33,10 @@ export class PumpTradeStream {
   private solPrice = 150;
   
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private lastMessageAt: number = Date.now();
+  private lastPongAt: number = Date.now();
 
-  // Token expiry: stop tracking after 20min
+  // Token expiry: stop tracking after 10min
   private tokenExpiry = new Map<string, number>();
   private tradeExecutor: TradeExecutor | null = null;
 
@@ -53,18 +55,60 @@ export class PumpTradeStream {
     await this.fetchSolPrice();
     // Cleanup expired tokens every minute
     setInterval(() => this.cleanupExpired(), 60 * 1000);
+    // v10.13: Ping keepalive every 30s to detect dead connections
+    setInterval(() => {
+      if (this.ws && this.isConnected) {
+        try { this.ws.ping(); } catch { /* ignore */ }
+      }
+    }, 30000);
+    // v10.13: Periodic MC check for positions with no ticks (every 60s)
+    setInterval(() => this.checkStalePositions(), 60000);
+    // v10.13: Watchdog — if no message received in 60s, force reconnect
+    this.lastMessageAt = Date.now();
+    this.lastPongAt = Date.now();
+    setInterval(() => {
+      const silentMsg = Date.now() - this.lastMessageAt;
+      const silentPong = Date.now() - this.lastPongAt;
+      if (this.isConnected && (silentMsg > 60000 || silentPong > 90000)) {
+        const openPositions = this.tradeExecutor ? 
+          this.tradeExecutor.getOpenPositionTokens?.()?.length || 0 : 0;
+        logger.warn({ silentMsgSec: Math.round(silentMsg / 1000), silentPongSec: Math.round(silentPong / 1000), openPositions }, 
+          '⚠️ PumpTradeStream WATCHDOG — connection dead, forcing reconnect');
+        this.ws?.terminate();
+      }
+    }, 15000);
   }
 
   /** Subscribe to trade stream for a specific token */
-  subscribe(tokenMint: string): void {
+  subscribe(tokenMint: string, priority: boolean = false): void {
     if (this.subscribedTokens.has(tokenMint)) return;
     if (this.subscribedTokens.size >= MAX_SUBSCRIPTIONS) {
-      logger.debug({ token: tokenMint, size: this.subscribedTokens.size }, 'PumpTradeStream at capacity, dropping');
-      return;
+      if (priority) {
+        // Evict oldest non-priority token WITHOUT an open position
+        let evicted = false;
+        for (const [tok, _expiry] of this.tokenExpiry) {
+          if (this.tradeExecutor && this.tradeExecutor.hasPosition(tok)) continue;
+          this.unsubscribe(tok);
+          logger.info({ evicted: tok.slice(0,8), forPriority: tokenMint.slice(0,8) }, '🎯 Evicted token for rugger priority');
+          evicted = true;
+          break;
+        }
+        if (!evicted && false) { // v10.13: DISABLED force-evict — never evict tokens with open positions
+          // All tokens have positions — evict oldest anyway
+          const oldest = this.tokenExpiry.entries().next().value;
+          if (oldest) {
+            this.unsubscribe(oldest[0]);
+            logger.warn({ evicted: oldest[0].slice(0,8) }, '⚠️ Force-evicted token with position for priority');
+          }
+        }
+      } else {
+        logger.debug({ token: tokenMint, size: this.subscribedTokens.size }, 'PumpTradeStream at capacity, dropping');
+        return;
+      }
     }
 
-    // Track expiry (20 min from now)
-    this.tokenExpiry.set(tokenMint, Date.now() + 20 * 60 * 1000);
+    // Track expiry (10 min from now, extended if position opens)
+    this.tokenExpiry.set(tokenMint, Date.now() + 10 * 60 * 1000);
 
     if (this.isConnected && this.ws) {
       this.sendSubscribe([tokenMint]);
@@ -106,6 +150,21 @@ export class PumpTradeStream {
 
       // Re-subscribe to all active tokens (reconnect case)
       const all = [...this.subscribedTokens, ...this.pendingSubscriptions];
+      
+      // v10.13: Ensure ALL tokens with open positions are in the re-subscribe list
+      if (this.tradeExecutor) {
+        const positionTokens = this.tradeExecutor.getOpenPositionTokens?.() || [];
+        for (const tok of positionTokens) {
+          if (!all.includes(tok)) {
+            all.push(tok);
+            logger.warn({ token: tok.slice(0,8) }, '🔄 Re-adding missing position token to subscription');
+          }
+        }
+      }
+      
+      const openCount = this.tradeExecutor ? all.filter(t => this.tradeExecutor!.hasPosition(t)).length : 0;
+      logger.info({ total: all.length, openPositions: openCount }, '🔄 PumpTradeStream reconnected — re-subscribing');
+      
       this.subscribedTokens.clear();
       this.pendingSubscriptions = [];
 
@@ -113,10 +172,39 @@ export class PumpTradeStream {
       for (let i = 0; i < all.length; i += 100) {
         this.sendSubscribe(all.slice(i, i + 100));
       }
+      
+      // v10.13: After reconnect, fetch current MC for all open positions
+      // If token rugged during the gap, we need to know immediately
+      if (this.tradeExecutor && openCount > 0) {
+        setTimeout(async () => {
+          const posTokens = this.tradeExecutor?.getOpenPositionTokens?.() || [];
+          for (const tok of posTokens) {
+            try {
+              // Fetch latest trade from PumpPortal API
+              const res = await fetch(`https://frontend-api-v2.pump.fun/coins/${tok}`, {
+                signal: AbortSignal.timeout(5000)
+              });
+              if (res.ok) {
+                const data = await res.json() as any;
+                if (data.market_cap) {
+                  const mc = data.market_cap * this.solPrice;
+                  logger.info({ token: tok.slice(0,8), mc: Math.round(mc) }, 
+                    '📡 Post-reconnect MC check');
+                  // Feed the MC to TradeExecutor as a synthetic tick
+                  this.tradeExecutor?.onTrade(tok, 'buy', mc, 0, 'reconnect_check');
+                }
+              }
+            } catch (e) {
+              logger.debug({ token: tok.slice(0,8) }, 'Post-reconnect MC fetch failed');
+            }
+          }
+        }, 5000);
+      }
     });
 
     this.ws.on('message', async (data: WebSocket.Data) => {
       try {
+        this.lastMessageAt = Date.now();
         const msg = JSON.parse(data.toString()) as PumpTradeEvent;
         if (msg.txType === 'buy' || msg.txType === 'sell') {
           await this.handleTrade(msg);
@@ -126,10 +214,18 @@ export class PumpTradeStream {
       }
     });
 
+    // v10.13: Track pong responses for dead connection detection
+    this.ws.on('pong', () => {
+      this.lastPongAt = Date.now();
+    });
+
     this.ws.on('close', (code) => {
       this.isConnected = false;
       this.ws = null;
-      logger.warn({ code, subscribed: this.subscribedTokens.size }, 'PumpTradeStream disconnected, reconnecting...');
+      const openPositions = this.tradeExecutor ? 
+        [...this.subscribedTokens].filter(t => this.tradeExecutor!.hasPosition(t)).length : 0;
+      logger.warn({ code, subscribed: this.subscribedTokens.size, openPositions }, 
+        '🔌 PumpTradeStream DISCONNECTED — reconnecting...');
       if (!this.isShuttingDown) {
         this.reconnectTimer = setTimeout(() => this.connect(), RECONNECT_DELAY_MS);
       }
@@ -165,43 +261,14 @@ export class PumpTradeStream {
     }, 'Trade event');
 
     try {
-      // Insert snapshot from trade event (0 credits, real-time)
-      await this.pool.query(`
-        INSERT INTO token_snapshots (
-          token_address, snapshot_at,
-          fdv, market_cap, price_usd,
-          volume_1m, volume_5m_usd,
-          txns_1m_buys, txns_1m_sells,
-          liquidity_base, liquidity_quote,
-          data_source
-        ) VALUES (
-          $1, NOW(),
-          $2, $3, $4,
-          $5, $5,
-          $6, $7,
-          $8, $9,
-          'pumpportal_trade'
-        )
-      `, [
-        mint,
-        marketCapUsd,        // fdv (MC on bonding curve)
-        marketCapUsd,        // market_cap
-        priceUsd,
-        volumeUsd,           // volume_1m / volume_5m (single trade)
-        txType === 'buy' ? 1 : 0,
-        txType === 'sell' ? 1 : 0,
-        vTokensInBondingCurve,  // liquidity_base
-        vSolInBondingCurve,     // liquidity_quote (SOL)
-      ]);
+      // v10: Skip snapshot insert for trade ticks (trade_events is sufficient, saves ~50% DB writes)
+      // Update fdv_at_detection if not yet set
+      await this.pool.query(
+        'UPDATE token_events SET fdv_at_detection = $1 WHERE token_address = $2 AND fdv_at_detection IS NULL',
+        [marketCapUsd, mint]
+      );
 
-      // Update fdv_at_detection if not yet set (should be set by create event, but safety net)
-      await this.pool.query(`
-        UPDATE token_events
-        SET fdv_at_detection = $1
-        WHERE token_address = $2 AND fdv_at_detection IS NULL
-      `, [marketCapUsd, mint]);
-
-      // Notify TokenTracker via DB flag for real-time trade evaluation
+      // Insert trade event for analysis
       await this.pool.query(`
         INSERT INTO trade_events (token_address, tx_type, market_cap_usd, price_usd, volume_usd,
           v_sol, v_tokens, trader_wallet, signature, event_at, token_amount, new_token_balance)
@@ -221,12 +288,33 @@ export class PumpTradeStream {
     let cleaned = 0;
     for (const [token, expiry] of this.tokenExpiry) {
       if (now > expiry) {
+        // v10.10i: Don't unsubscribe if position is still open
+        if (this.tradeExecutor && this.tradeExecutor.hasPosition(token)) {
+          // Extend expiry by 5 minutes
+          this.tokenExpiry.set(token, now + 5 * 60 * 1000);
+          continue;
+        }
         this.unsubscribe(token);
         cleaned++;
       }
     }
     if (cleaned > 0) {
       logger.debug({ cleaned, remaining: this.subscribedTokens.size }, 'PumpTradeStream cleanup');
+    }
+  }
+
+  private async checkStalePositions(): Promise<void> {
+    if (!this.tradeExecutor) return;
+    const posTokens = this.tradeExecutor.getOpenPositionTokens?.() || [];
+    if (posTokens.length === 0) return;
+    
+    for (const tok of posTokens) {
+      // Only check if token hasn't had a tick in 2+ minutes
+      if (!this.subscribedTokens.has(tok)) {
+        // Token not even subscribed! Re-subscribe immediately
+        logger.warn({ token: tok.slice(0,8) }, '⚠️ Position token NOT subscribed — re-subscribing');
+        this.subscribe(tok, true);
+      }
     }
   }
 

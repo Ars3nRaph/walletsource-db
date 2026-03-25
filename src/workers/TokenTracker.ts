@@ -3,6 +3,7 @@ import { logger } from '../utils/logger.js';
 import { DexScreenerClient } from '../api/DexScreenerClient.js';
 import { GeckoTerminalClient } from '../api/GeckoTerminalClient.js';
 import { HeliusClient } from '../api/HeliusClient.js';
+import { FunderLookup } from '../api/FunderLookup.js';
 import { TokenEventRepo } from '../repositories/TokenEventRepo.js';
 import { WalletRepo } from '../repositories/WalletRepo.js';
 import { MonitoringRepo } from '../repositories/MonitoringRepo.js';
@@ -18,7 +19,7 @@ import { PeakDurationDetector } from '../execution/PeakDurationDetector.js';
 import { PaperTradeExecutor } from '../execution/PaperTradeExecutor.js';
 import type { TokenSnapshot } from '../types/index.js';
 
-const POLL_INTERVAL_MS = 10 * 1000; // 10 seconds — high-resolution snapshots for movement reconstruction
+const POLL_INTERVAL_MS = 5 * 1000; // v10.10h: 10s → 5s for faster entry
 const TRACKING_DURATION_MS = 20 * 60 * 1000; // 20 minutes — full lifecycle capture including late rugs
 const RUG_GRACE_PERIOD_MS = 3 * 60 * 1000; // 3 minutes - continue tracking after RUG detection to collect lifecycle data
 // Batch mode: DexScreener allows 30 tokens/req. With 10s interval and 25 active tokens:
@@ -61,6 +62,7 @@ export class TokenTracker {
   private dexScreenerClient: DexScreenerClient;
   private geckoClient: GeckoTerminalClient;
   private heliusClient: HeliusClient;
+  private funderLookup: FunderLookup;
   private taintScorer: TaintScorer;
   private playbookBuilder: PlaybookBuilder;
   private tradeAnalyzer: TradeAnalyzer;
@@ -69,6 +71,7 @@ export class TokenTracker {
   public tradeExecutor: PaperTradeExecutor;
   private intervalId: NodeJS.Timeout | null = null;
   private isRunning = false;
+  private _purgeCounter = 0;
   private activeTracking: Map<string, NodeJS.Timeout> = new Map();
   private rugDetectionTime: Map<string, number> = new Map(); // Track when RUG was first detected
 
@@ -82,6 +85,7 @@ export class TokenTracker {
     this.dexScreenerClient = new DexScreenerClient();
     this.geckoClient = new GeckoTerminalClient();
     this.heliusClient = new HeliusClient();
+    this.funderLookup = new FunderLookup();
     this.taintScorer = new TaintScorer(pool);
     this.playbookBuilder = new PlaybookBuilder(pool);
     this.tradeAnalyzer = new TradeAnalyzer(pool);
@@ -96,6 +100,11 @@ export class TokenTracker {
     if (this.isRunning) {
       logger.warn('TokenTracker already running');
       return;
+    }
+    
+    // v10.10i: Recover open positions from paper-trades.log after restart
+    if (this.tradeExecutor && typeof (this.tradeExecutor as any).recoverOpenPositions === 'function') {
+      await (this.tradeExecutor as any).recoverOpenPositions();
     }
 
     this.isRunning = true;
@@ -123,7 +132,77 @@ export class TokenTracker {
           AND detected_at < NOW() - INTERVAL '20 minutes'
       `);
 
+      // v9.0: Auto-cleanup orphaned PROCESSING tokens not in activeTracking
+      // These are left behind when the process restarts mid-tracking
+      const orphaned = await this.monitoringRepo.pool.query(`
+        SELECT token_address FROM monitoring_queue
+        WHERE status = 'PROCESSING'
+          AND detected_at < NOW() - INTERVAL '15 minutes'
+      `);
+      if (orphaned.rows.length > 0) {
+        await this.monitoringRepo.pool.query(`
+          UPDATE monitoring_queue
+          SET status = 'DONE', processed_at = NOW()
+          WHERE status = 'PROCESSING'
+            AND detected_at < NOW() - INTERVAL '15 minutes'
+        `);
+        logger.info({ count: orphaned.rows.length }, '🧹 Cleaned orphaned PROCESSING tokens (>15min old)');
+      }
+      // Also reset recent orphans that aren't in our activeTracking set
+      const recentOrphans = await this.monitoringRepo.pool.query(`
+        SELECT token_address FROM monitoring_queue
+        WHERE status = 'PROCESSING'
+      `);
+      let resetCount = 0;
+      for (const row of recentOrphans.rows) {
+        if (!this.activeTracking.has(row.token_address)) {
+          await this.monitoringRepo.pool.query(
+            "UPDATE monitoring_queue SET status = 'PENDING', check_at = NOW() WHERE token_address = $1 AND status = 'PROCESSING'",
+            [row.token_address]
+          );
+          resetCount++;
+        }
+      }
+      if (resetCount > 0) {
+        logger.info({ count: resetCount }, '🧹 Reset orphaned PROCESSING tokens not in activeTracking');
+      }
+
       logger.debug('Checking for due tokens...');
+      // v9.2: Recover stuck DONE tokens without verdict (from restart-killed setTimeouts)
+      // fast_verdict tokens use setTimeout which dies on PM2 restart
+      try {
+        const stuckCount = await this.monitoringRepo.pool.query(`
+          UPDATE monitoring_queue SET status = 'PENDING', check_at = NOW()
+          WHERE status = 'DONE' 
+            AND detected_at > NOW() - INTERVAL '15 minutes'
+            AND token_address IN (
+              SELECT token_address FROM token_events 
+              WHERE verdict IS NULL AND tracking_complete = false
+            )
+          RETURNING token_address
+        `);
+        if (stuckCount.rowCount && stuckCount.rowCount > 0) {
+          logger.info({ count: stuckCount.rowCount }, '🔄 Recovered stuck tokens (DONE without verdict) → re-queued');
+        }
+      } catch (e) { /* ignore */ }
+
+      // v10: Purge old trade_events and snapshots (every ~1 hour, triggered by counter)
+      if (!this._purgeCounter) this._purgeCounter = 0;
+      this._purgeCounter++;
+      if (this._purgeCounter % 360 === 1) { // every 360 * 10s = 1 hour
+        try {
+          const purged = await this.monitoringRepo.pool.query(
+            "DELETE FROM trade_events WHERE event_at < NOW() - INTERVAL '7 days' RETURNING token_address"
+          );
+          const snapPurged = await this.monitoringRepo.pool.query(
+            "DELETE FROM token_snapshots WHERE snapshot_at < NOW() - INTERVAL '7 days' AND data_source = 'pumpportal_trade' RETURNING token_address"
+          );
+          if ((purged.rowCount ?? 0) > 0 || (snapPurged.rowCount ?? 0) > 0) {
+            logger.info({ trade_events: purged.rowCount, snapshots: snapPurged.rowCount }, '🧹 Retention purge complete');
+          }
+        } catch (e) { /* ignore */ }
+      }
+
       const dueTokens = await this.monitoringRepo.getDueTokens();
 
       logger.info({
@@ -157,15 +236,19 @@ export class TokenTracker {
         // Each token consumes 2 req/min (1 per 30s), rate limit = 300 req/min
         // Max capacity = 300 / 2 = 150 tokens theoretical. Use 135 (270 req/min = 90% utilization).
         // With 10min tracking + 30s polling: 135 slots × 6 cycles/h = 810 tokens/h capacity!
-        if (activeCount >= 50 || remainingQuota < 20) {
-          logger.warn({
-            activeCount,
-            remainingQuota,
-            token: queueItem.token_address
-          }, 'Capacity full — dropping stale token');
-          // Drop instead of requeue: if we are full, old tokens are already dead
-          await this.monitoringRepo.markProcessed(queueItem.token_address);
-          continue;
+        if (activeCount >= 135 || remainingQuota < 20) {
+          // Check if this is a rugger priority token
+          const isRuggerToken = this.tradeExecutor?.ruggerProfiler?.getProfile(queueItem.creator_wallet) != null;
+          if (!isRuggerToken) {
+            logger.warn({
+              activeCount,
+              remainingQuota,
+              token: queueItem.token_address
+            }, 'Capacity full — dropping stale token');
+            await this.monitoringRepo.markProcessed(queueItem.token_address);
+            continue;
+          }
+          logger.info({ token: queueItem.token_address }, '🎯 Rugger priority — bypassing capacity limit');
         }
 
         logger.info({
@@ -370,6 +453,13 @@ export class TokenTracker {
                         'DUMP_DETECTED'
               }, 'RUG detected - continuing tracking for lifecycle data collection');
             } else if (now - rugFirstDetected >= RUG_GRACE_PERIOD_MS) {
+              // v10.10i: NEVER finalize while a position is open — keep tracking
+              const hasPos = this.tradeExecutor.hasPosition(tokenAddress);
+              if (hasPos) {
+                logger.info({ token: tokenAddress.slice(0, 8) }, '⏳ Rug grace expired but position open — continuing tracking');
+                return; // Keep polling, let trade exit normally
+              }
+
               // Grace period elapsed - finalize now
               logger.info({
                 token: tokenAddress,
@@ -387,14 +477,23 @@ export class TokenTracker {
               // Clean up detectors + close any open paper position
               this.stagnationDetector.clear(tokenAddress);
               this.peakDetector.clear(tokenAddress);
-              this.tradeExecutor.closePositionIfOpen(tokenAddress);
+              // v10.10i: Pass current MC so position closes at real price, not entryMC
+              this.tradeExecutor.closePositionIfOpen(tokenAddress, currentFdv ?? undefined);
               return; // Exit polling loop
             }
             // else: still within grace period, continue tracking
           }
 
+
           // Check if tracking duration complete (normal exit)
           if (Date.now() - startTime >= trackingDurationMs) {
+            // v10.10d: Don't cut tracking if position is still open and in profit
+            const hasPos = this.tradeExecutor.hasPosition(tokenAddress);
+            if (hasPos) {
+              // NEVER stop tracking while a position is open — keep polling indefinitely
+              return;
+            }
+
             clearInterval(pollInterval);
             this.activeTracking.delete(tokenAddress);
             this.rugDetectionTime.delete(tokenAddress);
@@ -405,9 +504,11 @@ export class TokenTracker {
             // Clean up detectors + close any open paper position (v4.3)
             this.stagnationDetector.clear(tokenAddress);
             this.peakDetector.clear(tokenAddress);
-            this.tradeExecutor.closePositionIfOpen(tokenAddress);
+            // v10.10i: Pass current MC for accurate exit price
+            this.tradeExecutor.closePositionIfOpen(tokenAddress, currentFdv ?? undefined);
           }
         } catch (error) {
+
           logger.error({ error, token: tokenAddress }, 'Error recording snapshot');
         }
       }, pollIntervalMs);
@@ -775,7 +876,21 @@ export class TokenTracker {
         }
       }
 
-      const transactions = await this.heliusClient.getWalletTransactions(childWallet);
+      let transactions;
+      try {
+        transactions = await this.heliusClient.getWalletTransactions(childWallet);
+      } catch {
+        // Helius failed — use RPC fallback for funder lookup
+        const funderResult = await this.funderLookup.getFunder(childWallet);
+        if (funderResult) {
+          await this.walletRepo.upsertWallet(funderResult.funder);
+          await this.ancestryRepo.addLink(funderResult.funder, childWallet, 'rpc-fallback', funderResult.amountSol, currentDepth, funderResult.confidence);
+          if (currentDepth + 1 < MAX_DEPTH) {
+            await this.buildWalletAncestry(funderResult.funder, currentDepth + 1);
+          }
+        }
+        return;
+      }
       const fundingSources = new Map<string, { amount: number; txHash: string }>();
 
       for (const tx of transactions) {
@@ -857,9 +972,17 @@ export class TokenTracker {
     // Check at T+3min
     setTimeout(() => check('T+3min'), 3 * 60 * 1000);
 
-    // Check at T+10min — then run verdict
-    setTimeout(async () => {
+    // Check at T+10min — then run verdict (unless position is open)
+    const checkAndFinalize = async () => {
       await check('T+10min');
+      
+      // NEVER finalize while a position is open — reschedule check in 30s
+      if (this.tradeExecutor.hasPosition(tokenAddress)) {
+        logger.info({ token: tokenAddress.slice(0, 8) }, '⏳ Fast verdict delayed — position still open');
+        setTimeout(checkAndFinalize, 30_000);
+        return;
+      }
+      
       try {
         await this.finalizeTracking(tokenAddress, creatorWallet, detectedAt);
         await this.monitoringRepo.markProcessed(tokenAddress);
@@ -867,7 +990,8 @@ export class TokenTracker {
         logger.warn({ token: tokenAddress, err }, 'Fast verdict lifecycle analysis failed');
         await this.monitoringRepo.markProcessed(tokenAddress);
       }
-    }, 10 * 60 * 1000);
+    };
+    setTimeout(checkAndFinalize, 10 * 60 * 1000);
   }
 
   async stop(): Promise<void> {

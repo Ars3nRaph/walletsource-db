@@ -186,6 +186,26 @@ async function loadPaperTrades() {
     document.getElementById('pt-raw-buy').textContent  = s.raw_buy_signals;
     document.getElementById('pt-raw-sell').textContent = s.raw_sell_signals;
 
+    // Per-strategy breakdown
+    const stratDiv = document.getElementById('strategy-breakdown');
+    if (s.strategies && stratDiv) {
+      const colors = {'RUGGER': '#e040fb', 'v10-MARKET': '#4fc3f7', 'RE-ENTRY': '#ff9800', 'EARLY': '#66bb6a'};
+      stratDiv.innerHTML = Object.entries(s.strategies).map(([name, st]) => {
+        const color = colors[name] || '#888';
+        const wrClass = st.win_rate >= 50 ? 'success' : 'danger';
+        const pnlSign = st.avg_pnl >= 0 ? '+' : '';
+        return `<div style="background:#1a1a2e;border:1px solid ${color}44;border-radius:8px;padding:10px 14px;min-width:180px">
+          <div style="color:${color};font-weight:700;font-size:0.85rem;margin-bottom:6px">${name}</div>
+          <div style="font-size:0.75rem;color:#aaa">
+            <div>${st.count} trades (${st.wins}W / ${st.losses}L)</div>
+            <div>WR: <span class="${wrClass}" style="font-weight:600">${st.win_rate}%</span></div>
+            <div>Avg: <span style="color:${st.avg_pnl >= 0 ? '#4caf50' : '#ef5350'};font-weight:600">${pnlSign}${st.avg_pnl}%</span></div>
+            <div>Total: <span style="color:${st.total_pnl >= 0 ? '#4caf50' : '#ef5350'}">${pnlSign}${st.total_pnl}%</span></div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
     // Table
     const tbody = document.getElementById('pt-tbody');
     if (!data.trades.length) {
@@ -200,18 +220,33 @@ async function loadPaperTrades() {
       const buyTime   = t.buy_time  ? new Date(t.buy_time).toLocaleTimeString()  : '—';
       const mcEntry   = t.buy_mc    ? `$${t.buy_mc.toLocaleString('fr-FR', {maximumFractionDigits:0})}` : '—';
       const mcExit    = t.sell_mc   ? `$${t.sell_mc.toLocaleString('fr-FR', {maximumFractionDigits:0})}` : '—';
-      const sellReason= (t.sell_reason || '—').replace(/\(.*\)/, '').trim().slice(0, 40);
+      
+      // Strategy badge
+      const stratColors = {'RUGGER': '#e040fb', 'v10-MARKET': '#4fc3f7', 'RE-ENTRY': '#ff9800', 'EARLY': '#66bb6a'};
+      const stratColor = stratColors[t.entry_strategy] || '#888';
+      const stratLabel = t.entry_strategy || 'UNKNOWN';
+      
+      // Exit type + detail
+      const exitLabel = t.exit_type || '—';
+      const exitDetail = t.exit_detail || '';
+      const exitColors = {
+        'RUGGER_TARGET': '#e040fb', 'RUGGER_TSTOP': '#ce93d8', 'RUGGER_HS': '#ef5350', 'RUGGER_TRAIL': '#ab47bc',
+        'TIER': '#4fc3f7', 'PUMP3': '#ff9800', 'HARD_STOP': '#ef5350', 'MAX_HOLD': '#78909c',
+        'LOWER_HIGH': '#ffa726', 'TRACK_END': '#78909c', 'SWEEP': '#78909c', 'EXIT': '#999'
+      };
+      const exitColor = exitColors[exitLabel] || '#666';
 
       return `<tr>
         <td>${i + 1}</td>
+        <td><span style="background:${stratColor}22;color:${stratColor};padding:2px 8px;border-radius:4px;font-size:0.7rem;font-weight:600;white-space:nowrap">${stratLabel}</span></td>
         <td class="mono" title="${t.token_full}">${t.token}</td>
         <td>${buyTime}</td>
         <td>${mcEntry}</td>
         <td>${mcExit}</td>
         <td class="${pnlClass}">${pnlStr}</td>
         <td><span class="badge ${badgeClass}">${t.status}</span></td>
-        <td style="color:#888;font-size:0.75rem">${sellReason}</td>
-        <td><button onclick="showChart('${t.token_full}', '${t.token}')" style="background:#2a2a4a;border:1px solid #444;color:#4fc3f7;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:0.75rem;white-space:nowrap" onmouseover="this.style.background='#3a3a5a'" onmouseout="this.style.background='#2a2a4a'">📈 Chart</button></td>
+        <td style="max-width:180px"><span style="color:${exitColor};font-size:0.7rem;font-weight:600">${exitLabel}</span>${exitDetail ? `<br><span style="color:#777;font-size:0.65rem">${exitDetail}</span>` : ''}</td>
+        <td><button onclick="showChart('${t.token_full}', '${t.token}')" style="background:#2a2a4a;border:1px solid #444;color:#4fc3f7;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:0.75rem;white-space:nowrap" onmouseover="this.style.background='#3a3a5a'" onmouseout="this.style.background='#2a2a4a'">📈</button></td>
       </tr>`;
     }).join('');
 
@@ -259,105 +294,128 @@ async function showChart(tokenFull, tokenShort) {
     const buyTick = data.buy;
     const sellTick = data.sell;
     const baseline = data.baseline;
-
-    // Colors based on relative position to entry
     const entryMC = buyTick ? buyTick.mc : prices[0];
-    const pointColors = prices.map(p => p >= entryMC ? '#00e676' : '#ff5252');
+
+    // Find buy/sell indices
+    const buyIdx = ticks.findIndex(t => t.action === 'BUY');
+    const sellIdx = ticks.findIndex(t => t.action === 'SELL');
+
+    // Create segments with phase colors
+    const segmentColors = ticks.map((t, i) => {
+      if (i < buyIdx || buyIdx === -1) return 'rgba(255, 193, 7, 0.6)'; // observe = gold
+      if (i >= buyIdx && (sellIdx === -1 || i <= sellIdx)) {
+        return prices[i] >= entryMC ? '#00e676' : '#ff5252'; // hold = green/red
+      }
+      return 'rgba(100, 100, 100, 0.4)'; // post-sell = grey
+    });
+
+    // Point styles — bigger for BUY/SELL, tiny for others
+    const pointRadii = ticks.map(t => 
+      t.action === 'BUY' ? 8 : t.action === 'SELL' ? 8 : 1
+    );
+    const pointColors = ticks.map((t, i) => {
+      if (t.action === 'BUY') return '#00e676';
+      if (t.action === 'SELL') return t.mc >= entryMC ? '#00e676' : '#ff5252';
+      return segmentColors[i];
+    });
+    const pointBorders = ticks.map(t => 
+      (t.action === 'BUY' || t.action === 'SELL') ? '#fff' : 'transparent'
+    );
 
     // Annotations
     const annotations = {};
 
-    if (buyTick) {
-      const buyIdx = ticks.findIndex(t => t.action === 'BUY');
-      annotations.buyPoint = {
-        type: 'point',
-        xValue: buyIdx,
-        yValue: buyTick.mc,
-        backgroundColor: '#00e676',
-        borderColor: '#fff',
-        borderWidth: 2,
-        radius: 8,
-      };
+    if (buyTick && buyIdx >= 0) {
       annotations.buyLabel = {
-        type: 'label',
-        xValue: buyIdx,
-        yValue: buyTick.mc,
+        type: 'label', xValue: buyIdx, yValue: buyTick.mc,
         content: ['🟢 BUY', '$' + Math.round(buyTick.mc).toLocaleString()],
-        color: '#00e676',
-        font: { size: 11, weight: 'bold' },
-        position: 'start',
-        yAdjust: -25,
+        color: '#00e676', font: { size: 11, weight: 'bold' },
+        position: 'start', yAdjust: -25,
+      };
+      // Vertical line at buy
+      annotations.buyLine = {
+        type: 'line', xMin: buyIdx, xMax: buyIdx,
+        borderColor: 'rgba(0, 230, 118, 0.3)', borderWidth: 1, borderDash: [4, 4],
       };
     }
 
-    if (sellTick) {
-      const sellIdx = ticks.findIndex(t => t.action === 'SELL');
+    if (sellTick && sellIdx >= 0) {
       const sellColor = sellTick.mc >= entryMC ? '#00e676' : '#ff5252';
-      annotations.sellPoint = {
-        type: 'point',
-        xValue: sellIdx,
-        yValue: sellTick.mc,
-        backgroundColor: sellColor,
-        borderColor: '#fff',
-        borderWidth: 2,
-        radius: 8,
-      };
-      // Clean sell reason for display
-      const reason = sellTick.reason
-        .replace(/\(.*?\)/g, '')
-        .replace(/P&L.*$/, '')
-        .trim()
-        .slice(0, 35);
+      const pnl = ((sellTick.mc - entryMC) / entryMC * 100).toFixed(1);
+      const reason = (sellTick.reason || '').replace(/\(.*?\)/g, '').replace(/P&L.*$/, '').trim().slice(0, 35);
       annotations.sellLabel = {
-        type: 'label',
-        xValue: sellIdx,
-        yValue: sellTick.mc,
-        content: ['🔴 SELL', '$' + Math.round(sellTick.mc).toLocaleString(), reason],
-        color: sellColor,
-        font: { size: 10, weight: 'bold' },
-        position: 'end',
-        yAdjust: 25,
+        type: 'label', xValue: sellIdx, yValue: sellTick.mc,
+        content: ['🔴 SELL ' + (pnl > 0 ? '+' : '') + pnl + '%', '$' + Math.round(sellTick.mc).toLocaleString(), reason],
+        color: sellColor, font: { size: 10, weight: 'bold' },
+        position: 'end', yAdjust: 25,
+      };
+      annotations.sellLine = {
+        type: 'line', xMin: sellIdx, xMax: sellIdx,
+        borderColor: 'rgba(255, 82, 82, 0.3)', borderWidth: 1, borderDash: [4, 4],
       };
     }
 
     if (baseline) {
       annotations.baselineLine = {
-        type: 'line',
-        yMin: baseline,
-        yMax: baseline,
-        borderColor: 'rgba(255, 193, 7, 0.4)',
-        borderWidth: 1,
-        borderDash: [6, 4],
-        label: {
-          display: true,
-          content: 'Baseline $' + Math.round(baseline).toLocaleString(),
-          position: 'start',
-          color: '#ffc107',
-          font: { size: 10 },
-          backgroundColor: 'rgba(0,0,0,0.6)',
-        }
+        type: 'line', yMin: baseline, yMax: baseline,
+        borderColor: 'rgba(255, 193, 7, 0.4)', borderWidth: 1, borderDash: [6, 4],
+        label: { display: true, content: 'Baseline $' + Math.round(baseline).toLocaleString(),
+          position: 'start', color: '#ffc107', font: { size: 10 }, backgroundColor: 'rgba(0,0,0,0.6)' }
       };
     }
 
-    // Peak line
+    // Peak
     const peakMC = Math.max(...prices);
-    const peakIdx = prices.indexOf(peakMC);
     annotations.peakLine = {
-      type: 'line',
-      yMin: peakMC,
-      yMax: peakMC,
-      borderColor: 'rgba(0, 230, 118, 0.25)',
-      borderWidth: 1,
-      borderDash: [4, 4],
-      label: {
-        display: true,
-        content: 'Peak $' + Math.round(peakMC).toLocaleString(),
-        position: 'end',
-        color: '#00e676',
-        font: { size: 10 },
-        backgroundColor: 'rgba(0,0,0,0.6)',
-      }
+      type: 'line', yMin: peakMC, yMax: peakMC,
+      borderColor: 'rgba(0, 230, 118, 0.25)', borderWidth: 1, borderDash: [4, 4],
+      label: { display: true, content: 'Peak $' + Math.round(peakMC).toLocaleString(),
+        position: 'end', color: '#00e676', font: { size: 10 }, backgroundColor: 'rgba(0,0,0,0.6)' }
     };
+
+    // Phase backgrounds
+    if (buyIdx > 0) {
+      annotations.observeZone = {
+        type: 'box', xMin: 0, xMax: buyIdx,
+        backgroundColor: 'rgba(255, 193, 7, 0.04)', borderWidth: 0,
+        label: { display: true, content: '👁 OBSERVE', position: { x: 'center', y: 'start' },
+          color: 'rgba(255, 193, 7, 0.5)', font: { size: 11 } }
+      };
+    }
+    if (buyIdx >= 0 && sellIdx > buyIdx) {
+      annotations.holdZone = {
+        type: 'box', xMin: buyIdx, xMax: sellIdx,
+        backgroundColor: 'rgba(79, 195, 247, 0.04)', borderWidth: 0,
+        label: { display: true, content: '📊 POSITION', position: { x: 'center', y: 'start' },
+          color: 'rgba(79, 195, 247, 0.5)', font: { size: 11 } }
+      };
+    }
+    if (sellIdx >= 0 && sellIdx < ticks.length - 1) {
+      annotations.postZone = {
+        type: 'box', xMin: sellIdx, xMax: ticks.length - 1,
+        backgroundColor: 'rgba(100, 100, 100, 0.04)', borderWidth: 0,
+        label: { display: true, content: '👻 POST-SELL', position: { x: 'center', y: 'start' },
+          color: 'rgba(100, 100, 100, 0.5)', font: { size: 11 } }
+      };
+    }
+
+    // Title
+    const pnl = sellTick && buyTick ? ((sellTick.mc - buyTick.mc) / buyTick.mc * 100).toFixed(1) : '?';
+    const pnlColor = pnl > 0 ? '#00e676' : '#ff5252';
+    document.getElementById('chart-title').innerHTML = 
+      `📈 ${tokenShort} <span style="color:${pnlColor};font-size:0.9em">${pnl > 0 ? '+' : ''}${pnl}%</span>`;
+
+    // Info bar
+    const observeTicks = ticks.filter(t => t.phase === 'observe').length;
+    const holdTicks = ticks.filter(t => t.action === 'HOLD').length;
+    const postTicks = ticks.filter(t => t.phase === 'post').length;
+    const totalSec = ticks.length > 0 ? (ticks[ticks.length-1].time - ticks[0].time).toFixed(0) : 0;
+    document.getElementById('chart-info').innerHTML = 
+      `<span>⏱ ${totalSec}s total</span>` +
+      `<span style="color:#ffc107">👁 ${observeTicks} observe</span>` +
+      `<span style="color:#4fc3f7">📊 ${holdTicks} hold</span>` +
+      `<span style="color:#666">👻 ${postTicks} post-sell</span>` +
+      `<span>📍 ${ticks.length} points</span>`;
 
     tradeChart = new Chart(ctx, {
       type: 'line',
@@ -366,13 +424,16 @@ async function showChart(tokenFull, tokenShort) {
         datasets: [{
           label: 'Market Cap (USD)',
           data: prices,
-          borderColor: '#4fc3f7',
-          backgroundColor: 'rgba(79, 195, 247, 0.08)',
+          segment: {
+            borderColor: ctx2 => segmentColors[ctx2.p0DataIndex] || '#4fc3f7',
+          },
           borderWidth: 2,
-          pointRadius: 2,
+          pointRadius: pointRadii,
           pointBackgroundColor: pointColors,
-          fill: true,
-          tension: 0.2,
+          pointBorderColor: pointBorders,
+          pointBorderWidth: ticks.map(t => (t.action === 'BUY' || t.action === 'SELL') ? 2 : 0),
+          fill: false,
+          tension: 0.1,
         }]
       },
       options: {
@@ -388,7 +449,9 @@ async function showChart(tokenFull, tokenShort) {
               label: (item) => {
                 const mc = item.raw;
                 const pnl = entryMC > 0 ? ((mc - entryMC) / entryMC * 100).toFixed(1) : '0';
-                return `MC: $${Math.round(mc).toLocaleString()} (${pnl > 0 ? '+' : ''}${pnl}%)`;
+                const tick = ticks[item.dataIndex];
+                const phase = tick.phase || tick.action;
+                return [`MC: $${Math.round(mc).toLocaleString()} (${pnl > 0 ? '+' : ''}${pnl}%)`, `Phase: ${phase}`];
               }
             }
           }
@@ -396,40 +459,105 @@ async function showChart(tokenFull, tokenShort) {
         scales: {
           x: {
             title: { display: true, text: 'Temps depuis création', color: '#888' },
-            ticks: { color: '#666', maxTicksLimit: 15 },
+            ticks: { color: '#666', maxTicksLimit: 20 },
             grid: { color: 'rgba(255,255,255,0.05)' },
           },
           y: {
-            title: { display: true, text: 'Market Cap (USD)', color: '#888' },
-            ticks: {
-              color: '#666',
-              callback: (v) => '$' + (v >= 1000 ? (v/1000).toFixed(1) + 'k' : v)
-            },
+            title: { display: true, text: 'Market Cap ($)', color: '#888' },
+            ticks: { color: '#666', callback: v => '$' + Math.round(v).toLocaleString() },
             grid: { color: 'rgba(255,255,255,0.05)' },
           }
         }
       }
     });
-
-    // Title & info
-    document.getElementById('chart-title').textContent = `📈 ${tokenShort}`;
-    const pnl = buyTick && sellTick ? ((sellTick.mc - buyTick.mc) / buyTick.mc * 100).toFixed(1) : null;
-    const peakPnl = buyTick ? ((peakMC - buyTick.mc) / buyTick.mc * 100).toFixed(1) : null;
-    const captured = pnl && peakPnl && parseFloat(peakPnl) > 0 ? (parseFloat(pnl) / parseFloat(peakPnl) * 100).toFixed(0) : null;
-    const duration = sellTick ? (sellTick.time - (buyTick?.time || 0)).toFixed(1) : null;
-
-    let infoHtml = '';
-    if (buyTick) infoHtml += `<span>🟢 Entrée: <b>$${Math.round(buyTick.mc).toLocaleString()}</b> (T+${buyTick.time.toFixed(1)}s)</span>`;
-    if (sellTick) infoHtml += `<span>🔴 Sortie: <b>$${Math.round(sellTick.mc).toLocaleString()}</b> (T+${sellTick.time.toFixed(1)}s)</span>`;
-    if (pnl) infoHtml += `<span style="color:${parseFloat(pnl) >= 0 ? '#00e676' : '#ff5252'}">P&L: <b>${pnl > 0 ? '+' : ''}${pnl}%</b></span>`;
-    if (peakPnl) infoHtml += `<span>Peak: <b>+${peakPnl}%</b></span>`;
-    if (captured) infoHtml += `<span>Capturé: <b>${captured}%</b> du peak</span>`;
-    if (duration) infoHtml += `<span>Durée: <b>${duration}s</b></span>`;
-    if (sellTick) infoHtml += `<span style="color:#ffc107">Raison: ${sellTick.reason.slice(0, 60)}</span>`;
-    document.getElementById('chart-info').innerHTML = infoHtml;
-
   } catch (err) {
     console.error('Chart error:', err);
-    alert('Erreur chargement chart: ' + err.message);
+    alert('Erreur lors du chargement du chart');
   }
 }
+async function loadV9Stats() {
+  try {
+    const res = await fetch('/api/v9-stats');
+    if (!res.ok) { console.error('v9 API error:', res.status); return; }
+    const data = await res.json();
+    if (!data.success) { console.error('v9 API not success:', data); return; }
+
+    // RIDE stats
+    const r = data.ride || {};
+    setText('v9-ride-wallets', formatNumber(r.wallets || 0));
+    setText('v9-ride-clean', formatNumber(r.clean_wallets || 0));
+    setText('v9-ride-tokens', formatNumber(r.tokens || 0));
+    setText('v9-ride-pumprate', (r.pump_rate || '0') + '%');
+    setText('v9-ride-3x', formatNumber(r.pumps_3x || 0));
+    const pnlEl = document.getElementById('v9-ride-pnl');
+    if (pnlEl) {
+      const pnl = parseFloat(r.avg_pnl_pct) || 0;
+      pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl + '%';
+      pnlEl.className = 'value ' + (pnl >= 0 ? 'success' : 'danger');
+    }
+
+    // FADE stats
+    const f = data.fade || {};
+    setText('v9-fade-wallets', formatNumber(f.wallets || 0));
+    setText('v9-fade-tokens', formatNumber(f.tokens || 0));
+    setText('v9-fade-pumprate', (f.pump_rate || '0') + '%');
+    const fPnl = document.getElementById('v9-fade-pnl');
+    if (fPnl) {
+      const fp = parseFloat(f.avg_pnl_pct) || 0;
+      fPnl.textContent = (fp >= 0 ? '+' : '') + fp + '%';
+      fPnl.className = 'value ' + (fp >= 0 ? 'info' : 'danger');
+    }
+
+    // 10h activity
+    const h = data.recent_10h || {};
+    setText('v9-10h-tokens', formatNumber(h.tokens_10h || 0));
+    setText('v9-10h-success', formatNumber(h.success_10h || 0));
+    setText('v9-10h-rug', formatNumber(h.rug_10h || 0));
+    setText('v9-10h-neutral', formatNumber(h.neutral_10h || 0));
+
+    // Changes list
+    const changesEl = document.getElementById('v9-changes');
+    if (changesEl && data.changes && data.changes.length) {
+      changesEl.innerHTML = '<ul style="margin:4px 0;padding-left:20px;list-style:none">' +
+        data.changes.map(c => '<li style="margin:6px 0;padding:4px 0;border-bottom:1px solid #21262d">✅ ' + c + '</li>').join('') +
+        '</ul>';
+    } else if (changesEl) {
+      changesEl.textContent = 'No changes data';
+    }
+
+    // Top RIDE wallets table
+    const tbody = document.getElementById('v9-ride-tbody');
+    if (tbody && data.top_ride && data.top_ride.length) {
+      tbody.innerHTML = data.top_ride.map(function(w) {
+        var isClean = parseInt(w.rug_count) === 0;
+        var type = isClean
+          ? '<span style="color:#00e676;font-weight:bold">🌟 CLEAN</span>'
+          : '<span style="color:#ffc107">🔴 RUGGER</span>';
+        var pr = parseFloat(w.pump_rate) || 0;
+        var prClass = pr >= 50 ? 'success' : pr >= 30 ? 'info' : '';
+        var peakMC = parseInt(w.avg_peak_mc) || 0;
+        return '<tr>' +
+          '<td class="mono" style="font-size:0.7rem">' + w.wallet_address.slice(0,8) + '…' + w.wallet_address.slice(-4) + '</td>' +
+          '<td>' + type + '</td>' +
+          '<td>' + w.rug_count + '</td>' +
+          '<td style="color:#00e676">' + w.survival_count + '</td>' +
+          '<td>' + w.tokens + '</td>' +
+          '<td style="color:#00e676">' + w.pumps + '</td>' +
+          '<td class="value ' + prClass + '">' + pr + '%</td>' +
+          '<td>$' + peakMC.toLocaleString() + '</td>' +
+          '</tr>';
+      }).join('');
+    } else if (tbody) {
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#666">Aucun wallet RIDE actif</td></tr>';
+    }
+
+    console.log('v9 stats loaded OK:', { ride: r.wallets, fade: f.wallets, changes: (data.changes||[]).length, top: (data.top_ride||[]).length });
+  } catch (err) {
+    console.error('v9 stats load error:', err);
+    var changesEl = document.getElementById('v9-changes');
+    if (changesEl) changesEl.textContent = 'Error: ' + err.message;
+  }
+}
+
+loadV9Stats();
+setInterval(loadV9Stats, 15000);
