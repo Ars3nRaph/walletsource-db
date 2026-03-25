@@ -236,7 +236,7 @@ export class TokenTracker {
         // Each token consumes 2 req/min (1 per 30s), rate limit = 300 req/min
         // Max capacity = 300 / 2 = 150 tokens theoretical. Use 135 (270 req/min = 90% utilization).
         // With 10min tracking + 30s polling: 135 slots × 6 cycles/h = 810 tokens/h capacity!
-        if (activeCount >= 135 || remainingQuota < 20) {
+        if (activeCount >= 500 || remainingQuota < 10) { // v10.14.1: raised from 135 — fast_verdict uses WS not DexScreener
           // Check if this is a rugger priority token
           const isRuggerToken = this.tradeExecutor?.ruggerProfiler?.getProfile(queueItem.creator_wallet) != null;
           if (!isRuggerToken) {
@@ -949,21 +949,31 @@ export class TokenTracker {
   private startFastVerdict(tokenAddress: string, creatorWallet: string, detectedAt: Date): void {
     const check = async (label: string) => {
       try {
-        const response = await this.dexScreenerClient.getToken(tokenAddress);
-        const pair = response.pairs?.[0];
-        const fdv = pair?.fdv ?? null;
-        const liquidity = pair?.liquidity?.usd ?? null;
+        // v10.14.1: Use PumpTradeStream liveState (free, tick-by-tick) instead of DexScreener (rate-limited)
+        const liveState = this.tradeExecutor?.liveState?.get(tokenAddress);
+        let fdv: number | null = liveState?.recentMCs?.length ? liveState.recentMCs[liveState.recentMCs.length - 1] : null;
+        let liquidity: number | null = null; // Not available from PumpTradeStream
 
-        // Store one snapshot for verdict
+        // Fallback to DexScreener only if no PumpTradeStream data available
+        if (fdv === null) {
+          try {
+            const response = await this.dexScreenerClient.getToken(tokenAddress);
+            const pair = response.pairs?.[0];
+            fdv = pair?.fdv ?? null;
+            liquidity = pair?.liquidity?.usd ?? null;
+          } catch { /* DexScreener fallback failed, skip */ }
+        }
+
+        // Store snapshot for verdict
         if (fdv !== null || liquidity !== null) {
           await this.snapshotRepo.pool.query(`
             INSERT INTO token_snapshots (token_address, snapshot_at, fdv, liquidity_usd, data_source)
-            VALUES ($1, NOW(), $2, $3, 'fast_verdict')
+            VALUES ($1, NOW(), $2, $3, $4)
             ON CONFLICT DO NOTHING
-          `, [tokenAddress, fdv, liquidity]);
+          `, [tokenAddress, fdv, liquidity, liveState ? 'pump_ws' : 'fast_verdict']);
         }
 
-        logger.debug({ token: tokenAddress, label, fdv, liquidity }, 'Fast verdict snapshot');
+        logger.debug({ token: tokenAddress, label, fdv, source: liveState ? 'ws' : 'dex' }, 'Fast verdict snapshot');
       } catch (err) {
         logger.debug({ token: tokenAddress, label, err }, 'Fast verdict snapshot failed');
       }

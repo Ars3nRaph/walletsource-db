@@ -1,4 +1,5 @@
 import type { Pool } from 'pg';
+import type { HeliusBuyerScanner } from '../api/HeliusBuyerScanner.js';
 import { logger } from '../utils/logger.js';
 
 /**
@@ -29,9 +30,46 @@ export class CartelDetector {
 
   // Track which good wallets bought each active token
   private tokenGoodBuyers: Map<string, Set<string>> = new Map();
+  private buyerScanner: HeliusBuyerScanner | null = null;
+  private scannedTokens = new Set<string>(); // prevent duplicate scans
 
   constructor(pool: Pool) {
     this.pool = pool;
+  }
+
+  setBuyerScanner(scanner: HeliusBuyerScanner): void {
+    this.buyerScanner = scanner;
+    logger.info('🤝 CartelDetector: HeliusBuyerScanner wired');
+  }
+
+  /**
+   * Scan a token's on-chain buyers via Helius Enhanced API
+   * Called when a token looks promising (30+ buyers) to discover
+   * good wallets that bought before our WS detected them
+   * Cost: ~200 credits per scan. Budget: ~1350 scans/day.
+   */
+  async heliusScan(tokenAddress: string): Promise<CartelSignal | null> {
+    if (!this.buyerScanner || !this.ready) return null;
+    if (this.scannedTokens.has(tokenAddress)) return null; // already scanned
+    this.scannedTokens.add(tokenAddress);
+    
+    // Evict old entries to prevent memory leak
+    if (this.scannedTokens.size > 5000) {
+      const arr = Array.from(this.scannedTokens);
+      for (let i = 0; i < 2500; i++) this.scannedTokens.delete(arr[i]);
+    }
+
+    const matches = await this.buyerScanner.findGoodWalletBuyers(tokenAddress, this.goodWallets as any);
+    
+    // Add discovered good wallets to our in-memory tracker
+    for (const match of matches) {
+      if (!this.tokenGoodBuyers.has(tokenAddress)) {
+        this.tokenGoodBuyers.set(tokenAddress, new Set());
+      }
+      this.tokenGoodBuyers.get(tokenAddress)!.add(match.wallet);
+    }
+
+    return this.getSignal(tokenAddress);
   }
 
   async init(): Promise<void> {

@@ -157,7 +157,7 @@ export class TradeExecutor {
   protected openPositions = new Map<string, OpenPosition>();
   private lastBuyTimestamp = 0; // v10.9.2: absolute last buy time
   private firstMC = new Map<string, number>();
-  private liveState = new Map<string, LiveTradeState>();
+  public liveState = new Map<string, LiveTradeState>(); // v10.14.1: public for TokenTracker fast_verdict
 
   // Cache: token → { isRide, detectedAt, fdvAtDetection, walletAddress, strategy }
   protected rideCache = new Map<string, {
@@ -508,11 +508,25 @@ export class TradeExecutor {
       const rtMcs = state.recentMCs || [];
       
       // CARTEL: immediate entry when 2+ good wallets detected (T+2-120s)
-      const cartelSig = this.cartelDetector.getSignal(tokenAddress);
+      let cartelSig = this.cartelDetector.getSignal(tokenAddress);
       if (cartelSig && cartelSig.goodWalletCount >= 2 && rtElapsedSec >= 2 && rtElapsedSec <= 120) {
         // Trigger immediate evaluation — CARTEL has priority
         this.evaluating.delete(tokenAddress);
         this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
+      }
+      
+      // v10.14.2: Helius buyer scan — discover hidden good wallets on ALL promising tokens
+      // Trigger: 20+ unique buyers, within 90s of detection (even if CARTEL already detected — may find more wallets)
+      // Cost: ~200 credits/scan, budget allows ~1350 scans/day
+      if (rtBuyCount >= 20 && rtElapsedSec >= 10 && rtElapsedSec <= 90) {
+        this.cartelDetector.heliusScan(tokenAddress).then(sig => {
+          if (sig && sig.goodWalletCount >= 2) {
+            logger.info({ token: tokenAddress.slice(0,8), goodWallets: sig.goodWalletCount }, 
+              '🔍 Helius scan discovered CARTEL signal!');
+            this.evaluating.delete(tokenAddress);
+            this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
+          }
+        }).catch(() => {});
       }
 
       // RUGGER: immediate entry for qualified wallets (T+3-30s)

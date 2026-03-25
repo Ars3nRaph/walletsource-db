@@ -58,6 +58,9 @@ class WalletSourceDB {
       const buyerScanner = new HeliusBuyerScanner(this.pool!);
       logger.info('HeliusBuyerScanner initialized');
 
+      // Wire HeliusBuyerScanner into CartelDetector for on-demand token scans
+      te.cartelDetector.setBuyerScanner(buyerScanner);
+
       // Log credit budget
       logger.info({ dailyLimit: creditTracker.remaining() }, '💰 Helius credit budget');
 
