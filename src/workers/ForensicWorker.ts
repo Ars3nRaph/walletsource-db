@@ -32,7 +32,7 @@ export class ForensicWorker {
   private reconnectAttempts = 0;
   private reconnectTimeout: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
-  private usingFallback = false;
+  private usingFallback = true; // v10.14: PumpPortal is primary (structured pump.fun data), Helius is fallback
 
   constructor(pool: Pool) {
     this.walletRepo = new WalletRepo(pool);
@@ -50,7 +50,8 @@ export class ForensicWorker {
       );
     }
 
-    logger.info({ url: wssUrl.replace(/api-key=[^&]+/, 'api-key=***') }, 'ForensicWorker starting');
+    // v10.14: PumpPortal primary (free, structured data), Helius fallback (paid, raw logs)
+    logger.info({ primary: 'PumpPortal', fallback: 'Helius' }, 'ForensicWorker starting');
     await this.pumpTradeStream.start();
     
     // Re-subscribe recovered positions to websocket after restart
@@ -64,7 +65,7 @@ export class ForensicWorker {
       }
     }
     
-    await this.connect(wssUrl);
+    await this.connect(PUMPPORTAL_WSS_URL); // v10.14: PumpPortal primary
   }
 
   private async connect(wssUrl: string): Promise<void> {
@@ -146,7 +147,9 @@ export class ForensicWorker {
     this.reconnectAttempts++;
 
     // Fallback to PumpPortal after multiple failures
-    if (!this.usingFallback && this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS_BEFORE_FALLBACK) {
+    if (this.usingFallback && this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS_BEFORE_FALLBACK) {
+      // PumpPortal failed too many times, switch to Helius
+      const heliusUrl = process.env.HELIUS_WSS_URL || process.env.SOLANA_WSS_URL || '';
       logger.warn(
         { attempts: this.reconnectAttempts },
         'Multiple Helius connection failures, switching to PumpPortal fallback'
@@ -168,7 +171,7 @@ export class ForensicWorker {
     logger.info({ delay, attempt: this.reconnectAttempts, fallback: this.usingFallback }, 'Scheduling WebSocket reconnect');
 
     this.reconnectTimeout = setTimeout(() => {
-      const targetUrl = this.usingFallback ? PUMPPORTAL_WSS_URL : wssUrl;
+      const targetUrl = this.usingFallback ? PUMPPORTAL_WSS_URL : (process.env.HELIUS_WSS_URL || wssUrl);
       this.connect(targetUrl).catch((error) => {
         logger.error({ error }, 'Reconnect failed');
       });
@@ -192,9 +195,9 @@ export class ForensicWorker {
           return;
         }
 
-        // Transaction notification
-        if (message.params && message.params.result) {
-          const txData = message.params.result;
+        // Transaction notification (Helius format: params.result.value)
+        if (message.params?.result?.value) {
+          const txData = message.params.result.value;
 
           // Check for Pump.fun Create instruction
           if (this.isPumpFunCreateTransaction(txData)) {
@@ -213,8 +216,9 @@ export class ForensicWorker {
       return false;
     }
 
-    return txData.logs.some(log =>
-      log.includes('Program log: Instruction: Create')
+    return txData.logs.some((log: string) =>
+      log.includes('Program log: Instruction: Create') || 
+      log.includes('Program log: Instruction: CreateV2')
     );
   }
 

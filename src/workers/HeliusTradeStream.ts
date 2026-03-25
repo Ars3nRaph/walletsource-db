@@ -65,7 +65,7 @@ export class HeliusTradeStream {
 
     // Watchdog: force reconnect if silent for 60s
     setInterval(() => {
-      if (this.isConnected && Date.now() - this.lastMessageAt > 60000) {
+      if (this.isConnected && this.subscriptionIds.size > 0 && Date.now() - this.lastMessageAt > 60000) {
         logger.warn({ silentSec: Math.round((Date.now() - this.lastMessageAt) / 1000) },
           '⚠️ HeliusTradeStream WATCHDOG — forcing reconnect');
         this.ws?.terminate();

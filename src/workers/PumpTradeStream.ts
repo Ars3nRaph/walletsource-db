@@ -69,7 +69,8 @@ export class PumpTradeStream {
     setInterval(() => {
       const silentMsg = Date.now() - this.lastMessageAt;
       const silentPong = Date.now() - this.lastPongAt;
-      if (this.isConnected && (silentMsg > 60000 || silentPong > 90000)) {
+      // v10.14: Only watchdog if we actually have subscriptions (otherwise silence is normal)
+      if (this.isConnected && this.subscribedTokens.size > 0 && (silentMsg > 60000 || silentPong > 90000)) {
         const openPositions = this.tradeExecutor ? 
           this.tradeExecutor.getOpenPositionTokens?.()?.length || 0 : 0;
         logger.warn({ silentMsgSec: Math.round(silentMsg / 1000), silentPongSec: Math.round(silentPong / 1000), openPositions }, 
