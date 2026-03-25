@@ -592,12 +592,25 @@ export class TradeExecutor {
       let rtDropLimit = 0;
       const rtIsNeo = rtPos.neoStrategy === true;
       const rtIsCartel = rtPos.cartelStrategy === true;
-      const rtTrailTrigger = (rtIsNeo || rtIsCartel) ? 30 : 50; // NEO: +30%, others: +50%
+      const rtTrailTrigger = (rtIsNeo || rtIsCartel) ? 25 : 50; // NEO v4.32: 30→25% to align with secondary trail trigger
       if (rtPeakPnl >= rtTrailTrigger) {
         if (rtIsCartel) {
           rtDropLimit = 0.20; // CARTEL: 20% trail
         } else if (rtIsNeo) {
-          rtDropLimit = 0.15; // NEO: tight 15% trail
+          // NEO v4.32: tiered RT trail — match secondary trail logic, give rockets room to breathe
+          // Data: NEO only 16 100%+ trails vs STD 35. Root cause: flat 15% kills rockets at 50-100% peak.
+          // STD uses 20% at 50%+ → lets tokens dip and recover → 2x more rockets captured.
+          const rtHealthy = rtSellerRatio >= 0 && rtSellerRatio <= 0.20;
+          const rtDump = rtSellerRatio > 0.40;
+          if (rtPeakPnl >= 100) {
+            rtDropLimit = rtHealthy ? 0.27 : rtDump ? 0.18 : 0.22; // v4.32: match secondary 100%+ tier
+          } else if (rtPeakPnl >= 50) {
+            rtDropLimit = rtHealthy ? 0.22 : rtDump ? 0.15 : 0.20; // v4.32: 15%→20% default at 50-100% (was flat 15%)
+          } else if (rtPeakPnl >= 30) {
+            rtDropLimit = rtHealthy ? 0.18 : rtDump ? 0.10 : 0.14; // v4.32: 15%→14% default at 30-50% (less tight, more room)
+          } else {
+            rtDropLimit = rtHealthy ? 0.14 : rtDump ? 0.08 : 0.12; // v4.32: 25-30% zone
+          }
         } else if (rtSellerRatio >= 0 && rtSellerRatio <= 0.20) {
           rtDropLimit = 0.25; // healthy → wide trail
         } else if (rtSellerRatio > 0.40) {
@@ -1111,9 +1124,9 @@ export class TradeExecutor {
         } else if (peakPnl >= 50) {
           dropLimit = healthyToken ? 0.22 : dumpPressure ? 0.15 : 0.18; // v4.30: healthy→22%, dump→15%, default→18%
         } else if (peakPnl >= 30) {
-          dropLimit = healthyToken ? 0.16 : dumpPressure ? 0.10 : 0.12; // v4.31: healthy→16%, dump→10%, default→12% (was flat 12%)
+          dropLimit = healthyToken ? 0.20 : dumpPressure ? 0.10 : 0.16; // v4.32: healthy→20%, dump→10%, default→16% (was 16%/10%/12%)
         } else {
-          dropLimit = healthyToken ? 0.14 : dumpPressure ? 0.08 : 0.10; // v4.31: healthy→14%, dump→8%, default→10% (was flat 10%)
+          dropLimit = healthyToken ? 0.16 : dumpPressure ? 0.08 : 0.12; // v4.32: healthy→16%, dump→8%, default→12% (was 14%/8%/10%)
         }
       } else if (sellerGrowthRatio >= 0 && sellerGrowthRatio <= 0.20) {
         dropLimit = 0.25; // ≤20% seller ratio → healthy token, let it run (wider trail)
@@ -1560,7 +1573,7 @@ export class TradeExecutor {
           wallet_risk_score: wRisk,
           position_sol: neoPos,
           quality_score: neoQ,
-          reason: `🧠 NEO v4.31 BUY Q${neoQ} — ${neoBuyers}b ${neoSellers}s sr=${neoSellRatio.toFixed(2)} vel=${neoVelocity} | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)} pos=${neoPos}SOL`
+          reason: `🧠 NEO v4.32 BUY Q${neoQ} — ${neoBuyers}b ${neoSellers}s sr=${neoSellRatio.toFixed(2)} vel=${neoVelocity} | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)} pos=${neoPos}SOL`
         };
       }
     }

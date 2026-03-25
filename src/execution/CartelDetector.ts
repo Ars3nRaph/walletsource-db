@@ -25,6 +25,7 @@ export class CartelDetector {
   private pool: Pool;
   private goodWallets: Map<string, { tokens: number; wr: number }> = new Map();
   private lastRefresh = 0;
+  private refreshing = false;
   private refreshIntervalMs = 3600_000; // refresh every hour
   private ready = false;
 
@@ -73,7 +74,9 @@ export class CartelDetector {
   }
 
   async init(): Promise<void> {
+    this.refreshing = true;
     await this.refreshGoodWallets();
+    this.refreshing = false;
     logger.info({ goodWallets: this.goodWallets.size }, '🤝 CartelDetector initialized');
   }
 
@@ -85,6 +88,7 @@ export class CartelDetector {
           FROM trade_events te
           JOIN token_events tok ON tok.token_address = te.token_address
           WHERE te.tx_type = 'buy' AND te.volume_usd > 10
+            AND te.event_at > now() - interval '3 days'
             AND te.event_at <= tok.detected_at + interval '90 seconds'
           GROUP BY te.trader_wallet, te.token_address
         ),
@@ -95,6 +99,7 @@ export class CartelDetector {
               WHERE EXISTS (
                 SELECT 1 FROM token_snapshots ts
                 WHERE ts.token_address = eb.token_address
+                  AND ts.snapshot_at > now() - interval '3 days'
                 GROUP BY ts.token_address
                 HAVING max(mc_live) / NULLIF(min(mc_live), 0) > 1.20
               )
@@ -128,9 +133,10 @@ export class CartelDetector {
     if (txType !== 'buy') return;
     if (!this.ready) return;
 
-    // Auto-refresh hourly
-    if (Date.now() - this.lastRefresh > this.refreshIntervalMs) {
-      this.refreshGoodWallets().catch(() => {});
+    // Auto-refresh hourly (with stampede guard)
+    if (!this.refreshing && Date.now() - this.lastRefresh > this.refreshIntervalMs) {
+      this.refreshing = true;
+      this.refreshGoodWallets().catch(() => {}).finally(() => { this.refreshing = false; });
     }
 
     if (!this.goodWallets.has(traderWallet)) return;
