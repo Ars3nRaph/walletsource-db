@@ -1086,14 +1086,20 @@ export class TradeExecutor {
         // NEO v4.27: tiered adaptive trail
         // Trigger lowered 30→25% to save 25-30% peakers from HS
         // 50-100% tier tightened 18→16% (better capture, math: +2% x43 trades)
+        // NEO v4.30: seller-growth-aware tiered trail
+        // Data: sellerGrowthRatio ≤20% post-entry → 94.1% WR → let these tokens breathe (wider trail)
+        // sellerGrowthRatio >40% → dump pressure → protect gains (tighter trail)
+        // v4.31: extend seller-growth-aware trail to 25-50% zone — healthy tokens get more room to dip+recover
+        const healthyToken = sellerGrowthRatio >= 0 && sellerGrowthRatio <= 0.20;
+        const dumpPressure = sellerGrowthRatio > 0.40;
         if (peakPnl >= 100) {
-          dropLimit = 0.22; // Moonshot: 22% trail (100%+ peaks)
+          dropLimit = healthyToken ? 0.27 : dumpPressure ? 0.18 : 0.22; // v4.30: healthy→27%, dump→18%, default→22%
         } else if (peakPnl >= 50) {
-          dropLimit = 0.16; // NEO v4.27: Mid-rocket 50-100%: tightened 18%→16% (+2% capture)
+          dropLimit = healthyToken ? 0.22 : dumpPressure ? 0.15 : 0.18; // v4.30: healthy→22%, dump→15%, default→18%
         } else if (peakPnl >= 30) {
-          dropLimit = 0.12; // Small peak 30-50%: 12% trail (unchanged from v4.26)
+          dropLimit = healthyToken ? 0.16 : dumpPressure ? 0.10 : 0.12; // v4.31: healthy→16%, dump→10%, default→12% (was flat 12%)
         } else {
-          dropLimit = 0.10; // NEO v4.27: Micro peak 25-30%: 10% tight trail (saves from HS at -25%)
+          dropLimit = healthyToken ? 0.14 : dumpPressure ? 0.08 : 0.10; // v4.31: healthy→14%, dump→8%, default→10% (was flat 10%)
         }
       } else if (sellerGrowthRatio >= 0 && sellerGrowthRatio <= 0.20) {
         dropLimit = 0.25; // ≤20% seller ratio → healthy token, let it run (wider trail)
@@ -1133,7 +1139,7 @@ export class TradeExecutor {
     if (!pump3DisabledForSTD && pos.pumpPeaks && pos.pumpPeaks.length >= 3 && peakPnl < pump3Threshold) {
       const thirdPeak = pos.pumpPeaks[2];
       const dropFrom3rd = (thirdPeak - currentMC) / thirdPeak;
-      if (dropFrom3rd >= 0.07) {
+      if (dropFrom3rd >= 0.05) { // NEO v4.28: 7%→5% tighter PUMP3 exit (v4.27 PUMP3 was -5.4% avg on 10 trades)
         this.openPositions.delete(tokenAddress);
         this.closedTokens.set(tokenAddress, { exitType: 'PUMP3_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
       this.consecutiveHardStops = 0; // CB reset on non-HS exit
@@ -1187,6 +1193,15 @@ export class TradeExecutor {
       this.closedTokens.set(tokenAddress, { exitType: 'MAX_HOLD', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
       this.consecutiveHardStops = 0; // CB reset
       return this.sell(100, 0.9, 'RIDE', `⏰ v10 MAX HOLD 5min — P&L ${pnlPct.toFixed(1)}%`, signals);
+    }
+
+    // NEO v4.29: STALE EARLY EXIT — exit losing NEO positions before they hit the sweep
+    // 13 TRACKING_END trades @-7.2% avg, mostly stuck losers. Exiting early at -10% saves 5-8%.
+    if (isNeo && holdSec > 400 && pnlPct < -10 && peakPnl < 12) {
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops++;
+      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.29 STALE_EXIT ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(0)}%`, signals);
     }
 
     // 3. BREAKEVEN removed in v10.9.9 — redundant with -15% drop stop
@@ -1498,7 +1513,7 @@ export class TradeExecutor {
         
         // Aggressive sizing: Q1+ proven winners, scale up with quality
         // Q1=0.20, Q2=0.35, Q3=0.55, Q4=0.65 (v4.3: more aggressive on high conviction; WR=84.8% supports it)
-        const neoQSizing: Record<number, number> = { 1: 0.15, 2: 0.20, 3: 0.25, 4: 0.25 };
+        const neoQSizing: Record<number, number> = { 1: 0.10, 2: 0.25, 3: 0.45, 4: 0.50 }; // v10.13: aggressive sizing — Q3/Q4 proven +15-27% avg
         const neoPos = neoQSizing[neoQ] || 0.20;
         
         this.lastBuyTimestamp = Date.now();
@@ -1531,7 +1546,7 @@ export class TradeExecutor {
           wallet_risk_score: wRisk,
           position_sol: neoPos,
           quality_score: neoQ,
-          reason: `🧠 NEO v4.27 BUY Q${neoQ} — ${neoBuyers}b ${neoSellers}s sr=${neoSellRatio.toFixed(2)} vel=${neoVelocity} | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)} pos=${neoPos}SOL`
+          reason: `🧠 NEO v4.31 BUY Q${neoQ} — ${neoBuyers}b ${neoSellers}s sr=${neoSellRatio.toFixed(2)} vel=${neoVelocity} | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)} pos=${neoPos}SOL`
         };
       }
     }
@@ -1926,7 +1941,21 @@ export class TradeExecutor {
     const pos = this.openPositions.get(tokenAddress);
     if (pos) {
       const holdSec = (Date.now() - pos.entryTime.getTime()) / 1000;
-      const exitMC = lastKnownMC || pos.lowestMCAfterEntry || pos.entryMC;
+      let exitMC = lastKnownMC || pos.lowestMCAfterEntry || pos.entryMC;
+      
+      // v10.13: If token peaked above trail trigger but never trailed (WS gap),
+      // simulate trail exit instead of closing at current (crashed) MC
+      const peakPnl = (pos.highestMC - pos.entryMC) / pos.entryMC * 100;
+      const trailTrigger = pos.neoStrategy ? 25 : (pos.cartelStrategy ? 30 : 50);
+      if (peakPnl > trailTrigger && !lastKnownMC) {
+        // Token should have trailed — estimate exit at peak - default trail drop
+        const trailDrop = pos.neoStrategy ? 0.15 : 0.20;
+        const simulatedExitMC = pos.highestMC * (1 - trailDrop);
+        logger.warn({ token: tokenAddress.slice(0,8), peakPnl: peakPnl.toFixed(0), simulatedMC: simulatedExitMC.toFixed(0) },
+          '⚠️ TRACKING_END with missed trail — simulating trail exit');
+        exitMC = simulatedExitMC;
+      }
+      
       const pnl = ((exitMC - pos.entryMC) / pos.entryMC * 100);
       logger.info({
         token: tokenAddress.slice(0, 8),

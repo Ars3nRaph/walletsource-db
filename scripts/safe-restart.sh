@@ -1,23 +1,20 @@
 #!/bin/bash
 # safe-restart.sh — Only restart if no open positions
-# PM2 kill-timeout=10s allows graceful shutdown (saves positions to DB)
+# v10.13: Reads from PostgreSQL instead of paper-trades.log
 cd /root/walletsource-db
 
-# Check open positions from paper-trades.log
-OPEN=$(python3 -c "
-import json
-buys, sells = set(), set()
-for line in open('data/paper-trades.log'):
-    line = line.strip()
-    if not line: continue
-    try: d = json.loads(line)
-    except: continue
-    tok = d.get('token','')
-    if d.get('action') == 'BUY': buys.add(tok)
-    elif d.get('action') == 'SELL': sells.add(tok)
-open_pos = buys - sells
-print(len(open_pos))
-")
+# Check open positions from DB
+OPEN=$(PGPASSWORD=walletsource_dev psql -U walletsource -d walletsource -h localhost -t -c "
+  SELECT count(*) FROM paper_trades b
+  WHERE b.action='BUY' AND NOT EXISTS (
+    SELECT 1 FROM paper_trades s WHERE s.token_address = b.token_address AND s.action='SELL' AND s.timestamp > b.timestamp
+  )
+" 2>/dev/null | tr -d ' ')
+
+if [ -z "$OPEN" ]; then
+    echo "⚠️ Cannot connect to DB — assuming positions open. Use --force to override."
+    OPEN=1
+fi
 
 if [ "$OPEN" -gt 0 ] && [ "$1" != "--force" ]; then
     echo "⚠️ BLOCKED: $OPEN open position(s). Use --force to override."

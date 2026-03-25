@@ -5,6 +5,9 @@ import { ForensicWorker } from './workers/ForensicWorker.js';
 import { TokenTracker } from './workers/TokenTracker.js';
 import { CartelDetector } from './cartels/CartelDetector.js';
 import { HealthCheck } from './utils/healthCheck.js';
+import { HeliusBuyerScanner } from './api/HeliusBuyerScanner.js';
+import { HeliusTradeStream } from './workers/HeliusTradeStream.js';
+import { creditTracker } from './api/HeliusCreditTracker.js';
 import type { Pool } from 'pg';
 
 // Load environment variables
@@ -43,6 +46,20 @@ class WalletSourceDB {
       this.tokenTracker = new TokenTracker(this.pool);
       await this.tokenTracker.start();
       logger.info('TokenTracker started');
+
+      // 4b. Start HeliusTradeStream (backup/enhanced WS for position tokens)
+      const heliusStream = new HeliusTradeStream(this.pool!);
+      const te = this.tokenTracker.tradeExecutor;
+      heliusStream.setTradeExecutor(te);
+      await heliusStream.start();
+      logger.info('HeliusTradeStream started (backup WS for positions)');
+
+      // 4c. Initialize HeliusBuyerScanner for CARTEL enhancement
+      const buyerScanner = new HeliusBuyerScanner(this.pool!);
+      logger.info('HeliusBuyerScanner initialized');
+
+      // Log credit budget
+      logger.info({ dailyLimit: creditTracker.remaining() }, '💰 Helius credit budget');
 
       // Wire PumpTradeStream → TradeExecutor for live tick-level signals
       if (this.forensicWorker && this.tokenTracker) {

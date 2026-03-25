@@ -146,6 +146,12 @@ app.get('/api/stats', async (req, res) => {
       stats.paperTrades = { total: 0, buy: 0, sell: 0, short: 0, hold: 0 };
     }
 
+    // Helius credits (read from env for now)
+    stats.helius = {
+      dailyLimit: parseInt(process.env.HELIUS_DAILY_CREDIT_LIMIT || '270000'),
+      note: 'Credit tracking is in-process — check pm2 logs for usage'
+    };
+
     // Performance
     const performance = await pool.query(`
       SELECT COUNT(*) as done_last_hour
