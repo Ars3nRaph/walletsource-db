@@ -162,17 +162,12 @@ export class WalletStatsWorker {
             last_active_at, first_seen_at, updated_at, category
           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),$10)
           ON CONFLICT (wallet_address) DO UPDATE SET
-            tokens_total = GREATEST(wallet_stats.tokens_total, EXCLUDED.tokens_total),
-            tokens_won = GREATEST(wallet_stats.tokens_won, EXCLUDED.tokens_won),
-            win_rate = CASE
-              WHEN GREATEST(wallet_stats.tokens_total, EXCLUDED.tokens_total) > 0
-              THEN GREATEST(wallet_stats.tokens_won, EXCLUDED.tokens_won)::REAL
-                   / GREATEST(wallet_stats.tokens_total, EXCLUDED.tokens_total)
-              ELSE 0
-            END,
-            avg_peak_pct = (wallet_stats.avg_peak_pct + EXCLUDED.avg_peak_pct) / 2.0,
-            avg_entry_delay_sec = (wallet_stats.avg_entry_delay_sec + EXCLUDED.avg_entry_delay_sec) / 2.0,
-            total_volume_sol = wallet_stats.total_volume_sol + EXCLUDED.total_volume_sol,
+            tokens_total = EXCLUDED.tokens_total,
+            tokens_won = EXCLUDED.tokens_won,
+            win_rate = EXCLUDED.win_rate,
+            avg_peak_pct = EXCLUDED.avg_peak_pct,
+            avg_entry_delay_sec = EXCLUDED.avg_entry_delay_sec,
+            total_volume_sol = EXCLUDED.total_volume_sol,
             last_active_at = GREATEST(wallet_stats.last_active_at, EXCLUDED.last_active_at),
             first_seen_at = LEAST(COALESCE(wallet_stats.first_seen_at, EXCLUDED.first_seen_at), EXCLUDED.first_seen_at),
             updated_at = NOW(),

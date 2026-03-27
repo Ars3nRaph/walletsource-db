@@ -104,71 +104,55 @@ export class PaperTradeExecutor extends TradeExecutor {
 
   async recoverOpenPositions(): Promise<void> {
     try {
-      const fs = await import('fs');
-      if (!fs.existsSync(this.logFilePath)) return;
-      
-      const content = fs.readFileSync(this.logFilePath, 'utf-8');
-      const lines = content.split('\n').filter(l => l.trim());
-      
-      const buys = new Map<string, any>();
-      const sells = new Set<string>();
-      const lastMCs = new Map<string, { mc: number; peak: number; ts: string }>();
-      
-      for (const line of lines) {
-        try {
-          const e = JSON.parse(line);
-          const tok = e.token;
-          if (e.action === 'BUY') {
-            buys.set(tok, e);
-          } else if (e.action === 'SELL') {
-            sells.add(tok);
-          }
-          // Track last known MC and peak for each token
-          if (e.current_mc > 0) {
-            const prev = lastMCs.get(tok);
-            const peak = prev ? Math.max(prev.peak, e.current_mc) : e.current_mc;
-            lastMCs.set(tok, { mc: e.current_mc, peak, ts: e.timestamp });
-          }
-        } catch {}
-      }
-      
-      // Also recover from DB SHUTDOWN entries (graceful shutdown saves)
+      // v10.14.5: Recover open positions from PostgreSQL (not log file)
+      // Find BUY records that have no corresponding SELL
+      const openRows = await this.pool.query(`
+        SELECT b.token_address, b.mc_usd, b.timestamp, b.reason, b.peak_pct, b.position_sol,
+               b.buy_strategy
+        FROM paper_trades b
+        WHERE b.action = 'BUY'
+          AND b.token_address NOT IN (
+            SELECT token_address FROM paper_trades WHERE action = 'SELL'
+          )
+          AND b.timestamp > NOW() - INTERVAL '24 hours'
+        ORDER BY b.timestamp DESC
+      `);
+
+      // Clean up SHUTDOWN markers from graceful shutdown
       try {
         const shutdownRows = await this.pool.query(
           "SELECT token_address FROM paper_trades WHERE action = 'SHUTDOWN' AND timestamp > NOW() - INTERVAL '30 minutes'"
         );
-        const shutdownTokens = new Set(shutdownRows.rows.map((r: any) => r.token_address));
-        // Clean up SHUTDOWN markers — they'll be re-opened
-        if (shutdownTokens.size > 0) {
+        if (shutdownRows.rows.length > 0) {
           await this.pool.query("DELETE FROM paper_trades WHERE action = 'SHUTDOWN'");
-          logger.info({ count: shutdownTokens.size }, '🔄 Found SHUTDOWN entries, recovering positions');
+          logger.info({ count: shutdownRows.rows.length }, '🔄 Found SHUTDOWN entries, cleaning up');
         }
       } catch (dbErr: any) {
         logger.warn({ error: dbErr?.message }, 'Could not check SHUTDOWN entries');
       }
 
       let recovered = 0;
-      for (const [tok, buyEvent] of buys) {
-        if (sells.has(tok)) continue; // Already closed
-        if (this.openPositions.has(tok)) continue; // Already tracked
-        
-        const entryMC = buyEvent.current_mc;
-        const lastData = lastMCs.get(tok);
-        const peakMC = lastData?.peak || entryMC;
-        
-        // Restore position — detect strategy from buy reason
-        const buyReason = buyEvent.reason || '';
+      for (const row of openRows.rows) {
+        const tok = row.token_address;
+        if (this.openPositions.has(tok)) continue;
+
+        const entryMC = parseFloat(row.mc_usd) || 5000;
+        const peakPct = parseFloat(row.peak_pct) || 0;
+        const peakMC = entryMC * (1 + peakPct / 100);
+        const buyReason = row.reason || row.buy_strategy || '';
+
         const isNeoRecovery = buyReason.includes('NEO');
         const isCartelRecovery = buyReason.includes('CARTEL');
         const isEliteRecovery = buyReason.includes('ELITE');
-        
+        const isVelocityRecovery = buyReason.includes('VELOCITY');
+
         this.openPositions.set(tok, {
           entryMC,
-          entryTime: new Date(buyEvent.timestamp),
+          entryTime: new Date(row.timestamp),
           highestMC: peakMC,
           lowestMCAfterEntry: entryMC,
-          tradeCount: 100, // v10.12: prevent immediate sweep after restart
-          walletAddress: buyEvent.wallet || '',
+          tradeCount: 100, // prevent immediate sweep after restart
+          walletAddress: '',
           peakTime: Date.now(),
           hadSignificantPump: peakMC > entryMC * 1.2,
           entryBuyVol: 0,
@@ -182,19 +166,21 @@ export class PaperTradeExecutor extends TradeExecutor {
           cycleHigh: peakMC,
           dipLow: entryMC,
           tickMCs: [],
-          confirmationDone: true, // Skip confirmation on recovery
+          confirmationDone: true,
           neoStrategy: isNeoRecovery,
           cartelStrategy: isCartelRecovery,
+          eliteStrategy: isEliteRecovery,
+          velocityStrategy: isVelocityRecovery,
         });
         recovered++;
         logger.info({
           token: tok.slice(0, 8),
+          strategy: isVelocityRecovery ? 'VELOCITY' : isEliteRecovery ? 'ELITE' : isCartelRecovery ? 'CARTEL' : isNeoRecovery ? 'NEO' : 'STD',
           entryMC: entryMC.toFixed(0),
           peakMC: peakMC.toFixed(0),
-          pnl: ((peakMC - entryMC) / entryMC * 100).toFixed(1) + '%',
-        }, '🔄 RECOVERED open position from paper-trades.log');
+        }, '🔄 RECOVERED open position from DB');
       }
-      
+
       if (recovered > 0) {
         logger.info({ recovered, total: this.openPositions.size }, '🔄 Position recovery complete');
       }

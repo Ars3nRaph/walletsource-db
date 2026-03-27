@@ -90,6 +90,7 @@ interface OpenPosition {
   addOnBought?: boolean;       // true if add-on position placed on STRONG
   eliteStrategy?: boolean;     // ELITE copy-trade strategy
   eliteWallets?: Set<string>;  // which ELITE wallets triggered this entry
+  velocityStrategy?: boolean;  // VELOCITY: pure market microstructure signal
 }
 
 interface LiveTradeState {
@@ -112,6 +113,8 @@ interface LiveTradeState {
   avgBuySize: number;                   // rolling avg buy volume
   avgSellSize: number;                  // rolling avg sell volume
   buyTimestamps: number[];              // for velocity calc (last 10 buy timestamps)
+  velocitySignalAt?: number;             // VELOCITY: timestamp when momentum threshold was last detected
+  firstSeenAt?: number;                  // VELOCITY: when first trade was observed for this token
   bondingCurvePct: number;              // % of bonding curve filled
   largestHolderPct: number;             // largest holder % of supply
   recentMCs: number[];                   // v10.9: last 5 MC values for momentum
@@ -393,7 +396,7 @@ export class TradeExecutor {
         rawTrades: [],
         holderBalances: new Map(), totalDumpSells: 0,
         repeatBuyers: new Map(), avgBuySize: 0, avgSellSize: 0,
-        buyTimestamps: [], bondingCurvePct: 0, largestHolderPct: 0
+        buyTimestamps: [], bondingCurvePct: 0, largestHolderPct: 0, firstSeenAt: Date.now()
       };
       this.liveState.set(tokenAddress, state);
       // v10.13: Cap liveState to prevent OOM (evict oldest non-position tokens)
@@ -531,12 +534,26 @@ export class TradeExecutor {
         this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
       }
 
+      // ⚡ VELOCITY RT: flag token for immediate evaluation when momentum threshold met
+      // Use state.firstSeenAt for elapsed (rtDetectedAt is often new Date() when rideCache not yet built)
+      const velElapsedSec = state.firstSeenAt ? (Date.now() - state.firstSeenAt) / 1000 : 0;
+      if (txType === 'buy' && !this.openPositions.has(tokenAddress) && velElapsedSec >= 8 && velElapsedSec <= 25) {
+        const velVelocity = velElapsedSec > 0 ? rtBuyCount / velElapsedSec : 0;
+        const velSbRatio = rtBuyCount > 0 ? rtSellCount / rtBuyCount : 0;
+        if (velVelocity >= 2.0 && rtRatio >= 1.2 && rtRatio < 3.0 && mcUsd < 10000 && velSbRatio < 0.5) {
+          // Mark this token as having velocity signal — bypasses buyer count gate in maybeEvaluateLive
+          state.velocitySignalAt = Date.now();
+          this.evaluating.delete(tokenAddress);
+          this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
+        }
+      }
+
       // ELITE-MIMIC: immediate entry when 1+ ELITE wallet buys (T+2-60s, mc<6K)
       if (!this.openPositions.has(tokenAddress)) {
         const eliteRtBuyers = this.cartelDetector.getEliteBuyers(tokenAddress);
         if (eliteRtBuyers && eliteRtBuyers.size >= 1 && rtElapsedSec >= 2 && rtElapsedSec <= 60 && mcUsd <= 6000 && rtRatio <= 2.0) {
           const eliteCount = Array.from(this.openPositions.values()).filter(p => p.eliteStrategy).length;
-          if (eliteCount < 2 && this.openPositions.size < 7) {
+          if (eliteCount < 2 && this.openPositions.size < 7) { // ELITE v1.4 re-enabled
             logger.info({ token: tokenAddress.slice(0,8), elites: eliteRtBuyers.size, mc: mcUsd.toFixed(0), delay: rtElapsedSec.toFixed(0) },
               '👑 ELITE wallet detected — RT instant entry trigger');
             this.evaluating.delete(tokenAddress);
@@ -624,10 +641,11 @@ export class TradeExecutor {
       const rtIsNeo = rtPos.neoStrategy === true;
       const rtIsCartel = rtPos.cartelStrategy === true;
       const rtIsElite = rtPos.eliteStrategy === true;
-      const rtTrailTrigger = rtIsElite ? 999 : (rtIsNeo || rtIsCartel) ? 25 : 50; // ELITE: no trail, copy-exit primary
+      const rtIsVelocity = rtPos.velocityStrategy === true;
+      const rtTrailTrigger = rtIsElite ? 30 : rtIsVelocity ? 40 : (rtIsNeo || rtIsCartel) ? 25 : 50; // VELOCITY: trail from +40% (earlier than STD 50%)
       if (rtPeakPnl >= rtTrailTrigger) {
         if (rtIsElite) {
-          rtDropLimit = 0.12; // ELITE-MIMIC v1.1: 12%
+          rtDropLimit = 0.08; // ELITE v1.3: tight 8% trail from +30%
         } else if (rtIsCartel) {
           rtDropLimit = 0.20; // CARTEL: 20% trail
         } else if (rtIsNeo) {
@@ -687,7 +705,7 @@ export class TradeExecutor {
       }
 
       // 2. Hard stop (NEO: -15%, others: -20%)
-      const rtHsThreshold = rtPos.eliteStrategy ? -14 : rtPos.neoStrategy ? -25 : -20; // NEO v4.15: -20% (raised from -15%)
+      const rtHsThreshold = rtPos.eliteStrategy ? -20 : rtPos.neoStrategy ? -25 : -20; // VELOCITY uses same -20% as STD // NEO v4.15: -20% (raised from -15%)
       if (!rtShouldSell && rtPnl <= rtHsThreshold) {
         rtReason = `⚡ RT-HARD_STOP — P&L ${rtPnl.toFixed(1)}% (threshold ${rtHsThreshold}%) | MC ${mcUsd.toFixed(0)}`;
         this.consecutiveHardStops++;
@@ -767,11 +785,13 @@ export class TradeExecutor {
       // But re-evaluate after 5s in case buyer count changed
       const state = this.liveState.get(tokenAddress);
       const buyers = state?.uniqueBuyers?.size ?? 0;
-      // Bypass buyer filter for qualified rugger wallets
-      if (buyers < 15) {
+      // VELOCITY bypass: if velocity signal recently set (within 5s), allow evaluation even with few buyers
+      const hasVelSignal = state?.velocitySignalAt && (Date.now() - (state.velocitySignalAt as number) < 5000);
+      // Bypass buyer filter for qualified rugger wallets or velocity signal
+      if (buyers < 15 && !hasVelSignal) {
         const walletAddr = cached?.walletAddress || '';
         if (!walletAddr || !this.ruggerProfiler.getProfile(walletAddr)) {
-          return; // v10: skip until meaningful buyer count (unless rugger wallet)
+          return; // v10: skip until meaningful buyer count (unless rugger wallet or velocity)
         }
       }
     }
@@ -882,8 +902,16 @@ export class TradeExecutor {
           strategy,
         };
         this.rideCache.set(tokenAddress, cached);
-        if (!cached.isRide) return;
-        logger.info({ token: tokenAddress.slice(0, 8), mc: currentMC.toFixed(0), ev: strategy!.evPerTrade.toFixed(1) + '%' }, '🎯 RIDE token — per-wallet strategy active');
+        if (!cached.isRide) {
+          // VELOCITY bypass: if velocity signal active, proceed to evaluateEntry
+          const velState3 = this.liveState.get(tokenAddress);
+          const velActive = velState3?.velocitySignalAt && (Date.now() - (velState3.velocitySignalAt as number) < 10000);
+          if (!velActive) return;
+          // Fall through to evaluateEntry for VELOCITY strategy
+          logger.info({ token: tokenAddress.slice(0,8) }, '⚡ VELOCITY — bypassing isRide gate');
+        } else {
+          logger.info({ token: tokenAddress.slice(0, 8), mc: currentMC.toFixed(0), ev: strategy!.evPerTrade.toFixed(1) + '%' }, '🎯 RIDE token — per-wallet strategy active');
+        }
       }
 
       const elapsedMs = Date.now() - cached.detectedAt.getTime();
@@ -1156,11 +1184,11 @@ export class TradeExecutor {
     const isNeo = pos.neoStrategy === true;
     const isCartel = pos.cartelStrategy === true;
     const isElite = pos.eliteStrategy === true;
-    const trailTrigger = isElite ? 999 : (isNeo || isCartel) ? 25 : 50; // ELITE-MIMIC: 5% trigger (ELITE sell at 2% from peak median) // NEO v4.27: 30219225 (catch 25-30% peakers before HS), CARTEL: 25%, others: 50%
+    const trailTrigger = isElite ? 30 : (isNeo || isCartel) ? 25 : 50; // ELITE v1.3: trail from +30% // NEO v4.27: 25%, CARTEL: 25%, others: 50%
     let dropLimit = 0; // 0 = no trail, rely on hard stop
     if (peakPnl >= trailTrigger) {
       if (isElite) {
-        dropLimit = 0.12; // ELITE-MIMIC v1.1: 12% drop (3% was too tight for pump.fun volatility)
+        dropLimit = 0.08; // ELITE v1.3: 8% trail (tight but not 3% catastrophe)
       } else
       if (isCartel) {
         dropLimit = 0.20; // CARTEL: 20% trail (more room for big moves)
@@ -1180,11 +1208,11 @@ export class TradeExecutor {
         if (peakPnl >= 100) {
           dropLimit = healthyToken ? 0.27 : dumpPressure ? 0.18 : 0.22; // v4.30: healthy→27%, dump→18%, default→22%
         } else if (peakPnl >= 50) {
-          dropLimit = healthyToken ? 0.22 : dumpPressure ? 0.15 : 0.18; // v4.30: healthy→22%, dump→15%, default→18%
+          dropLimit = healthyToken ? 0.18 : dumpPressure ? 0.12 : 0.15; // v4.49: slight tighten — healthy→18%, dump→12%, default→15% (was 22/15/18)
         } else if (peakPnl >= 30) {
-          dropLimit = healthyToken ? 0.20 : dumpPressure ? 0.10 : 0.16; // v4.32: healthy→20%, dump→10%, default→16% (was 16%/10%/12%)
+          dropLimit = healthyToken ? 0.12 : dumpPressure ? 0.07 : 0.10; // v4.49: TIGHT — healthy→12%, dump→7%, default→10% (was 20/10/16) — exit ~+18-27% gross
         } else {
-          dropLimit = healthyToken ? 0.16 : dumpPressure ? 0.08 : 0.12; // v4.32: healthy→16%, dump→8%, default→12% (was 14%/8%/10%)
+          dropLimit = healthyToken ? 0.08 : dumpPressure ? 0.05 : 0.06; // v4.49: TIGHT — healthy→8%, dump→5%, default→6% (was 16/8/12) — exit ~+15-18% gross vs +5% gross at old 16% trail
         }
       } else if (sellerGrowthRatio >= 0 && sellerGrowthRatio <= 0.20) {
         dropLimit = 0.25; // ≤20% seller ratio → healthy token, let it run (wider trail)
@@ -1272,7 +1300,7 @@ export class TradeExecutor {
       }
     }
 
-        const hsThreshold = pos.eliteStrategy ? -14 : pos.neoStrategy ? -25 : -20; // ELITE-MIMIC: cut at -14% (ELITE median loss) // NEO v4.15: -20% (raised from -15%, aligns with STD; allow recovery room)
+        const hsThreshold = pos.eliteStrategy ? -20 : pos.neoStrategy ? -25 : -20; // ELITE v1.3: -20% (was -14%) // NEO v4.15: -20%
     if (pnlPct <= hsThreshold) {
       this.openPositions.delete(tokenAddress);
       this.closedTokens.set(tokenAddress, { exitType: 'HARD_STOP', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
@@ -1303,11 +1331,40 @@ export class TradeExecutor {
 
     // NEO v4.48: STALE_EXIT ultra-early (25s) — token at -16% with zero upward movement = gap rug in progress
     // Exits at ~-16% vs HS avg -34.6% → saves ~18% per trade. peakPnl < 0.5 = never went up = pure rug signal
-    if (isNeo && holdSec > 25 && holdSec <= 120 && pnlPct < -16 && peakPnl < 0.5) {
+    if (isNeo && holdSec > 25 && holdSec <= 120 && pnlPct < -13 && peakPnl < 0.5) {
       this.openPositions.delete(tokenAddress);
       this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
       this.consecutiveHardStops++;
       return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.48 STALE_EARLY ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — zero momentum rug`, signals);
+    }
+
+    // NEO v4.52: STALE_EARLYBLEED (50-88s) — fills gap between STALE_EARLY (peak<0.5) and STALE_FAST (90s+)
+    // Targets tokens with tiny peak (0.5-1.5%) bleeding at -13%+ in 50-88s window → heading for HS at -25%
+    // Saves ~12pp per trade vs HS (exit at -14% vs -33% avg). Risk low: peak<1.5% = no real momentum.
+    if (isNeo && holdSec > 50 && holdSec <= 88 && pnlPct < -13 && peakPnl < 1.5) {
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops = 0;
+      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.52 STALE_EARLYBLEED ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — gap fill early exit`, signals);
+    }
+
+    // NEO v4.51: STALE_FAST (90s) — token bleeding slowly with no peak = exit before further deterioration
+    // Gap rugs fire HS at tick 0. STALE_FAST catches slow bleeds: -8%+ at 90s, peak <1.5% = no momentum.
+    // Expected: saves ~20-25% vs HS on ~5-10% of trades in 90-170s window.
+    if (isNeo && holdSec > 90 && holdSec <= 170 && pnlPct < -8 && peakPnl < 1.5) {
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops = 0;
+      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.51 STALE_FAST ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — slow bleed exit`, signals);
+    }
+
+    // NEO v4.50: STALE_EXIT mid-stage (180s) — token crabbing with no momentum = zombie trade
+    // Data: 32 TRACKING_END+SWEEP trades avg 0% P&L in 30-60min. Cut early, save fees.
+    if (isNeo && holdSec > 180 && pnlPct < 5 && peakPnl < 15) {
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops = 0;
+      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.50 STALE_MID ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — crab zombie`, signals);
     }
 
     // NEO v4.48: STALE_EXIT late-stage (650s) — tokens stuck negative after 10min+ = momentum dead
@@ -1408,11 +1465,13 @@ export class TradeExecutor {
 
     // v10.12: Split position pools — 2 NEO + 3 CARTEL + 2 STANDARD = 5 max
     const neoCount = Array.from(this.openPositions.values()).filter(p => p.neoStrategy).length;
+    const velocityCount = Array.from(this.openPositions.values()).filter(p => p.velocityStrategy).length;
     const cartelOpenCount = Array.from(this.openPositions.values()).filter(p => p.cartelStrategy).length;
     const stdCount = Array.from(this.openPositions.values()).filter(p => !p.neoStrategy && !p.earlyStrategy && !p.cartelStrategy).length;
+    const MAX_VELOCITY = 2; // VELOCITY strategy — pure momentum signal
     const MAX_NEO = 1; // v10.14.4: NEO is losing
     const MAX_CARTEL = 1; // v10.14.4: reduced for ELITE
-    const MAX_ELITE = 2; // v10.14.4: ELITE copy-trade strategy
+    const MAX_ELITE = 2; // ELITE v1.4: re-activated with wallet_stats real P&L fix + sb<0.4 filter
     const MAX_STD = 3; // v10.14.4
     const isNeoEntry = mcRatio < 2.0 && elapsedSec <= 75;
     if (isNeoEntry && neoCount >= MAX_NEO) {
@@ -1513,6 +1572,86 @@ export class TradeExecutor {
       }
     }
 
+    // ══════════════════════════════════════════════════════════════
+    // VELOCITY STRATEGY v1.0 — Pure market microstructure entry
+    // Backtest (7 days, 1270 tokens): 52% WR, +41.8% avg gain
+    // Signal: velocity ≥2 buy/s + ratio 1.2-2.0x in first 15-25s
+    // Philosophy: detect organic momentum BEFORE smart money arrives
+    // ══════════════════════════════════════════════════════════════
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 8 && elapsedSec <= 25) {
+      // Compute velocity: total buys / elapsed seconds (high precision at T<30s)
+      const velBuyCount = state?.buyCount || 0;
+      const velBuyVelocity = elapsedSec > 0 ? velBuyCount / elapsedSec : 0; // buys/sec since detection
+
+      // Core filters
+      const velRatio = mcRatio;
+      const velMC = currentMC;
+      const velSellCount = state?.sellCount || 0;
+      const velBuyCountRaw = state?.buyCount || 1;
+      const velSbRatio = velBuyCountRaw > 0 ? velSellCount / velBuyCountRaw : 0;
+
+      // DEBUG: log velocity stats at 8-25s window
+      if (elapsedSec >= 10 && elapsedSec <= 15 && velBuyCount > 10) logger.info({ token: tokenAddress.slice(0,8), vel: velBuyVelocity.toFixed(2), ratio: velRatio.toFixed(2), mc: velMC.toFixed(0), sb: velSbRatio.toFixed(2), bc: velBuyCount }, '🔍 VELOCITY CHECK');
+
+      if (
+        velBuyVelocity >= 2.0 &&           // ≥2 buy/s = organic momentum
+        velRatio >= 1.2 && velRatio < 3.0 && // 1.2-3.0x = moving but not pumped
+        velMC < 10000 &&                   // early enough
+        velSbRatio < 0.5                   // not too much sell pressure
+      ) {
+        // Slot check
+        if (velocityCount >= MAX_VELOCITY) {
+          return this.none(`🚫 VELOCITY pool full (${velocityCount}/${MAX_VELOCITY})`, 'RIDE');
+        }
+
+        // Circuit breaker — shared with STD
+        if (this.circuitBreakerUntil && Date.now() < this.circuitBreakerUntil) {
+          const cbMin = ((this.circuitBreakerUntil - Date.now()) / 60000).toFixed(1);
+          return this.none(`🛑 VELOCITY CB pause ${cbMin}min`, 'RIDE');
+        }
+
+        // FADE block
+        const velWRisk = this.rideCache.get(tokenAddress)?.walletRiskScore ?? 0.5;
+        if (velWRisk >= 0.65) {
+          return this.none(`🚫 VELOCITY: FADE risk=${velWRisk.toFixed(2)}`, 'RIDE');
+        }
+
+        const velPos = 0.30; // Fixed 0.30 SOL — new strategy, conservative start
+
+        this.lastBuyTimestamp = Date.now();
+        this.openPositions.set(tokenAddress, {
+          entryMC: currentMC,
+          entryTime: new Date(),
+          highestMC: currentMC,
+          lowestMCAfterEntry: currentMC,
+          tradeCount: 0,
+          walletAddress,
+          peakTime: Date.now(),
+          hadSignificantPump: false,
+          entryBuyVol: buyVol,
+          entryBuyCount: buyCount,
+          entryBuyerCount: uniqueBuyerCount,
+          entrySellersCount: state?.uniqueSellers?.size || 0,
+          staleTicks: 0,
+          ceilingHigh: currentMC,
+          pumpPeaks: [],
+          pumpState: 'PUMP' as const,
+          cycleHigh: currentMC,
+          dipLow: currentMC,
+          tickMCs: [currentMC],
+          confirmationDone: true,
+          velocityStrategy: true,
+        });
+
+        logger.info({ token: tokenAddress.slice(0,8), vel: velBuyVelocity.toFixed(2), ratio: velRatio.toFixed(2), mc: velMC.toFixed(0), sb: velSbRatio.toFixed(2) }, '⚡ VELOCITY BUY');
+        return {
+          action: 'BUY', confidence: 0.75, percentage: 100, playbook_strategy: 'RIDE',
+          wallet_risk_score: velWRisk, position_sol: velPos,
+          reason: `⚡ VELOCITY v1.0 BUY — ${velBuyVelocity.toFixed(1)}buy/s ${velRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | ${velBuyCount}buys sb=${velSbRatio.toFixed(2)} mc=$${velMC.toFixed(0)} pos=${velPos}SOL`
+        };
+      }
+    }
+
     // Phase 1 (T+0-30s): OBSERVE — accumulate buyer data
     if (elapsedSec < 30) {
       // v10.10j: Prefetch funder during OBSERVE (async, non-blocking)
@@ -1538,7 +1677,8 @@ export class TradeExecutor {
       const eliteBuyers = this.cartelDetector.getEliteBuyers(tokenAddress);
       if (eliteBuyers && eliteBuyers.size >= 1) {
         const sbRatio = sellCount > 0 ? sellCount / Math.max(buyCount, 1) : 0;
-        if (currentMC <= 12000 && mcRatio <= 2.0) { // v1.2: mc raised 6K→12K (ELITE profitable to 12K), sb removed (71% WR even at 0.50+)
+        const eliteSbRatio = buyCount > 0 ? sellCount / buyCount : 0;
+          if (currentMC <= 12000 && mcRatio >= 1.1 && mcRatio <= 2.0 && eliteSbRatio < 0.4) { // v1.4: real P&L fix + sb<0.4 + ratio≥1.1 (no dead tokens)
           const eliteOpenCount = Array.from(this.openPositions.values()).filter(p => p.eliteStrategy).length;
           if (eliteOpenCount >= MAX_ELITE) {
             return this.none(`🚫 ELITE pool full (${eliteOpenCount}/${MAX_ELITE}) — skip`, 'RIDE');
@@ -1568,6 +1708,8 @@ export class TradeExecutor {
         }
       }
     }
+
+
 
     // ══════════════════════════════════════════════════════════════
     if (!this.openPositions.has(tokenAddress) && elapsedSec >= 2 && elapsedSec <= 120) {
@@ -1630,7 +1772,7 @@ export class TradeExecutor {
     // Key insight: Q0 = no edge, Q1+ = 62.5%+ WR with avg +29%
     // Exit: HS -15%, Trail 15% after +30% peak (unchanged, working well)
     // ══════════════════════════════════════════════════════════════
-    if (mcRatio >= 1.0 && mcRatio < 2.0 && elapsedSec >= 15 && elapsedSec <= 120 && !this.openPositions.has(tokenAddress)) { // v4.20: window 15-90s→15-120s (DB: 90-120s slice WR=85% avg=+75%)
+    if (mcRatio >= 1.5 && mcRatio < 2.0 && elapsedSec >= 15 && elapsedSec <= 120 && !this.openPositions.has(tokenAddress)) { // v4.53: ratio 1.3→1.5 (1.3-1.5 bucket = -1.6% avg on 141t, major drag)
       const neoTopH = state?.largestHolderPct || 0;
       const neoDumps = state?.totalDumpSells || 0;
       const neoSellers = state?.uniqueSellers?.size || 0;
@@ -1676,7 +1818,7 @@ export class TradeExecutor {
         
         // Aggressive sizing: Q1+ proven winners, scale up with quality
         // Q1=0.20, Q2=0.35, Q3=0.55, Q4=0.65 (v4.3: more aggressive on high conviction; WR=84.8% supports it)
-        const neoQSizing: Record<number, number> = { 1: 0.10, 2: 0.25, 3: 0.40, 4: 0.50 }; // v10.14.4: aggressive sizing — Q3/Q4 proven +15-27% avg
+        const neoQSizing: Record<number, number> = { 1: 0.10, 2: 0.25, 3: 0.25, 4: 0.50 }; // v4.50: Q3 0.35→0.25 (marginal trades drain fees) — Q4 still 0.50
         const neoPos = neoQSizing[neoQ] || 0.20;
         
         this.lastBuyTimestamp = Date.now();
@@ -1709,7 +1851,7 @@ export class TradeExecutor {
           wallet_risk_score: wRisk,
           position_sol: neoPos,
           quality_score: neoQ,
-          reason: `🧠 NEO v4.32 BUY Q${neoQ} — ${neoBuyers}b ${neoSellers}s sr=${neoSellRatio.toFixed(2)} vel=${neoVelocity} | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)} pos=${neoPos}SOL`
+          reason: `🧠 NEO v4.53 BUY Q${neoQ} — ${neoBuyers}b ${neoSellers}s sr=${neoSellRatio.toFixed(2)} vel=${neoVelocity} | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)} pos=${neoPos}SOL`
         };
       }
     }

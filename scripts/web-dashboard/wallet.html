@@ -34,6 +34,7 @@
     .strat-badge.cartel { background:#a371f722; color:#a371f7; border:1px solid #a371f755; }
     .strat-badge.std { background:#f0883e22; color:#f0883e; border:1px solid #f0883e55; }
     .strat-badge.elite { background:#f1c40f22; color:#f1c40f; border:1px solid #f1c40f55; }
+    .strat-badge.velocity { background:#2ed57322; color:#2ed573; border:1px solid #2ed57355; }
     .fee-card .fee-sub { font-size:11px; color:#484f58; margin-top:4px; }
     .trades-table { width:100%; border-collapse:collapse; font-size:12px; background:#0d1117; border-radius:12px; overflow:hidden; border:1px solid #21262d; }
     .trades-table th { background:#161b22; color:#8b949e; padding:10px 8px; text-align:left; font-weight:600; font-size:10px; text-transform:uppercase; letter-spacing:.5px; border-bottom:1px solid #21262d; position:sticky; top:0; }
@@ -240,6 +241,7 @@
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
           <span style="font-size:16px;font-weight:700;color:#f1c40f">👑 ELITE (v1.2)</span>
           <span class="strat-badge" style="background:rgba(241,196,15,0.15);color:#f1c40f;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">ELITE</span>
+              ${s === 'VELOCITY' ? '<span style="background:rgba(46,213,115,0.15);color:#2ed573;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">⚡VELOCITY</span>' : ''}
         </div>
         <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;text-align:center">
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="elite-count">0</div></div>
