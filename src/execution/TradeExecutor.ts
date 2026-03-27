@@ -477,9 +477,12 @@ export class TradeExecutor {
       const elitePnl = ((mcUsd - elitePos.entryMC) / elitePos.entryMC * 100);
       logger.info({ token: tokenAddress.slice(0,8), trader: trader.slice(0,8), pnl: elitePnl.toFixed(1) },
         '👑 ELITE wallet SELLING — copy-exit triggered');
-      // Trigger evaluation which will handle the sell
-      this.evaluating.delete(tokenAddress);
-      this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
+      // Direct sell — ELITE wallet is exiting, we follow immediately
+      const copyPnl = ((mcUsd - elitePos.entryMC) / elitePos.entryMC * 100);
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'ELITE_COPY', exitMC: mcUsd, exitTime: Date.now(), entryMC: elitePos.entryMC, peakMC: elitePos.highestMC, reentryCount: 0 });
+      this.consecutiveHardStops = 0;
+      this.sell(100, 1.0, 'RIDE', `👑 ELITE_COPY_EXIT — ELITE wallet sold | pnl=${copyPnl.toFixed(1)}% | MC ${mcUsd.toFixed(0)}`, { timing_score: 0, momentum_score: 0, consistency_score: 0, risk_score: 0, wallet_score: 0 } as any);
     }
 
     if (txType === 'sell' && state.recentSells >= cascadeThresh && state.recentBuys === 0
@@ -621,7 +624,7 @@ export class TradeExecutor {
       const rtIsNeo = rtPos.neoStrategy === true;
       const rtIsCartel = rtPos.cartelStrategy === true;
       const rtIsElite = rtPos.eliteStrategy === true;
-      const rtTrailTrigger = rtIsElite ? 10 : (rtIsNeo || rtIsCartel) ? 25 : 50; // ELITE-MIMIC v1.1: 10%
+      const rtTrailTrigger = rtIsElite ? 999 : (rtIsNeo || rtIsCartel) ? 25 : 50; // ELITE: no trail, copy-exit primary
       if (rtPeakPnl >= rtTrailTrigger) {
         if (rtIsElite) {
           rtDropLimit = 0.12; // ELITE-MIMIC v1.1: 12%
@@ -656,7 +659,7 @@ export class TradeExecutor {
       let rtReason = '';
 
       // 0. ELITE-MIMIC: sell-surge early exit (RT)
-      if (rtIsElite && rtPnl < 0 && rtHoldSec >= 3) {
+      if (false && rtIsElite && rtPnl < 0 && rtHoldSec >= 3) { // DISABLED: copy-exit is primary
         const rtState = this.liveState.get(tokenAddress);
         const rtRecentSells = rtState?.recentSells ?? 0;
         const rtRecentBuys = rtState?.recentBuys ?? 0;
@@ -1153,7 +1156,7 @@ export class TradeExecutor {
     const isNeo = pos.neoStrategy === true;
     const isCartel = pos.cartelStrategy === true;
     const isElite = pos.eliteStrategy === true;
-    const trailTrigger = isElite ? 10 : (isNeo || isCartel) ? 25 : 50; // ELITE-MIMIC: 5% trigger (ELITE sell at 2% from peak median) // NEO v4.27: 30219225 (catch 25-30% peakers before HS), CARTEL: 25%, others: 50%
+    const trailTrigger = isElite ? 999 : (isNeo || isCartel) ? 25 : 50; // ELITE-MIMIC: 5% trigger (ELITE sell at 2% from peak median) // NEO v4.27: 30219225 (catch 25-30% peakers before HS), CARTEL: 25%, others: 50%
     let dropLimit = 0; // 0 = no trail, rely on hard stop
     if (peakPnl >= trailTrigger) {
       if (isElite) {
@@ -1257,7 +1260,7 @@ export class TradeExecutor {
     }
 
     // ── ELITE-MIMIC: sell-surge early exit ──
-    if (isElite && pnlPct < 0 && holdSec >= 3) {
+    if (false && isElite && pnlPct < 0 && holdSec >= 3) { // DISABLED: copy-exit is primary
       const recentSells = state?.recentSells ?? 0;
       const recentBuys = state?.recentBuys ?? 0;
       const sbRatio = recentBuys > 0 ? recentSells / recentBuys : 99;
@@ -1296,6 +1299,24 @@ export class TradeExecutor {
       this.closedTokens.set(tokenAddress, { exitType: 'MAX_HOLD', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
       this.consecutiveHardStops = 0; // CB reset
       return this.sell(100, 0.9, 'RIDE', `⏰ v10 MAX HOLD 5min — P&L ${pnlPct.toFixed(1)}%`, signals);
+    }
+
+    // NEO v4.48: STALE_EXIT ultra-early (25s) — token at -16% with zero upward movement = gap rug in progress
+    // Exits at ~-16% vs HS avg -34.6% → saves ~18% per trade. peakPnl < 0.5 = never went up = pure rug signal
+    if (isNeo && holdSec > 25 && holdSec <= 120 && pnlPct < -16 && peakPnl < 0.5) {
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops++;
+      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.48 STALE_EARLY ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — zero momentum rug`, signals);
+    }
+
+    // NEO v4.48: STALE_EXIT late-stage (650s) — tokens stuck negative after 10min+ = momentum dead
+    // TRACKING_END trades: 8t WR=12% avg=-2.6%. Exit at -3%/-8% saves vs -14% avg TRACKING_END
+    if (isNeo && holdSec > 650 && pnlPct < -3 && peakPnl < 12) {
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops = 0; // Not a rug — voluntary smart exit, reset CB
+      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.48 STALE_LATE ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — momentum dead`, signals);
     }
 
     // NEO v4.29: STALE EARLY EXIT — exit losing NEO positions before they hit the sweep
@@ -1648,9 +1669,9 @@ export class TradeExecutor {
         if (neoTopH <= 0.08) neoQ++;                       // No whale concentration
         if (neoSellRatio <= 0.25) neoQ++;                  // Tight sell ratio signal (still 0.25 for Q, gate at 0.35)
         
-        // BLOCK Q0 entries — live data: 3/3 Q0 = HARD_STOP, no edge
-        if (neoQ === 0) {
-          return this.none(`🚫 NEO: Q0 blocked — sr=${neoSellRatio.toFixed(2)} topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)}`, 'RIDE');
+        // BLOCK Q0-Q2 entries — v4.48: Q1=-1.8% avg 261t, Q2=-2.6% avg 209t (Raph approved block 2026-03-26)
+        if (neoQ <= 2) {
+          return this.none(`🚫 NEO v4.48: Q${neoQ} blocked (Q0-Q2 losing) — sr=${neoSellRatio.toFixed(2)} topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)}`, 'RIDE');
         }
         
         // Aggressive sizing: Q1+ proven winners, scale up with quality
