@@ -1432,7 +1432,7 @@ export class TradeExecutor {
     const neoCount = Array.from(this.openPositions.values()).filter(p => p.neoStrategy).length;
     const swarmCount = Array.from(this.openPositions.values()).filter(p => p.swarmStrategy).length;
     const cartelOpenCount = Array.from(this.openPositions.values()).filter(p => p.cartelStrategy).length;
-    const stdCount = Array.from(this.openPositions.values()).filter(p => !p.neoStrategy && !p.earlyStrategy && !p.cartelStrategy).length;
+    const stdCount = Array.from(this.openPositions.values()).filter(p => !p.neoStrategy && !p.earlyStrategy && !p.cartelStrategy && !p.swarmStrategy).length;
     const MAX_NEO = 1; // v10.14.4: NEO is losing
     const MAX_CARTEL = 1; // v10.14.4: reduced for ELITE
     const MAX_SWARM = 2; // SWARM v1.0: organic retail crowd (buyers≥80, avg_buy<$25, ratio 2.0-3.5x)
@@ -1444,11 +1444,9 @@ export class TradeExecutor {
     if (cartelOpenCount >= MAX_CARTEL) {
       return this.none(`🚫 CARTEL pool full (${cartelOpenCount}/${MAX_CARTEL}) — skip`, 'RIDE');
     }
-    if (!isNeoEntry && stdCount >= MAX_STD) {
-      return this.none(`🚫 STD pool full (${stdCount}/${MAX_STD}) — skip`, 'RIDE');
-    }
-    if (this.openPositions.size >= 7) { // v1.0: 3 STD + 1 NEO + 1 CARTEL + 2 SWARM = 7 max
-      return this.none(`🚫 Max total positions (5) — skip`, 'RIDE');
+    // Individual pool guards moved inline to each strategy block for clarity
+    if (this.openPositions.size >= 7) { // 3 STD + 1 NEO + 1 CARTEL + 2 SWARM = 7 max
+      return this.none(`🚫 Max total positions (7) — skip`, 'RIDE');
     }
 
     const uniqueBuyerCount = state?.uniqueBuyers?.size ?? 0;
@@ -1537,20 +1535,7 @@ export class TradeExecutor {
     }
 
 
-    // Phase 1 (T+0-30s): OBSERVE    // Phase 1 (T+0-30s): OBSERVE — accumulate buyer data
-    if (elapsedSec < 30) {
-      // v10.10j: Prefetch funder during OBSERVE (async, non-blocking)
-      if (walletAddress && uniqueBuyerCount >= 5) {
-        this.funderLookup.prefetch(walletAddress);
-      }
-      if (uniqueBuyerCount >= 5) {
-        return this.none(`👁️ v10 OBSERVE (${elapsedSec.toFixed(0)}s/30s) — ${uniqueBuyerCount} buyers, $${buyVol.toFixed(0)} vol, ${mcRatio.toFixed(1)}x`, 'RIDE');
-      }
-      return this.none(`👁️ v10 OBSERVE (${elapsedSec.toFixed(0)}s)`, 'RIDE');
-    }
-
-
-    // ══════════════════════════════════════════════════════════════
+        // ══════════════════════════════════════════════════════════════
     // SWARM STRATEGY v1.0 — Organic retail crowd signal
     // Backtest CARTEL (163t): buyers≥80 + avg_buy<$25 → 8 fusées +198% avg
     // Signal: masse retail (≥80 buyers, avg<$25, ratio 2.0-3.5x, T=20-90s)
@@ -1738,6 +1723,22 @@ export class TradeExecutor {
         };
       }
     }
+
+    // ═══════════════════════════════════════════════════════════
+
+    // Phase 1 (T+0-30s): OBSERVE    // Phase 1 (T+0-30s): OBSERVE — accumulate buyer data
+    if (elapsedSec < 30) {
+      // v10.10j: Prefetch funder during OBSERVE (async, non-blocking)
+      if (walletAddress && uniqueBuyerCount >= 5) {
+        this.funderLookup.prefetch(walletAddress);
+      }
+      if (uniqueBuyerCount >= 5) {
+        return this.none(`👁️ v10 OBSERVE (${elapsedSec.toFixed(0)}s/30s) — ${uniqueBuyerCount} buyers, $${buyVol.toFixed(0)} vol, ${mcRatio.toFixed(1)}x`, 'RIDE');
+      }
+      return this.none(`👁️ v10 OBSERVE (${elapsedSec.toFixed(0)}s)`, 'RIDE');
+    }
+
+
 
     // ══════════════════════════════════════════════════════════════
     // EARLY ENTRY (v10.11) — enter at ratio 1.2x with 50+ buyers
