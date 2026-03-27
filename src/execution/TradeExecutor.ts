@@ -607,10 +607,10 @@ export class TradeExecutor {
       const rtIsNeo = rtPos.neoStrategy === true;
       const rtIsCartel = rtPos.cartelStrategy === true;
       const rtIsElite = rtPos.eliteStrategy === true;
-      const rtTrailTrigger = rtIsElite ? 5 : (rtIsNeo || rtIsCartel) ? 25 : 50; // ELITE-MIMIC: 5% // NEO v4.32: 30→25% to align with secondary trail trigger
+      const rtTrailTrigger = rtIsElite ? 10 : (rtIsNeo || rtIsCartel) ? 25 : 50; // ELITE-MIMIC v1.1: 10%
       if (rtPeakPnl >= rtTrailTrigger) {
         if (rtIsElite) {
-          rtDropLimit = 0.03; // ELITE-MIMIC: 3% from peak
+          rtDropLimit = 0.12; // ELITE-MIMIC v1.1: 12%
         } else if (rtIsCartel) {
           rtDropLimit = 0.20; // CARTEL: 20% trail
         } else if (rtIsNeo) {
@@ -647,7 +647,7 @@ export class TradeExecutor {
         const rtRecentSells = rtState?.recentSells ?? 0;
         const rtRecentBuys = rtState?.recentBuys ?? 0;
         const rtSb = rtRecentBuys > 0 ? rtRecentSells / rtRecentBuys : 0;
-        if (rtSb > 1.5 && rtRecentSells >= 3) {
+        if (rtSb > 1.5 && rtRecentSells >= 5 && rtRecentBuys >= 2) { // v1.1: need min 2 buys
           rtReason = `⚡ RT-ELITE_SURGE sb=${rtSb.toFixed(2)} sells=${rtRecentSells} pnl=${rtPnl.toFixed(1)}% | MC ${mcUsd.toFixed(0)}`;
           rtShouldSell = true;
           this.consecutiveHardStops = 0;
@@ -663,8 +663,8 @@ export class TradeExecutor {
       }
       
       // 1b. ELITE max hold 120s (RT)
-      if (!rtShouldSell && rtIsElite && rtHoldSec > 120) {
-        rtReason = `⚡ RT-ELITE_MAX_HOLD 120s — pnl=${rtPnl.toFixed(1)}% | MC ${mcUsd.toFixed(0)}`;
+      if (!rtShouldSell && rtIsElite && rtHoldSec > 300) { // v1.1: 300s
+        rtReason = `⚡ RT-ELITE_MAX_HOLD 300s — pnl=${rtPnl.toFixed(1)}% | MC ${mcUsd.toFixed(0)}`;
         rtShouldSell = true;
         this.consecutiveHardStops = 0;
       }
@@ -1139,11 +1139,11 @@ export class TradeExecutor {
     const isNeo = pos.neoStrategy === true;
     const isCartel = pos.cartelStrategy === true;
     const isElite = pos.eliteStrategy === true;
-    const trailTrigger = isElite ? 5 : (isNeo || isCartel) ? 25 : 50; // ELITE-MIMIC: 5% trigger (ELITE sell at 2% from peak median) // NEO v4.27: 30219225 (catch 25-30% peakers before HS), CARTEL: 25%, others: 50%
+    const trailTrigger = isElite ? 10 : (isNeo || isCartel) ? 25 : 50; // ELITE-MIMIC: 5% trigger (ELITE sell at 2% from peak median) // NEO v4.27: 30219225 (catch 25-30% peakers before HS), CARTEL: 25%, others: 50%
     let dropLimit = 0; // 0 = no trail, rely on hard stop
     if (peakPnl >= trailTrigger) {
       if (isElite) {
-        dropLimit = 0.03; // ELITE-MIMIC: 3% drop from peak (median ELITE = 2.1%)
+        dropLimit = 0.12; // ELITE-MIMIC v1.1: 12% drop (3% was too tight for pump.fun volatility)
       } else
       if (isCartel) {
         dropLimit = 0.20; // CARTEL: 20% trail (more room for big moves)
@@ -1269,7 +1269,7 @@ export class TradeExecutor {
     }
 
     // ELITE-MIMIC: 120s max hold (ELITE avg hold = 41s win / 33s loss)
-    if (isElite && holdSec > 120) {
+    if (isElite && holdSec > 300) { // v1.1: 300s (120s killed +367% pump that peaked at 196s)
       this.openPositions.delete(tokenAddress);
       this.closedTokens.set(tokenAddress, { exitType: 'ELITE_MAX_HOLD', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
       this.consecutiveHardStops = 0;

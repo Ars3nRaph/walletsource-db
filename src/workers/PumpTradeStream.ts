@@ -110,7 +110,7 @@ export class PumpTradeStream {
     }
 
     // Track expiry (10 min from now, extended if position opens)
-    this.tokenExpiry.set(tokenMint, Date.now() + 10 * 60 * 1000);
+    this.tokenExpiry.set(tokenMint, Date.now() + 3 * 60 * 1000); // v10.14.4: 3min TTL (was 10min) — faster turnover for capacity
 
     if (this.isConnected && this.ws) {
       this.sendSubscribe([tokenMint]);

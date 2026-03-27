@@ -311,6 +311,11 @@ export class ForensicWorker {
       const tokenMint = message.mint;
       const creatorWallet = message.traderPublicKey;
 
+      // v10.14.4: Subscribe to trade stream IMMEDIATELY (before any DB work)
+      // This minimizes the gap between detection and first trade data
+      // Priority=true ensures ELITE-eligible tokens are never dropped at capacity
+      this.pumpTradeStream.subscribe(tokenMint, true);
+
       logger.info({ token: tokenMint, wallet: creatorWallet, signature: message.signature }, 'Token detected (PumpPortal)');
 
       // Ensure wallet exists in database
@@ -394,12 +399,7 @@ export class ForensicWorker {
 
       await this.monitoringRepo.enqueue(tokenMint, creatorWallet, MONITORING_DELAY_MINUTES, trackingMode);
 
-      // v10: ALL tokens get trade stream (entry based on market demand)
-      const isRuggerPriority2 = this.tradeExecutor?.ruggerProfiler?.getProfile(creatorWallet) != null;
-      this.pumpTradeStream.subscribe(tokenMint, isRuggerPriority2);
-      if (isRuggerPriority2) {
-        logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8) }, '🎯 Rugger priority token detected (PumpPortal)');
-      }
+      // v10.14.4: subscribe moved to top of function for zero-delay tracking
 
       // v5.3: Seed baseline for phased entry system
       // v10: ALL tokens evaluated
