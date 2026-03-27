@@ -369,7 +369,7 @@
     <div style="overflow-x:auto;border-radius:12px">
       <table class="trades-table" id="trades-table">
         <thead><tr>
-          <th>#</th><th>Strat</th><th>Ver</th><th>Time</th><th>Token</th><th>Pos</th><th>Entry MC</th><th>MC Δ</th><th>PnL %</th><th>PnL SOL</th><th>Fees</th><th>Balance</th><th>Exit</th><th>📈</th>
+          <th>#</th><th>Strat</th><th>Ver</th><th>Time</th><th>Token</th><th>Pos</th><th>Entry MC</th><th>MC Δ</th><th>PnL %</th><th>PnL SOL</th><th>Impact</th><th>Fees</th><th>Balance</th><th>Exit</th><th>📈</th>
         </tr></thead>
         <tbody id="trades-body"></tbody>
       </table>
@@ -801,6 +801,7 @@ function renderPage() {
         <td class="${cls}" style="font-weight:600">${t.mc_change_pct!==null?(t.mc_change_pct>=0?'+':'')+t.mc_change_pct+'%':'—'}</td>
         <td class="${cls}" style="font-weight:700;font-size:14px">${pnlPct}</td>
         <td class="${cls}" style="font-weight:600;font-size:12px">${pnlSol}</td>
+        <td style="font-size:11px;font-weight:600;color:${t.wallet_impact_pct>0?'#3fb950':t.wallet_impact_pct<0?'#f85149':'#8b949e'}" title="Impact sur le wallet">${t.wallet_impact_pct!=null?((t.wallet_impact_pct>=0?'+':'')+t.wallet_impact_pct.toFixed(2)+'%'):'—'}</td>
         <td style="color:#f0883e;font-size:11px" title="Slip:${(slipB+slipS).toFixed(4)} Pump:${(pumpB+pumpS).toFixed(4)} Jito:${(jitoB+jitoS).toFixed(5)}">${totalF.toFixed(4)}</td>
         <td style="font-size:12px;font-weight:600">${t.balance_after.toFixed(2)}</td>
         <td style="font-size:10px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.exit_reason||''}">${fmtExit(t.exit_reason)}</td>
