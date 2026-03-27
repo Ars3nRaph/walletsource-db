@@ -527,6 +527,20 @@ export class TradeExecutor {
         this.evaluating.delete(tokenAddress);
         this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
       }
+
+      // ELITE-MIMIC: immediate entry when 1+ ELITE wallet buys (T+2-60s, mc<6K)
+      if (!this.openPositions.has(tokenAddress)) {
+        const eliteRtBuyers = this.cartelDetector.getEliteBuyers(tokenAddress);
+        if (eliteRtBuyers && eliteRtBuyers.size >= 1 && rtElapsedSec >= 2 && rtElapsedSec <= 60 && mcUsd <= 6000 && rtRatio <= 2.0) {
+          const eliteCount = Array.from(this.openPositions.values()).filter(p => p.eliteStrategy).length;
+          if (eliteCount < 2 && this.openPositions.size < 7) {
+            logger.info({ token: tokenAddress.slice(0,8), elites: eliteRtBuyers.size, mc: mcUsd.toFixed(0), delay: rtElapsedSec.toFixed(0) },
+              '👑 ELITE wallet detected — RT instant entry trigger');
+            this.evaluating.delete(tokenAddress);
+            this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
+          }
+        }
+      }
       
       // v10.14.2: Helius buyer scan — discover hidden good wallets on ALL promising tokens
       // Trigger: 20+ unique buyers, within 90s of detection (even if CARTEL already detected — may find more wallets)
