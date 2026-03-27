@@ -86,7 +86,7 @@ export class PaperTradeExecutor extends TradeExecutor {
            VALUES ($1, 'SHUTDOWN', 'RIDE', NOW(), $2, $3, 'SHUTDOWN', $4, $5)`,
           [tok, lastMC, pnl,
            'SHUTDOWN: ' + openCount + ' positions saved. Entry MC=' + pos.entryMC.toFixed(0) + ' Peak=' + pos.highestMC.toFixed(0) + ' Last=' + lastMC.toFixed(0),
-           pos.eliteStrategy ? 'ELITE' : pos.neoStrategy ? 'NEO' : pos.cartelStrategy ? 'CARTEL' : 'STD']
+           pos.swarmStrategy ? 'SWARM' : pos.neoStrategy ? 'NEO' : pos.cartelStrategy ? 'CARTEL' : 'STD']
         );
         
         logger.info({
@@ -94,7 +94,7 @@ export class PaperTradeExecutor extends TradeExecutor {
           entryMC: pos.entryMC.toFixed(0),
           lastMC: lastMC.toFixed(0),
           pnl: pnl.toFixed(1) + '%',
-          strategy: pos.eliteStrategy ? 'ELITE' : pos.neoStrategy ? 'NEO' : pos.cartelStrategy ? 'CARTEL' : 'STD'
+          strategy: pos.swarmStrategy ? 'SWARM' : pos.neoStrategy ? 'NEO' : pos.cartelStrategy ? 'CARTEL' : 'STD'
         }, '💾 Position state saved to DB');
       } catch (err: any) {
         logger.error({ token: tok.slice(0, 8), error: err?.message }, 'Failed to save position on shutdown');
@@ -144,7 +144,7 @@ export class PaperTradeExecutor extends TradeExecutor {
         const isNeoRecovery = buyReason.includes('NEO');
         const isCartelRecovery = buyReason.includes('CARTEL');
         const isEliteRecovery = buyReason.includes('ELITE');
-        const isVelocityRecovery = buyReason.includes('VELOCITY');
+        const isSwarmRecovery = buyReason.includes('SWARM');
 
         this.openPositions.set(tok, {
           entryMC,
@@ -169,13 +169,12 @@ export class PaperTradeExecutor extends TradeExecutor {
           confirmationDone: true,
           neoStrategy: isNeoRecovery,
           cartelStrategy: isCartelRecovery,
-          eliteStrategy: isEliteRecovery,
-          velocityStrategy: isVelocityRecovery,
+          swarmStrategy: isSwarmRecovery,
         });
         recovered++;
         logger.info({
           token: tok.slice(0, 8),
-          strategy: isVelocityRecovery ? 'VELOCITY' : isEliteRecovery ? 'ELITE' : isCartelRecovery ? 'CARTEL' : isNeoRecovery ? 'NEO' : 'STD',
+          strategy: isSwarmRecovery ? 'SWARM' : isEliteRecovery ? 'ELITE' : isCartelRecovery ? 'CARTEL' : isNeoRecovery ? 'NEO' : 'STD',
           entryMC: entryMC.toFixed(0),
           peakMC: peakMC.toFixed(0),
         }, '🔄 RECOVERED open position from DB');

@@ -88,9 +88,9 @@ interface OpenPosition {
   postEntrySignal?: 'STRONG' | 'GOOD' | 'WEAK' | 'SELL_DOM';
   postEntryChecked?: boolean;  // true once 60s check done
   addOnBought?: boolean;       // true if add-on position placed on STRONG
-  eliteStrategy?: boolean;     // ELITE copy-trade strategy
+  swarmStrategy?: boolean;     // SWARM: organic retail crowd signal
   eliteWallets?: Set<string>;  // which ELITE wallets triggered this entry
-  velocityStrategy?: boolean;  // VELOCITY: pure market microstructure signal
+
 }
 
 interface LiveTradeState {
@@ -113,8 +113,7 @@ interface LiveTradeState {
   avgBuySize: number;                   // rolling avg buy volume
   avgSellSize: number;                  // rolling avg sell volume
   buyTimestamps: number[];              // for velocity calc (last 10 buy timestamps)
-  velocitySignalAt?: number;             // VELOCITY: timestamp when momentum threshold was last detected
-  firstSeenAt?: number;                  // VELOCITY: when first trade was observed for this token
+
   bondingCurvePct: number;              // % of bonding curve filled
   largestHolderPct: number;             // largest holder % of supply
   recentMCs: number[];                   // v10.9: last 5 MC values for momentum
@@ -396,7 +395,7 @@ export class TradeExecutor {
         rawTrades: [],
         holderBalances: new Map(), totalDumpSells: 0,
         repeatBuyers: new Map(), avgBuySize: 0, avgSellSize: 0,
-        buyTimestamps: [], bondingCurvePct: 0, largestHolderPct: 0, firstSeenAt: Date.now()
+        buyTimestamps: [], bondingCurvePct: 0, largestHolderPct: 0
       };
       this.liveState.set(tokenAddress, state);
       // v10.13: Cap liveState to prevent OOM (evict oldest non-position tokens)
@@ -474,19 +473,7 @@ export class TradeExecutor {
     const cached = this.rideCache.get(tokenAddress);
     const cascadeThresh = cached?.strategy?.cascadeThreshold ?? 5;
     
-    // v10.14.4: ELITE copy-exit — if ELITE wallet sells a token we hold via ELITE strategy, exit immediately
-    const elitePos = this.openPositions.get(tokenAddress);
-    if (txType === 'sell' && elitePos?.eliteStrategy && elitePos.eliteWallets?.has(trader)) {
-      const elitePnl = ((mcUsd - elitePos.entryMC) / elitePos.entryMC * 100);
-      logger.info({ token: tokenAddress.slice(0,8), trader: trader.slice(0,8), pnl: elitePnl.toFixed(1) },
-        '👑 ELITE wallet SELLING — copy-exit triggered');
-      // Direct sell — ELITE wallet is exiting, we follow immediately
-      const copyPnl = ((mcUsd - elitePos.entryMC) / elitePos.entryMC * 100);
-      this.openPositions.delete(tokenAddress);
-      this.closedTokens.set(tokenAddress, { exitType: 'ELITE_COPY', exitMC: mcUsd, exitTime: Date.now(), entryMC: elitePos.entryMC, peakMC: elitePos.highestMC, reentryCount: 0 });
-      this.consecutiveHardStops = 0;
-      this.sell(100, 1.0, 'RIDE', `👑 ELITE_COPY_EXIT — ELITE wallet sold | pnl=${copyPnl.toFixed(1)}% | MC ${mcUsd.toFixed(0)}`, { timing_score: 0, momentum_score: 0, consistency_score: 0, risk_score: 0, wallet_score: 0 } as any);
-    }
+    
 
     if (txType === 'sell' && state.recentSells >= cascadeThresh && state.recentBuys === 0
         && state?.sellVol > state?.buyVol * 0.5) {
@@ -534,33 +521,9 @@ export class TradeExecutor {
         this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
       }
 
-      // ⚡ VELOCITY RT: flag token for immediate evaluation when momentum threshold met
-      // Use state.firstSeenAt for elapsed (rtDetectedAt is often new Date() when rideCache not yet built)
-      const velElapsedSec = state.firstSeenAt ? (Date.now() - state.firstSeenAt) / 1000 : 0;
-      if (txType === 'buy' && !this.openPositions.has(tokenAddress) && velElapsedSec >= 8 && velElapsedSec <= 25) {
-        const velVelocity = velElapsedSec > 0 ? rtBuyCount / velElapsedSec : 0;
-        const velSbRatio = rtBuyCount > 0 ? rtSellCount / rtBuyCount : 0;
-        if (velVelocity >= 2.0 && rtRatio >= 1.2 && rtRatio < 3.0 && mcUsd < 10000 && velSbRatio < 0.5) {
-          // Mark this token as having velocity signal — bypasses buyer count gate in maybeEvaluateLive
-          state.velocitySignalAt = Date.now();
-          this.evaluating.delete(tokenAddress);
-          this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
-        }
-      }
 
-      // ELITE-MIMIC: immediate entry when 1+ ELITE wallet buys (T+2-60s, mc<6K)
-      if (!this.openPositions.has(tokenAddress)) {
-        const eliteRtBuyers = this.cartelDetector.getEliteBuyers(tokenAddress);
-        if (eliteRtBuyers && eliteRtBuyers.size >= 1 && rtElapsedSec >= 2 && rtElapsedSec <= 60 && mcUsd <= 6000 && rtRatio <= 2.0) {
-          const eliteCount = Array.from(this.openPositions.values()).filter(p => p.eliteStrategy).length;
-          if (eliteCount < 2 && this.openPositions.size < 7) { // ELITE v1.4 re-enabled
-            logger.info({ token: tokenAddress.slice(0,8), elites: eliteRtBuyers.size, mc: mcUsd.toFixed(0), delay: rtElapsedSec.toFixed(0) },
-              '👑 ELITE wallet detected — RT instant entry trigger');
-            this.evaluating.delete(tokenAddress);
-            this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
-          }
-        }
-      }
+
+      // ELITE RT check removed — replaced by SWARM (poll-based, T=20-90s)
       
       // v10.14.2: Helius buyer scan — discover hidden good wallets on ALL promising tokens
       // Trigger: 20+ unique buyers, within 90s of detection (even if CARTEL already detected — may find more wallets)
@@ -640,12 +603,11 @@ export class TradeExecutor {
       let rtDropLimit = 0;
       const rtIsNeo = rtPos.neoStrategy === true;
       const rtIsCartel = rtPos.cartelStrategy === true;
-      const rtIsElite = rtPos.eliteStrategy === true;
-      const rtIsVelocity = rtPos.velocityStrategy === true;
-      const rtTrailTrigger = rtIsElite ? 30 : rtIsVelocity ? 40 : (rtIsNeo || rtIsCartel) ? 25 : 50; // VELOCITY: trail from +40% (earlier than STD 50%)
+      const rtIsSwarm = rtPos.swarmStrategy === true;
+      const rtTrailTrigger = rtIsSwarm ? 40 : (rtIsNeo || rtIsCartel) ? 25 : 50; // SWARM: trail from +40%, NEO/CARTEL: 25%, STD: 50%
       if (rtPeakPnl >= rtTrailTrigger) {
-        if (rtIsElite) {
-          rtDropLimit = 0.08; // ELITE v1.3: tight 8% trail from +30%
+        if (rtIsSwarm) {
+          rtDropLimit = 0.20; // SWARM: 20% trail drop
         } else if (rtIsCartel) {
           rtDropLimit = 0.20; // CARTEL: 20% trail
         } else if (rtIsNeo) {
@@ -677,7 +639,7 @@ export class TradeExecutor {
       let rtReason = '';
 
       // 0. ELITE-MIMIC: sell-surge early exit (RT)
-      if (false && rtIsElite && rtPnl < 0 && rtHoldSec >= 3) { // DISABLED: copy-exit is primary
+      if (false) { // ELITE copy-exit removed
         const rtState = this.liveState.get(tokenAddress);
         const rtRecentSells = rtState?.recentSells ?? 0;
         const rtRecentBuys = rtState?.recentBuys ?? 0;
@@ -698,14 +660,14 @@ export class TradeExecutor {
       }
       
       // 1b. ELITE max hold 120s (RT)
-      if (!rtShouldSell && rtIsElite && rtHoldSec > 300) { // v1.1: 300s
+      if (!rtShouldSell && rtIsSwarm && rtHoldSec > 300) { // SWARM: max 300s hold
         rtReason = `⚡ RT-ELITE_MAX_HOLD 300s — pnl=${rtPnl.toFixed(1)}% | MC ${mcUsd.toFixed(0)}`;
         rtShouldSell = true;
         this.consecutiveHardStops = 0;
       }
 
       // 2. Hard stop (NEO: -15%, others: -20%)
-      const rtHsThreshold = rtPos.eliteStrategy ? -20 : rtPos.neoStrategy ? -25 : -20; // VELOCITY uses same -20% as STD // NEO v4.15: -20% (raised from -15%)
+      const rtHsThreshold = rtPos.swarmStrategy ? -20 : rtPos.neoStrategy ? -25 : -20; // SWARM -20%, NEO -25%, STD -20%
       if (!rtShouldSell && rtPnl <= rtHsThreshold) {
         rtReason = `⚡ RT-HARD_STOP — P&L ${rtPnl.toFixed(1)}% (threshold ${rtHsThreshold}%) | MC ${mcUsd.toFixed(0)}`;
         this.consecutiveHardStops++;
@@ -785,10 +747,8 @@ export class TradeExecutor {
       // But re-evaluate after 5s in case buyer count changed
       const state = this.liveState.get(tokenAddress);
       const buyers = state?.uniqueBuyers?.size ?? 0;
-      // VELOCITY bypass: if velocity signal recently set (within 5s), allow evaluation even with few buyers
-      const hasVelSignal = state?.velocitySignalAt && (Date.now() - (state.velocitySignalAt as number) < 5000);
-      // Bypass buyer filter for qualified rugger wallets or velocity signal
-      if (buyers < 15 && !hasVelSignal) {
+      // Bypass buyer filter for qualified rugger wallets
+      if (buyers < 15) {
         const walletAddr = cached?.walletAddress || '';
         if (!walletAddr || !this.ruggerProfiler.getProfile(walletAddr)) {
           return; // v10: skip until meaningful buyer count (unless rugger wallet or velocity)
@@ -903,15 +863,9 @@ export class TradeExecutor {
         };
         this.rideCache.set(tokenAddress, cached);
         if (!cached.isRide) {
-          // VELOCITY bypass: if velocity signal active, proceed to evaluateEntry
-          const velState3 = this.liveState.get(tokenAddress);
-          const velActive = velState3?.velocitySignalAt && (Date.now() - (velState3.velocitySignalAt as number) < 10000);
-          if (!velActive) return;
-          // Fall through to evaluateEntry for VELOCITY strategy
-          logger.info({ token: tokenAddress.slice(0,8) }, '⚡ VELOCITY — bypassing isRide gate');
-        } else {
-          logger.info({ token: tokenAddress.slice(0, 8), mc: currentMC.toFixed(0), ev: strategy!.evPerTrade.toFixed(1) + '%' }, '🎯 RIDE token — per-wallet strategy active');
+          return;
         }
+        logger.info({ token: tokenAddress.slice(0, 8), mc: currentMC.toFixed(0), ev: strategy!.evPerTrade.toFixed(1) + '%' }, '🎯 RIDE token — per-wallet strategy active');
       }
 
       const elapsedMs = Date.now() - cached.detectedAt.getTime();
@@ -1183,12 +1137,12 @@ export class TradeExecutor {
 
     const isNeo = pos.neoStrategy === true;
     const isCartel = pos.cartelStrategy === true;
-    const isElite = pos.eliteStrategy === true;
-    const trailTrigger = isElite ? 30 : (isNeo || isCartel) ? 25 : 50; // ELITE v1.3: trail from +30% // NEO v4.27: 25%, CARTEL: 25%, others: 50%
+    const isSwarm = pos.swarmStrategy === true;
+    const trailTrigger = isSwarm ? 40 : (isNeo || isCartel) ? 25 : 50; // SWARM: trail from +40% // NEO/CARTEL: 25%, STD: 50%
     let dropLimit = 0; // 0 = no trail, rely on hard stop
     if (peakPnl >= trailTrigger) {
-      if (isElite) {
-        dropLimit = 0.08; // ELITE v1.3: 8% trail (tight but not 3% catastrophe)
+      if (isSwarm) {
+        dropLimit = 0.20; // SWARM: 20% trail drop
       } else
       if (isCartel) {
         dropLimit = 0.20; // CARTEL: 20% trail (more room for big moves)
@@ -1288,7 +1242,7 @@ export class TradeExecutor {
     }
 
     // ── ELITE-MIMIC: sell-surge early exit ──
-    if (false && isElite && pnlPct < 0 && holdSec >= 3) { // DISABLED: copy-exit is primary
+    if (false) { // copy-exit removed
       const recentSells = state?.recentSells ?? 0;
       const recentBuys = state?.recentBuys ?? 0;
       const sbRatio = recentBuys > 0 ? recentSells / recentBuys : 99;
@@ -1300,7 +1254,7 @@ export class TradeExecutor {
       }
     }
 
-        const hsThreshold = pos.eliteStrategy ? -20 : pos.neoStrategy ? -25 : -20; // ELITE v1.3: -20% (was -14%) // NEO v4.15: -20%
+        const hsThreshold = pos.swarmStrategy ? -20 : pos.neoStrategy ? -25 : -20; // SWARM -20% // NEO -25%
     if (pnlPct <= hsThreshold) {
       this.openPositions.delete(tokenAddress);
       this.closedTokens.set(tokenAddress, { exitType: 'HARD_STOP', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
@@ -1309,12 +1263,12 @@ export class TradeExecutor {
         this.circuitBreakerUntil = Date.now() + this.CB_PAUSE_MS;
         console.log(`🛑 CIRCUIT BREAKER — ${this.consecutiveHardStops} HS consécutifs → pause ${this.CB_PAUSE_MS/60000}min`);
       }
-      const hsLabel = pos.eliteStrategy ? '👑 ELITE' : pos.cartelStrategy ? '🤝 CARTEL' : pos.neoStrategy ? '🧠 NEO' : '🛑 v10';
+      const hsLabel = pos.swarmStrategy ? '🐝 SWARM' : pos.cartelStrategy ? '🤝 CARTEL' : pos.neoStrategy ? '🧠 NEO' : '🛑 v10';
       return this.sell(100, 1.0, 'RIDE', `${hsLabel} HARD_STOP ${pnlPct.toFixed(1)}% | peak +${peakPnl.toFixed(0)}% (threshold ${hsThreshold}%) | MC ${currentMC.toFixed(0)}`, signals);
     }
 
     // ELITE-MIMIC: 120s max hold (ELITE avg hold = 41s win / 33s loss)
-    if (isElite && holdSec > 300) { // v1.1: 300s (120s killed +367% pump that peaked at 196s)
+    if (isSwarm && holdSec > 300) { // SWARM: max 300s hold
       this.openPositions.delete(tokenAddress);
       this.closedTokens.set(tokenAddress, { exitType: 'ELITE_MAX_HOLD', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
       this.consecutiveHardStops = 0;
@@ -1327,6 +1281,16 @@ export class TradeExecutor {
       this.closedTokens.set(tokenAddress, { exitType: 'MAX_HOLD', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
       this.consecutiveHardStops = 0; // CB reset
       return this.sell(100, 0.9, 'RIDE', `⏰ v10 MAX HOLD 5min — P&L ${pnlPct.toFixed(1)}%`, signals);
+    }
+
+    // NEO v4.54: STALE_MICRO (30-50s) — token never moved up, already -10%+ = slow gap rug, exit early
+    // Gap: STALE_EARLY covers pnl<-13%, MICRO fills -10 to -13% window in 30-50s. Peak<0.5% = no upward signal.
+    // Saves ~15pp per trade vs HS avg (-10% vs -35% avg HS). 16t in -10 to -5% RT-TRAIL range could be caught.
+    if (isNeo && holdSec > 30 && holdSec <= 50 && pnlPct < -10 && peakPnl < 0.5) {
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops++;
+      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.54 STALE_MICRO ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — slow gap rug`, signals);
     }
 
     // NEO v4.48: STALE_EXIT ultra-early (25s) — token at -16% with zero upward movement = gap rug in progress
@@ -1358,9 +1322,10 @@ export class TradeExecutor {
       return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.51 STALE_FAST ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — slow bleed exit`, signals);
     }
 
-    // NEO v4.50: STALE_EXIT mid-stage (180s) — token crabbing with no momentum = zombie trade
-    // Data: 32 TRACKING_END+SWEEP trades avg 0% P&L in 30-60min. Cut early, save fees.
-    if (isNeo && holdSec > 180 && pnlPct < 5 && peakPnl < 15) {
+    // NEO v4.54: STALE_MID (150s) — token crabbing with no momentum = zombie trade [tightened: 180→150s, pnl<5→3%, peak<15→12%]
+    // Data: 90 marginal trades (-10% to +10%) deployed 18 SOL for +0.29 SOL net. Cut crab zombies earlier.
+    // v4.54: earlier exit (150s vs 180s) + tighter thresholds. Saves ~8% per trade vs letting run to 0%.
+    if (isNeo && holdSec > 150 && pnlPct < 3 && peakPnl < 12) {
       this.openPositions.delete(tokenAddress);
       this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
       this.consecutiveHardStops = 0;
@@ -1465,13 +1430,12 @@ export class TradeExecutor {
 
     // v10.12: Split position pools — 2 NEO + 3 CARTEL + 2 STANDARD = 5 max
     const neoCount = Array.from(this.openPositions.values()).filter(p => p.neoStrategy).length;
-    const velocityCount = Array.from(this.openPositions.values()).filter(p => p.velocityStrategy).length;
+    const swarmCount = Array.from(this.openPositions.values()).filter(p => p.swarmStrategy).length;
     const cartelOpenCount = Array.from(this.openPositions.values()).filter(p => p.cartelStrategy).length;
     const stdCount = Array.from(this.openPositions.values()).filter(p => !p.neoStrategy && !p.earlyStrategy && !p.cartelStrategy).length;
-    const MAX_VELOCITY = 2; // VELOCITY strategy — pure momentum signal
     const MAX_NEO = 1; // v10.14.4: NEO is losing
     const MAX_CARTEL = 1; // v10.14.4: reduced for ELITE
-    const MAX_ELITE = 2; // ELITE v1.4: re-activated with wallet_stats real P&L fix + sb<0.4 filter
+    const MAX_SWARM = 2; // SWARM v1.0: organic retail crowd (buyers≥80, avg_buy<$25, ratio 2.0-3.5x)
     const MAX_STD = 3; // v10.14.4
     const isNeoEntry = mcRatio < 2.0 && elapsedSec <= 75;
     if (isNeoEntry && neoCount >= MAX_NEO) {
@@ -1483,7 +1447,7 @@ export class TradeExecutor {
     if (!isNeoEntry && stdCount >= MAX_STD) {
       return this.none(`🚫 STD pool full (${stdCount}/${MAX_STD}) — skip`, 'RIDE');
     }
-    if (this.openPositions.size >= 7) { // v10.14.4: 3 STD + 1 NEO + 1 CARTEL + 2 ELITE
+    if (this.openPositions.size >= 7) { // v1.0: 3 STD + 1 NEO + 1 CARTEL + 2 SWARM = 7 max
       return this.none(`🚫 Max total positions (5) — skip`, 'RIDE');
     }
 
@@ -1572,87 +1536,8 @@ export class TradeExecutor {
       }
     }
 
-    // ══════════════════════════════════════════════════════════════
-    // VELOCITY STRATEGY v1.0 — Pure market microstructure entry
-    // Backtest (7 days, 1270 tokens): 52% WR, +41.8% avg gain
-    // Signal: velocity ≥2 buy/s + ratio 1.2-2.0x in first 15-25s
-    // Philosophy: detect organic momentum BEFORE smart money arrives
-    // ══════════════════════════════════════════════════════════════
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 8 && elapsedSec <= 25) {
-      // Compute velocity: total buys / elapsed seconds (high precision at T<30s)
-      const velBuyCount = state?.buyCount || 0;
-      const velBuyVelocity = elapsedSec > 0 ? velBuyCount / elapsedSec : 0; // buys/sec since detection
 
-      // Core filters
-      const velRatio = mcRatio;
-      const velMC = currentMC;
-      const velSellCount = state?.sellCount || 0;
-      const velBuyCountRaw = state?.buyCount || 1;
-      const velSbRatio = velBuyCountRaw > 0 ? velSellCount / velBuyCountRaw : 0;
-
-      // DEBUG: log velocity stats at 8-25s window
-      if (elapsedSec >= 10 && elapsedSec <= 15 && velBuyCount > 10) logger.info({ token: tokenAddress.slice(0,8), vel: velBuyVelocity.toFixed(2), ratio: velRatio.toFixed(2), mc: velMC.toFixed(0), sb: velSbRatio.toFixed(2), bc: velBuyCount }, '🔍 VELOCITY CHECK');
-
-      if (
-        velBuyVelocity >= 2.0 &&           // ≥2 buy/s = organic momentum
-        velRatio >= 1.2 && velRatio < 3.0 && // 1.2-3.0x = moving but not pumped
-        velMC < 10000 &&                   // early enough
-        velSbRatio < 0.5                   // not too much sell pressure
-      ) {
-        // Slot check
-        if (velocityCount >= MAX_VELOCITY) {
-          return this.none(`🚫 VELOCITY pool full (${velocityCount}/${MAX_VELOCITY})`, 'RIDE');
-        }
-
-        // Circuit breaker — shared with STD
-        if (this.circuitBreakerUntil && Date.now() < this.circuitBreakerUntil) {
-          const cbMin = ((this.circuitBreakerUntil - Date.now()) / 60000).toFixed(1);
-          return this.none(`🛑 VELOCITY CB pause ${cbMin}min`, 'RIDE');
-        }
-
-        // FADE block
-        const velWRisk = this.rideCache.get(tokenAddress)?.walletRiskScore ?? 0.5;
-        if (velWRisk >= 0.65) {
-          return this.none(`🚫 VELOCITY: FADE risk=${velWRisk.toFixed(2)}`, 'RIDE');
-        }
-
-        const velPos = 0.30; // Fixed 0.30 SOL — new strategy, conservative start
-
-        this.lastBuyTimestamp = Date.now();
-        this.openPositions.set(tokenAddress, {
-          entryMC: currentMC,
-          entryTime: new Date(),
-          highestMC: currentMC,
-          lowestMCAfterEntry: currentMC,
-          tradeCount: 0,
-          walletAddress,
-          peakTime: Date.now(),
-          hadSignificantPump: false,
-          entryBuyVol: buyVol,
-          entryBuyCount: buyCount,
-          entryBuyerCount: uniqueBuyerCount,
-          entrySellersCount: state?.uniqueSellers?.size || 0,
-          staleTicks: 0,
-          ceilingHigh: currentMC,
-          pumpPeaks: [],
-          pumpState: 'PUMP' as const,
-          cycleHigh: currentMC,
-          dipLow: currentMC,
-          tickMCs: [currentMC],
-          confirmationDone: true,
-          velocityStrategy: true,
-        });
-
-        logger.info({ token: tokenAddress.slice(0,8), vel: velBuyVelocity.toFixed(2), ratio: velRatio.toFixed(2), mc: velMC.toFixed(0), sb: velSbRatio.toFixed(2) }, '⚡ VELOCITY BUY');
-        return {
-          action: 'BUY', confidence: 0.75, percentage: 100, playbook_strategy: 'RIDE',
-          wallet_risk_score: velWRisk, position_sol: velPos,
-          reason: `⚡ VELOCITY v1.0 BUY — ${velBuyVelocity.toFixed(1)}buy/s ${velRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | ${velBuyCount}buys sb=${velSbRatio.toFixed(2)} mc=$${velMC.toFixed(0)} pos=${velPos}SOL`
-        };
-      }
-    }
-
-    // Phase 1 (T+0-30s): OBSERVE — accumulate buyer data
+    // Phase 1 (T+0-30s): OBSERVE    // Phase 1 (T+0-30s): OBSERVE — accumulate buyer data
     if (elapsedSec < 30) {
       // v10.10j: Prefetch funder during OBSERVE (async, non-blocking)
       if (walletAddress && uniqueBuyerCount >= 5) {
@@ -1666,46 +1551,44 @@ export class TradeExecutor {
 
 
     // ══════════════════════════════════════════════════════════════
+    // SWARM STRATEGY v1.0 — Organic retail crowd signal
+    // Backtest CARTEL (163t): buyers≥80 + avg_buy<$25 → 8 fusées +198% avg
+    // Signal: masse retail (≥80 buyers, avg<$25, ratio 2.0-3.5x, T=20-90s)
+    // Philosophy: not smart money, it's the crowd that makes fusées
     // ══════════════════════════════════════════════════════════════
-    // CARTEL STRATEGY v1.0 — Good wallet convergence signal
-    // Backtest: 2+ good wallets → 72% WR, +51% avg, wallet +233%
-    // Sizing: 2→0.50, 3→0.60, 4+→0.70 SOL
-    // ══════════════════════════════════════════════════════════════
-    // ELITE COPY-TRADE STRATEGY v1.0
-    // ══════════════════════════════════════════════════════════════
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 5 && elapsedSec <= 60) {
-      const eliteBuyers = this.cartelDetector.getEliteBuyers(tokenAddress);
-      if (eliteBuyers && eliteBuyers.size >= 1) {
-        const sbRatio = sellCount > 0 ? sellCount / Math.max(buyCount, 1) : 0;
-        const eliteSbRatio = buyCount > 0 ? sellCount / buyCount : 0;
-          if (currentMC <= 12000 && mcRatio >= 1.1 && mcRatio <= 2.0 && eliteSbRatio < 0.4) { // v1.4: real P&L fix + sb<0.4 + ratio≥1.1 (no dead tokens)
-          const eliteOpenCount = Array.from(this.openPositions.values()).filter(p => p.eliteStrategy).length;
-          if (eliteOpenCount >= MAX_ELITE) {
-            return this.none(`🚫 ELITE pool full (${eliteOpenCount}/${MAX_ELITE}) — skip`, 'RIDE');
-          }
-          if (this.openPositions.size >= 7) {
-            return this.none('🚫 Total pool full — skip', 'RIDE');
-          }
-          const wRisk = this.rideCache.get(tokenAddress)?.walletRiskScore ?? 0.5;
-          if (wRisk >= 0.65) {
-            return this.none(`🚫 ELITE: FADE risk=${wRisk.toFixed(2)}`, 'RIDE');
-          }
-          const elitePos = 0.25;
-          this.openPositions.set(tokenAddress, {
-            entryMC: currentMC, entryTime: new Date(), highestMC: currentMC, lowestMCAfterEntry: currentMC,
-            tradeCount: 100, walletAddress: '', peakTime: Date.now(), hadSignificantPump: false,
-            entryBuyVol: buyVol, entryBuyCount: buyCount, entryBuyerCount: uniqueBuyerCount,
-            entrySellersCount: sellCount, staleTicks: 0, ceilingHigh: currentMC,
-            pumpPeaks: [], pumpState: 'PUMP', cycleHigh: currentMC, dipLow: currentMC,
-            tickMCs: [currentMC], confirmationDone: false,
-            eliteStrategy: true, eliteWallets: new Set(eliteBuyers),
-          });
-          return {
-            action: 'BUY', confidence: 0.80, percentage: 100, playbook_strategy: 'RIDE',
-            wallet_risk_score: wRisk, position_sol: elitePos, quality_score: eliteBuyers.size,
-            reason: `👑 ELITE v1.0 BUY — ${eliteBuyers.size} elite wallets | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | ${uniqueBuyerCount}b sb=${sbRatio.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${elitePos}SOL`
-          };
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 90) {
+      const swarmSbRatio = buyCount > 0 ? sellCount / buyCount : 0;
+      // avgBuyUsd = buyVol (USD) / buyCount
+      const swarmAvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
+      if (
+        uniqueBuyerCount >= 80 &&          // masse retail
+        swarmAvgBuy < 25 &&               // petits acheteurs ($25 avg = retail, not whale)
+        mcRatio >= 2.0 && mcRatio <= 3.5 && // pompe confirmée mais pas surachetée
+        currentMC < 12000 &&              // encore tôt
+        swarmSbRatio < 0.4                // peu de pression vendeuse
+      ) {
+        if (swarmCount >= MAX_SWARM) {
+          return this.none(`🚫 SWARM pool full (${swarmCount}/${MAX_SWARM})`, 'RIDE');
         }
+        if (this.openPositions.size >= 7) {
+          return this.none('🚫 Total pool full — skip', 'RIDE');
+        }
+        const swarmPos = 0.35; // slightly larger than STD min — crowd signal = higher conviction
+        this.lastBuyTimestamp = Date.now();
+        this.openPositions.set(tokenAddress, {
+          entryMC: currentMC, entryTime: new Date(), highestMC: currentMC, lowestMCAfterEntry: currentMC,
+          tradeCount: 0, walletAddress, peakTime: Date.now(), hadSignificantPump: false,
+          entryBuyVol: buyVol, entryBuyCount: buyCount, entryBuyerCount: uniqueBuyerCount,
+          entrySellersCount: sellCount, staleTicks: 0, ceilingHigh: currentMC,
+          pumpPeaks: [], pumpState: 'PUMP' as const, cycleHigh: currentMC, dipLow: currentMC,
+          tickMCs: [currentMC], confirmationDone: true, swarmStrategy: true,
+        });
+        logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: swarmAvgBuy.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0) }, '🐝 SWARM BUY');
+        return {
+          action: 'BUY', confidence: 0.82, percentage: 100, playbook_strategy: 'RIDE',
+          wallet_risk_score: 0.3, position_sol: swarmPos,
+          reason: `🐝 SWARM v1.0 BUY — ${uniqueBuyerCount}b avg=$${swarmAvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | sb=${swarmSbRatio.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${swarmPos}SOL`
+        };
       }
     }
 
