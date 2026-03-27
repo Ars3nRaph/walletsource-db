@@ -1809,7 +1809,7 @@ export class TradeExecutor {
     }
 
     // Phase 2 (T+30-90s): EVALUATE — standard entry (fallback if early entry didn't trigger)
-    const MIN_BUYERS = 70; // v10.10k: lowered from 80 to collect data on 70-79 range // v10.10g: backtest 1711t — b>=80 net +2.4%, wallet 13.43
+    const MIN_BUYERS = 75; // v10.14.4: raised from 70 — reduce frequency, filter borderline tokens
     const MIN_VOL = 1000;
 
     // Minimum MC ratio 2.0x for standard entry
