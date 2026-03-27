@@ -1628,7 +1628,7 @@ export class TradeExecutor {
     // Key insight: Q0 = no edge, Q1+ = 62.5%+ WR with avg +29%
     // Exit: HS -15%, Trail 15% after +30% peak (unchanged, working well)
     // ══════════════════════════════════════════════════════════════
-    if (mcRatio >= 1.5 && mcRatio < 2.0 && elapsedSec >= 15 && elapsedSec <= 120 && !this.openPositions.has(tokenAddress)) { // v4.53: ratio 1.3→1.5 (1.3-1.5 bucket = -1.6% avg on 141t, major drag)
+    if (mcRatio >= 1.5 && mcRatio < 2.0 && elapsedSec >= 15 && elapsedSec <= 60 && !this.openPositions.has(tokenAddress)) { // v4.56: window 120s→60s (60-120s = -2.5% avg 91t drag; 30-60s = +3.8% avg. Score 544→794 projected)
       const neoTopH = state?.largestHolderPct || 0;
       const neoDumps = state?.totalDumpSells || 0;
       const neoSellers = state?.uniqueSellers?.size || 0;
@@ -1707,7 +1707,7 @@ export class TradeExecutor {
           wallet_risk_score: wRisk,
           position_sol: neoPos,
           quality_score: neoQ,
-          reason: `🧠 NEO v4.53 BUY Q${neoQ} — ${neoBuyers}b ${neoSellers}s sr=${neoSellRatio.toFixed(2)} vel=${neoVelocity} | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)} pos=${neoPos}SOL`
+          reason: `🧠 NEO v4.56 BUY Q${neoQ} — ${neoBuyers}b ${neoSellers}s sr=${neoSellRatio.toFixed(2)} vel=${neoVelocity} | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)} pos=${neoPos}SOL`
         };
       }
     }
@@ -1872,8 +1872,8 @@ export class TradeExecutor {
     // v10.10g: ENTRY FILTER — backtest 1711t: b>=80 + d<30 = wallet 13.43 (+34%)
     // v10.11: Tightened dumps gate 30→21 (paper: dumps>20 = 131t WR 35% avg -3.5% vs dumps 13-20 = 29t WR 66% avg +6.6%)
     const totalDumps = state?.totalDumpSells || 0;
-    if (totalDumps >= 30) {
-      return this.none(`🚫 v10.11: ${totalDumps} dumps >= 30 — distribution, skip`, 'RIDE');
+    if (totalDumps >= 25) {
+      return this.none(`🚫 v10.14.4: ${totalDumps} dumps >= 25 — distribution, skip`, 'RIDE');
     }
 
     // v10.10i: avgBuy filter — high avg buy = whale/insider manipulation, not organic demand
