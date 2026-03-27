@@ -9,6 +9,8 @@ import { HeliusBuyerScanner } from './api/HeliusBuyerScanner.js';
 import { HeliusTradeStream } from './workers/HeliusTradeStream.js';
 import { creditTracker } from './api/HeliusCreditTracker.js';
 import type { Pool } from 'pg';
+import { WalletStatsWorker } from './workers/WalletStatsWorker.js';
+import { WalletWatcher } from './workers/WalletWatcher.js';
 
 // Load environment variables
 dotenv.config();
@@ -25,6 +27,8 @@ class WalletSourceDB {
   private cartelDetectionInterval: NodeJS.Timeout | null = null;
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private isShuttingDown = false;
+  private walletStatsWorker: WalletStatsWorker | null = null;
+  private walletWatcher: WalletWatcher | null = null;
 
   async start(): Promise<void> {
     try {
@@ -63,6 +67,18 @@ class WalletSourceDB {
 
       // Log credit budget
       logger.info({ dailyLimit: creditTracker.remaining() }, '💰 Helius credit budget');
+
+      // 4d. Start WalletStatsWorker (persistent wallet performance accumulator)
+      this.walletStatsWorker = new WalletStatsWorker(this.pool!);
+      await this.walletStatsWorker.start();
+      logger.info('WalletStatsWorker started');
+
+      // 4e. Start WalletWatcher (real-time ELITE/GOOD wallet monitoring)
+      this.walletWatcher = new WalletWatcher(this.pool!);
+      const cartelDet = te.cartelDetector;
+      this.walletWatcher.setCallback(cartelDet);
+      await this.walletWatcher.start();
+      logger.info('WalletWatcher started');
 
       // Wire PumpTradeStream → TradeExecutor for live tick-level signals
       if (this.forensicWorker && this.tokenTracker) {
@@ -136,6 +152,18 @@ class WalletSourceDB {
           await te.gracefulShutdown();
           logger.info('💾 Open positions saved to DB');
         }
+      }
+
+      // 2.7. Stop WalletWatcher
+      if (this.walletWatcher) {
+        await this.walletWatcher.stop();
+        logger.info('WalletWatcher stopped');
+      }
+
+      // 2.8. Stop WalletStatsWorker
+      if (this.walletStatsWorker) {
+        await this.walletStatsWorker.stop();
+        logger.info('WalletStatsWorker stopped');
       }
 
       // 3. Stop TokenTracker

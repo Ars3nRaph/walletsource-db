@@ -16,6 +16,7 @@ import { logger } from '../utils/logger.js';
 
 export interface CartelSignal {
   goodWalletCount: number;
+  eliteWalletCount: number;   // v1.2: wallets with WR >= 75% (real P&L)
   goodWallets: string[];      // which good wallets bought this token
   confidence: number;          // 0-1 based on count
   positionSol: number;        // sized by confidence
@@ -82,49 +83,26 @@ export class CartelDetector {
 
   private async refreshGoodWallets(): Promise<void> {
     try {
+      // Fast read from persistent wallet_stats (populated by WalletStatsWorker)
       const result = await this.pool.query(`
-        WITH early_buys AS (
-          SELECT te.trader_wallet, te.token_address
-          FROM trade_events te
-          JOIN token_events tok ON tok.token_address = te.token_address
-          WHERE te.tx_type = 'buy' AND te.volume_usd > 10
-            AND te.event_at > now() - interval '3 days'
-            AND te.event_at <= tok.detected_at + interval '90 seconds'
-          GROUP BY te.trader_wallet, te.token_address
-        ),
-        wallet_perf AS (
-          SELECT eb.trader_wallet,
-            count(DISTINCT eb.token_address) as n,
-            count(DISTINCT eb.token_address) FILTER (
-              WHERE EXISTS (
-                SELECT 1 FROM token_snapshots ts
-                WHERE ts.token_address = eb.token_address
-                  AND ts.snapshot_at > now() - interval '3 days'
-                GROUP BY ts.token_address
-                HAVING max(mc_live) / NULLIF(min(mc_live), 0) > 1.20
-              )
-            ) as wins
-          FROM early_buys eb
-          GROUP BY eb.trader_wallet
-          HAVING count(DISTINCT eb.token_address) >= 15
-        )
-        SELECT trader_wallet, n, round(100.0 * wins / n, 1) as wr
-        FROM wallet_perf
-        WHERE (100.0 * wins / n) >= 65
+        SELECT wallet_address, tokens_total, win_rate
+        FROM wallet_stats
+        WHERE category IN ('ELITE', 'GOOD')
+        ORDER BY win_rate DESC
       `);
 
       this.goodWallets.clear();
       for (const row of result.rows) {
-        this.goodWallets.set(row.trader_wallet, {
-          tokens: parseInt(row.n),
-          wr: parseFloat(row.wr),
+        this.goodWallets.set(row.wallet_address, {
+          tokens: parseInt(row.tokens_total),
+          wr: parseFloat(row.win_rate) * 100,
         });
       }
       this.lastRefresh = Date.now();
       this.ready = true;
-      logger.info({ count: this.goodWallets.size }, '🤝 Good wallets refreshed');
+      logger.info({ count: this.goodWallets.size }, 'Good wallets refreshed from wallet_stats');
     } catch (err) {
-      logger.error({ err }, '🤝 Failed to refresh good wallets');
+      logger.error({ err }, 'Failed to refresh good wallets');
     }
   }
 
@@ -164,16 +142,36 @@ export class CartelDetector {
     if (!buyers || buyers.size < 2) return null;
 
     const count = buyers.size;
+    // v1.2: count ELITE wallets (WR >= 75% real P&L)
+    let eliteCount = 0;
+    for (const w of buyers) {
+      const info = this.goodWallets.get(w);
+      if (info && info.wr >= 75) eliteCount++;
+    }
     // Sizing: 2→0.50, 3→0.60, 4+→0.70
     const positionSol = count >= 4 ? 0.70 : count >= 3 ? 0.60 : 0.50;
     const confidence = Math.min(0.95, 0.70 + count * 0.05);
 
     return {
       goodWalletCount: count,
+      eliteWalletCount: eliteCount,
       goodWallets: Array.from(buyers),
       confidence,
       positionSol,
     };
+  }
+
+  /** Get ELITE wallets that bought this token (WR >= 75%) */
+  getEliteBuyers(tokenAddress: string): Set<string> | null {
+    const buyers = this.tokenGoodBuyers.get(tokenAddress);
+    if (!buyers || buyers.size === 0) return null;
+
+    const elites = new Set<string>();
+    for (const w of buyers) {
+      const info = this.goodWallets.get(w);
+      if (info && info.wr >= 75) elites.add(w);
+    }
+    return elites.size > 0 ? elites : null;
   }
 
   /** Clean up expired tokens (call periodically) */
@@ -192,4 +190,44 @@ export class CartelDetector {
   isGoodWallet(wallet: string): boolean {
     return this.goodWallets.has(wallet);
   }
+  // Track watched wallet buys for cross-wallet cartel detection (even untracked tokens)
+  private watchedWalletTokenBuys: Map<string, { wallets: Set<string>; firstAt: number }> = new Map();
+
+  /**
+   * Called by WalletWatcher when a monitored (ELITE/GOOD) wallet buys any token.
+   * 2+ watched wallets buying same token within 120s emits a CARTEL signal.
+   */
+  onWatchedWalletBuy(tokenAddress: string, walletAddress: string): void {
+    const now = Date.now();
+    const WINDOW_MS = 120_000;
+    if (!this.watchedWalletTokenBuys.has(tokenAddress)) {
+      this.watchedWalletTokenBuys.set(tokenAddress, { wallets: new Set(), firstAt: now });
+    }
+    const entry = this.watchedWalletTokenBuys.get(tokenAddress)!;
+    if (now - entry.firstAt > WINDOW_MS) {
+      entry.wallets.clear();
+      entry.firstAt = now;
+    }
+    entry.wallets.add(walletAddress);
+    if (entry.wallets.size >= 2) {
+      const count = entry.wallets.size;
+      logger.info({
+        token: tokenAddress.slice(0, 8),
+        watchedCount: count,
+      }, 'CARTEL SIGNAL: watched wallets converging on token');
+      if (!this.tokenGoodBuyers.has(tokenAddress)) {
+        this.tokenGoodBuyers.set(tokenAddress, new Set());
+      }
+      const buyers = this.tokenGoodBuyers.get(tokenAddress)!;
+      for (const w of entry.wallets) buyers.add(w);
+    }
+    if (this.watchedWalletTokenBuys.size > 2000) {
+      const cutoff = now - WINDOW_MS * 2;
+      for (const [tok, e] of this.watchedWalletTokenBuys) {
+        if (e.firstAt < cutoff) this.watchedWalletTokenBuys.delete(tok);
+      }
+    }
+  }
+
 }
+

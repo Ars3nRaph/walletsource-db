@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Ride the Rugger v8.1 — Dashboard API Server
+ * WalletSource v10.14 — Dashboard API Server
  * Exposes real-time metrics via REST API
  */
 
@@ -26,7 +26,7 @@ const pool = new pg.Pool({
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static(__dirname));
+app.use(express.static(__dirname, { etag: false, maxAge: 0 }));
 
 // ━━━ API Endpoints ━━━
 
@@ -151,6 +151,52 @@ app.get('/api/stats', async (req, res) => {
       dailyLimit: parseInt(process.env.HELIUS_DAILY_CREDIT_LIMIT || '270000'),
       note: 'Credit tracking is in-process — check pm2 logs for usage'
     };
+
+    // CARTEL stats
+    const cartelStats = await pool.query(`
+      SELECT
+        count(*) FILTER (WHERE action='SELL') as trades,
+        round(100.0 * count(*) FILTER (WHERE action='SELL' AND pnl_pct > 0) / NULLIF(count(*) FILTER (WHERE action='SELL'), 0), 1) as wr,
+        round(avg(pnl_pct) FILTER (WHERE action='SELL'), 1) as avg_pnl
+      FROM paper_trades WHERE strategy = 'CARTEL' OR buy_strategy = 'CARTEL'
+    `);
+    stats.cartel = cartelStats.rows[0];
+
+    // STD stats
+    const stdStats = await pool.query(`
+      SELECT
+        count(*) FILTER (WHERE action='SELL') as trades,
+        round(100.0 * count(*) FILTER (WHERE action='SELL' AND pnl_pct > 0) / NULLIF(count(*) FILTER (WHERE action='SELL'), 0), 1) as wr,
+        round(avg(pnl_pct) FILTER (WHERE action='SELL'), 1) as avg_pnl
+      FROM paper_trades WHERE (strategy = 'STD' OR buy_strategy = 'STD' OR buy_strategy = 'v10-MARKET' OR (buy_strategy IS NULL AND strategy IS NULL))
+    `);
+    stats.std = stdStats.rows[0];
+
+    // NEO stats
+    const neoStats = await pool.query(`
+      SELECT
+        count(*) FILTER (WHERE action='SELL') as trades,
+        round(100.0 * count(*) FILTER (WHERE action='SELL' AND pnl_pct > 0) / NULLIF(count(*) FILTER (WHERE action='SELL'), 0), 1) as wr,
+        round(avg(pnl_pct) FILTER (WHERE action='SELL'), 1) as avg_pnl
+      FROM paper_trades WHERE strategy = 'NEO' OR buy_strategy = 'NEO'
+    `);
+    stats.neo = neoStats.rows[0];
+
+    // CARTEL wallet stats (from wallet_stats table — real P&L based)
+    try {
+      const walletStats = await pool.query(`
+        SELECT
+          count(*) FILTER (WHERE category = 'ELITE') as elite_count,
+          count(*) FILTER (WHERE category = 'GOOD') as good_count,
+          count(*) as total_profiled
+        FROM wallet_stats
+      `);
+      stats.cartelGroups = { 
+        good_wallets: parseInt(walletStats.rows[0].elite_count) || 0,
+        good_count: parseInt(walletStats.rows[0].good_count) || 0,
+        total_profiled: parseInt(walletStats.rows[0].total_profiled) || 0
+      };
+    } catch { stats.cartelGroups = { good_wallets: 0, good_count: 0, total_profiled: 0 }; }
 
     // Performance
     const performance = await pool.query(`
@@ -277,11 +323,38 @@ app.get('/api/top-playbooks', async (req, res) => {
   }
 });
 
+// GET /api/system-health - System health metrics
+app.get('/api/system-health', async (req, res) => {
+  try {
+    const conns = await pool.query(`
+      SELECT count(*) as total,
+        count(*) FILTER (WHERE state='active') as active,
+        count(*) FILTER (WHERE state='idle') as idle
+      FROM pg_stat_activity WHERE datname='walletsource'
+    `);
+    const openPos = await pool.query(`
+      SELECT count(*) as open FROM paper_trades
+      WHERE action='BUY' AND token_address NOT IN (SELECT token_address FROM paper_trades WHERE action='SELL')
+    `);
+    const mem = process.memoryUsage();
+    res.json({
+      db: conns.rows[0],
+      openPositions: parseInt(openPos.rows[0].open),
+      helius: { dailyLimit: 270000, note: 'In-process tracking' },
+      uptime: process.uptime(),
+      memory: { heapMB: Math.round(mem.heapUsed / 1024 / 1024) },
+      wsReconnects: '-'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`
 ╔══════════════════════════════════════════════════════════════╗
-║  Ride the Rugger v8.1 — Dashboard API Server             ║
+║  WalletSource v10.14 — Dashboard API Server              ║
 ╚══════════════════════════════════════════════════════════════╝
 
 📡 API Server:  http://localhost:${PORT}
@@ -290,8 +363,10 @@ app.listen(PORT, () => {
 Endpoints:
   GET /api/stats           - Main dashboard stats
   GET /api/health          - Health check
+  GET /api/system-health   - System health metrics
   GET /api/recent-tokens   - Recent tokens
   GET /api/top-playbooks   - Top playbooks
+  GET /api/paper-trades    - Paper trading P&L
 
 Press Ctrl+C to stop
   `);

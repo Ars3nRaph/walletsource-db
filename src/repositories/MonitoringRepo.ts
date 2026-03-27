@@ -66,7 +66,7 @@ export class MonitoringRepo {
            END DESC,
            -- Then freshest tokens first
            mq.detected_at DESC
-         LIMIT 10`
+         LIMIT 20` // v4.36: balanced — enough throughput without DexScreener saturation
       );
 
       logger.debug({ count: result.rows.length }, 'Due tokens retrieved');

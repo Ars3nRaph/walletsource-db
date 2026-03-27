@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WalletSource v10.11 — Dashboard</title>
+  <title>WalletSource v10.14.3 — Dashboard</title>
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"></script>
@@ -12,8 +12,8 @@
   <div class="container">
     <!-- Header -->
     <header>
-      <h1>🎩 WalletSource v10.11</h1>
-      <p class="subtitle">Market Validation • Risk-Adjusted Sizing • Funder Analysis</p>
+      <h1>🎩 WalletSource v10.14.3</h1>
+      <p class="subtitle">v10.14.3 — Market Validation • CARTEL v1.1 • NEO v4.41 • Helius Integration</p>
       <div class="status-badge" id="status-badge">
         <span class="dot"></span>
         <span id="status-text">Connecting...</span>
@@ -56,7 +56,7 @@
         <div class="stat-row">
           <span class="label">Processing</span>
           <span class="value info" id="queue-processing">-</span>
-          <span class="sublabel">/ 135 slots</span>
+          <span class="sublabel">/ 500 slots</span>
         </div>
         <div class="stat-row">
           <span class="label">Done</span>
@@ -220,6 +220,86 @@
           Wallets with 3+ RUG verdicts and complete lifecycle data qualify for playbook building.
         </div>
       </div>
+
+      <!-- CARTEL Detection v1.1 -->
+      <div class="stat-card" style="border-left:3px solid #9c27b0">
+        <div class="stat-header">
+          <span class="icon">🤝</span>
+          <h3>CARTEL v1.1</h3>
+        </div>
+        <div class="stat-row">
+          <span class="label">ELITE Wallets (WR≥75%)</span>
+          <span class="value" id="cartel-good-wallets">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="label">GOOD Wallets (WR≥65%)</span>
+          <span class="value info" id="cartel-good-count">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="label">Watched (Helius WSS)</span>
+          <span class="value" id="cartel-watched">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="label">Entry: GW≥5 • ratio≥1.5x • b≥40</span>
+          <span class="value" style="font-size:0.7rem;color:#a855f7">ACTIVE</span>
+        </div>
+        <div class="stat-row">
+          <span class="label">Sizing</span>
+          <span class="value" style="font-size:0.7rem">adaptive ≤0.50 SOL</span>
+        </div>
+      </div>
+
+      <!-- Helius Integration -->
+      <div class="stat-card" style="border-left:3px solid #2196f3">
+        <div class="stat-header">
+          <span class="icon">🔗</span>
+          <h3>Helius API</h3>
+        </div>
+        <div class="stat-row">
+          <span class="label">Daily Budget</span>
+          <span class="value" id="helius-budget">270K</span>
+        </div>
+        <div class="stat-row">
+          <span class="label">Used Today</span>
+          <span class="value info" id="helius-used">in-process</span>
+        </div>
+        <div class="stat-row">
+          <span class="label">WalletWatcher Subs</span>
+          <span class="value" id="helius-ww-subs">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="label">WS Status</span>
+          <span class="value success" id="helius-ws">Connected</span>
+        </div>
+      </div>
+
+      <!-- System Health -->
+      <div class="stat-card" style="border-left:3px solid #4caf50">
+        <div class="stat-header">
+          <span class="icon">🏥</span>
+          <h3>System Health</h3>
+        </div>
+        <div class="stat-row">
+          <span class="label">Bot Uptime</span>
+          <span class="value" id="health-uptime">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="label">Memory</span>
+          <span class="value" id="health-memory">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="label">DB Connections</span>
+          <span class="value" id="health-db">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="label">WS Reconnects</span>
+          <span class="value" id="health-ws-reconnects">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="label">Open Positions</span>
+          <span class="value warning" id="health-open-pos">-</span>
+        </div>
+      </div>
     </div>
 
     <!-- Recent Activity -->
@@ -241,43 +321,40 @@
 
     <!-- v9.0 Strategy Performance -->
     <div class="section" id="v9-section">
-      <h2>🎯 v10.11 Strategy Performance</h2>
+<h2>🎯 Strategy Performance (live)</h2>
       <div class="stats-grid" style="margin-bottom:1rem">
-        <div class="stat-card" style="border-left:3px solid #00e676">
-          <div class="stat-header"><span class="icon">🌟</span><h3>v10-MARKET</h3></div>
-          <div class="stat-row"><span class="label">Wallets</span><span class="value" id="v9-ride-wallets">-</span></div>
-          <div class="stat-row"><span class="label">Clean Wallets</span><span class="value success" id="v9-ride-clean">-</span></div>
-          <div class="stat-row"><span class="label">Tokens</span><span class="value" id="v9-ride-tokens">-</span></div>
-          <div class="stat-row"><span class="label">Pump Rate</span><span class="value success" id="v9-ride-pumprate">-</span></div>
-          <div class="stat-row"><span class="label">Avg P&L</span><span class="value success" id="v9-ride-pnl">-</span></div>
-          <div class="stat-row"><span class="label">3x+ Pumps</span><span class="value" id="v9-ride-3x">-</span></div>
+        <div class="stat-card" style="border-left:3px solid #ff9800">
+          <div class="stat-header"><span class="icon">🔵</span><h3>STD (v10.14.3)</h3></div>
+          <div class="stat-row"><span class="label">Trades</span><span class="value" id="strat-std-trades">-</span></div>
+          <div class="stat-row"><span class="label">Win Rate</span><span class="value" id="strat-std-wr">-</span></div>
+          <div class="stat-row"><span class="label">Avg P&L (net)</span><span class="value" id="strat-std-pnl">-</span></div>
+          <div class="stat-row"><span class="label">Exits</span><span class="value" id="strat-std-exits" style="font-size:0.7rem">-</span></div>
         </div>
-        <div class="stat-card" style="border-left:3px solid #4fc3f7">
-          <div class="stat-header"><span class="icon">📉</span><h3>FADE (blocked)</h3></div>
-          <div class="stat-row"><span class="label">Wallets</span><span class="value" id="v9-fade-wallets">-</span></div>
-          <div class="stat-row"><span class="label">Tokens</span><span class="value" id="v9-fade-tokens">-</span></div>
-          <div class="stat-row"><span class="label">Pump Rate</span><span class="value info" id="v9-fade-pumprate">-</span></div>
-          <div class="stat-row"><span class="label">Avg P&L</span><span class="value info" id="v9-fade-pnl">-</span></div>
+        <div class="stat-card" style="border-left:3px solid #f44336">
+          <div class="stat-header"><span class="icon">🔴</span><h3>NEO (v4.41)</h3></div>
+          <div class="stat-row"><span class="label">Trades</span><span class="value" id="strat-neo-trades">-</span></div>
+          <div class="stat-row"><span class="label">Win Rate</span><span class="value" id="strat-neo-wr">-</span></div>
+          <div class="stat-row"><span class="label">Avg P&L (net)</span><span class="value" id="strat-neo-pnl">-</span></div>
+          <div class="stat-row"><span class="label">Exits</span><span class="value" id="strat-neo-exits" style="font-size:0.7rem">-</span></div>
         </div>
-        <div class="stat-card" style="border-left:3px solid #ffc107">
-          <div class="stat-header"><span class="icon">📊</span><h3>10h Activity</h3></div>
-          <div class="stat-row"><span class="label">Tokens</span><span class="value" id="v9-10h-tokens">-</span></div>
-          <div class="stat-row"><span class="label">SUCCESS</span><span class="value success" id="v9-10h-success">-</span></div>
-          <div class="stat-row"><span class="label">RUG</span><span class="value danger" id="v9-10h-rug">-</span></div>
-          <div class="stat-row"><span class="label">NEUTRAL</span><span class="value" id="v9-10h-neutral">-</span></div>
+        <div class="stat-card" style="border-left:3px solid #9c27b0">
+          <div class="stat-header"><span class="icon">🟣</span><h3>CARTEL (v1.1)</h3></div>
+          <div class="stat-row"><span class="label">Trades</span><span class="value" id="strat-cartel-trades">-</span></div>
+          <div class="stat-row"><span class="label">Win Rate</span><span class="value" id="strat-cartel-wr">-</span></div>
+          <div class="stat-row"><span class="label">Avg P&L (net)</span><span class="value" id="strat-cartel-pnl">-</span></div>
+          <div class="stat-row"><span class="label">Exits</span><span class="value" id="strat-cartel-exits" style="font-size:0.7rem">-</span></div>
         </div>
       </div>
 
       <!-- v9.0 Changes -->
       <div class="stat-card" style="margin-bottom:1rem">
-        <div class="stat-header"><span class="icon">🔧</span><h3>v10.11 Config</h3></div>
+        <div class="stat-header"><span class="icon">🔧</span><h3>v10.14.3 Config</h3></div>
         <div style="padding:0 12px;font-size:0.78rem;color:#c9d1d9;line-height:1.7">
-<b style="color:#58a6ff">Entry:</b> b≥70 • ratio 2.0-3.0x • d&lt;30 • window ≤110s • momentum 5t 3%+<br>
-<b style="color:#3fb950">Sizing:</b> 0.5-(risk×0.4) SOL → RIDE 0.47 • WATCH 0.30 • AVOID 0.21<br>
-<b style="color:#f85149">Blocks:</b> FADE wallets • Toxic funders (FADE/AVOID)<br>
+<b style="color:#ff9800">Entry:</b> b≥70 • ratio 2.0-3.0x • d&lt;25 • maxVol $5k • window ≤110s • momentum 3/4t 5%+<br>
 <b style="color:#d29922">Exit:</b> HS -20% • FLAT trail 20% (≥50% peak) • PUMP3 &lt;50% • Max 10min<br>
-<b style="color:#8b949e">Funder:</b> RPC lookup during OBSERVE • Risk inherited • Ancestry stored<br>
-<b style="color:#8b949e">Disabled:</b> RUGGER strategy • avgBuy filter • Sell pressure filter<br><b style="color:#3fb950">New:</b> ⚡ EARLY ENTRY — ratio 1.2-2.0x, ≥50 buyers, Q2+, max 0.30 SOL
+<b style="color:#f44336">NEO v4.41:</b> ratio 1.0-2.0x • b≥20 • Q3-Q4 only • trail 25% • STALE_EXIT 150/300/600s • PUMP3 profit protect<br>
+<b style="color:#a855f7">CARTEL v1.1:</b> GW≥5 • ratio ≥1.5x • b≥40 • HS -20% • trail 20%@+25%<br>
+<b style="color:#2196f3">Helius:</b> PumpPortal primary • WalletWatcher WSS (ELITE) • BuyerScanner disabled
 </div>
       <script>
       // Inline v9 loader — fires immediately, doesn't depend on app.js
@@ -324,30 +401,8 @@
       </script>
       </div>
 
-      <!-- Top RIDE Wallets Table -->
-      <div class="table-container">
-        <h3 style="color:#58a6ff;margin:0 0 8px 0;font-size:0.9rem">🏆 Top RIDE Wallets</h3>
-        <table class="trades-table" id="v9-ride-table">
-          <thead>
-            <tr>
-              <th>Wallet</th>
-              <th>Type</th>
-              <th>Rugs</th>
-              <th>Survivals</th>
-              <th>Tokens</th>
-              <th>Pumps</th>
-              <th>Pump Rate</th>
-              <th>Avg Peak MC</th>
-            </tr>
-          </thead>
-          <tbody id="v9-ride-tbody">
-            <tr><td colspan="8" style="text-align:center;color:#666">Loading…</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
 
-    <!-- Paper Trading P&L -->
+        <!-- Paper Trading P&L -->
     <div class="section" id="paper-trades-section">
       <h2>💰 Paper Trading — Bilan P&amp;L</h2>
 
@@ -375,31 +430,6 @@
         </div>
       </div>
 
-      <!-- Trades table -->
-      <div class="table-container">
-        <!-- Per-Strategy Breakdown -->
-        <div id="strategy-breakdown" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px"></div>
-
-        <table class="trades-table" id="pt-table">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Stratégie</th>
-              <th>Token</th>
-              <th>BUY Time</th>
-              <th>MC Entrée</th>
-              <th>MC Sortie</th>
-              <th>P&amp;L</th>
-              <th>Statut</th>
-              <th>Exit</th>
-              <th>📈</th>
-            </tr>
-          </thead>
-          <tbody id="pt-tbody">
-            <tr><td colspan="8" style="text-align:center;color:#666">Chargement…</td></tr>
-          </tbody>
-        </table>
-      </div>
     </div>
 
     <!-- Footer -->
@@ -409,7 +439,7 @@
     </footer>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=10.14.3"></script>
 
   <!-- Chart Modal -->
   <div id="chart-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:1000;align-items:center;justify-content:center">

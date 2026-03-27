@@ -116,7 +116,7 @@ export class TokenTracker {
     // Check for due tokens every 10 seconds
     this.intervalId = setInterval(async () => {
       await this.checkDueTokens();
-    }, 10 * 1000);
+    }, 5 * 1000); // v4.36: faster dequeue (was 10s)
 
     // Run immediately
     await this.checkDueTokens();

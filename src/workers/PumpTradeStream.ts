@@ -96,10 +96,11 @@ export class PumpTradeStream {
         }
         if (!evicted && false) { // v10.13: DISABLED force-evict — never evict tokens with open positions
           // All tokens have positions — evict oldest anyway
-          const oldest = this.tokenExpiry.entries().next().value;
-          if (oldest) {
-            this.unsubscribe(oldest[0]);
-            logger.warn({ evicted: oldest[0].slice(0,8) }, '⚠️ Force-evicted token with position for priority');
+          const oldestEntry = this.tokenExpiry.entries().next();
+          if (!oldestEntry.done && oldestEntry.value) {
+            const oldToken = oldestEntry.value![0];
+            this.unsubscribe(oldToken);
+            logger.warn({ evicted: oldToken.slice(0,8) }, '⚠️ Force-evicted token with position for priority');
           }
         }
       } else {

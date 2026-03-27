@@ -86,7 +86,7 @@ export class PaperTradeExecutor extends TradeExecutor {
            VALUES ($1, 'SHUTDOWN', 'RIDE', NOW(), $2, $3, 'SHUTDOWN', $4, $5)`,
           [tok, lastMC, pnl,
            'SHUTDOWN: ' + openCount + ' positions saved. Entry MC=' + pos.entryMC.toFixed(0) + ' Peak=' + pos.highestMC.toFixed(0) + ' Last=' + lastMC.toFixed(0),
-           pos.neoStrategy ? 'NEO' : pos.cartelStrategy ? 'CARTEL' : 'STD']
+           pos.eliteStrategy ? 'ELITE' : pos.neoStrategy ? 'NEO' : pos.cartelStrategy ? 'CARTEL' : 'STD']
         );
         
         logger.info({
@@ -94,7 +94,7 @@ export class PaperTradeExecutor extends TradeExecutor {
           entryMC: pos.entryMC.toFixed(0),
           lastMC: lastMC.toFixed(0),
           pnl: pnl.toFixed(1) + '%',
-          strategy: pos.neoStrategy ? 'NEO' : pos.cartelStrategy ? 'CARTEL' : 'STD'
+          strategy: pos.eliteStrategy ? 'ELITE' : pos.neoStrategy ? 'NEO' : pos.cartelStrategy ? 'CARTEL' : 'STD'
         }, '💾 Position state saved to DB');
       } catch (err: any) {
         logger.error({ token: tok.slice(0, 8), error: err?.message }, 'Failed to save position on shutdown');
@@ -160,6 +160,7 @@ export class PaperTradeExecutor extends TradeExecutor {
         const buyReason = buyEvent.reason || '';
         const isNeoRecovery = buyReason.includes('NEO');
         const isCartelRecovery = buyReason.includes('CARTEL');
+        const isEliteRecovery = buyReason.includes('ELITE');
         
         this.openPositions.set(tok, {
           entryMC,
@@ -324,7 +325,7 @@ export class PaperTradeExecutor extends TradeExecutor {
     // Write to paper_trades DB table
     try {
       const reason = signal.reason || '';
-      const buyStrategy = reason.includes('CARTEL') ? 'CARTEL' : reason.includes('NEO') ? 'NEO' : reason.includes('EARLY') ? 'EARLY' : 'STD';
+      const buyStrategy = reason.includes('ELITE') ? 'ELITE' : reason.includes('CARTEL') ? 'CARTEL' : reason.includes('NEO') ? 'NEO' : reason.includes('EARLY') ? 'EARLY' : 'STD';
 
       if (signal.action === 'BUY') {
         const bm = reason.match(/(\d+)\s*buyers/);
@@ -346,11 +347,12 @@ export class PaperTradeExecutor extends TradeExecutor {
            sm && parseInt(sm[2]) > 0 ? +(parseInt(sm[1]) / parseInt(sm[2])).toFixed(3) : null,
            th ? parseFloat(th[1]) / 100 : null, ab ? parseFloat(ab[1]) : null,
            reason, buyStrategy,
-           // v10.13: Extract strategy version from reason
-           (() => { const vm = reason.match(/NEO (v4\.\d+)/); if (vm) return 'NEO ' + vm[1];
-                    if (reason.includes('v10.13')) return 'STD v10.13';
-                    if (reason.includes('v10.10k')) return 'STD v10.10k';
-                    if (reason.includes('CARTEL')) return 'CARTEL v1.0';
+           // v10.14.3: Extract strategy version from reason
+           (() => { if (reason.includes('ELITE')) return 'ELITE v1.0';
+                    const vm = reason.match(/NEO (v4\.\d+)/); if (vm) return 'NEO ' + vm[1];
+                    const cm = reason.match(/CARTEL (v[\d.]+)/); if (cm) return 'CARTEL ' + cm[1];
+                    if (reason.includes('CARTEL')) return 'CARTEL v1.2';
+                    if (buyStrategy === 'STD') return 'STD v10.14';
                     return buyStrategy; })()]
         );
       } else if (signal.action === 'SELL') {
@@ -375,6 +377,8 @@ export class PaperTradeExecutor extends TradeExecutor {
         else if (reason.includes('MAX_HOLD')) exitType = 'MAX_HOLD';
         else if (reason.includes('SELLER_PRESSURE') || reason.includes('SP_EXIT')) exitType = 'SELLER_PRESSURE';
         else if (reason.includes('TRACKING END') || reason.includes('TRACKING_END')) exitType = 'TRACKING_END';
+        else if (reason.includes('STALE_EXIT')) exitType = 'STALE_EXIT';
+        else if (reason.includes('SWEEP')) exitType = 'SWEEP_EXIT';
         else if (reason.includes('LOWER_HIGH')) exitType = 'LOWER_HIGH';
         else if (reason.includes('SELL_DOM_60s')) exitType = 'SELL_DOM_60s';
 

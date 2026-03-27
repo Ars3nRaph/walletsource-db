@@ -108,6 +108,51 @@ function updateDashboard(stats) {
     setText('latest-snapshot', 'No snapshots yet');
   }
 
+  // CARTEL stats
+  if (stats.cartel) {
+    const c = stats.cartel;
+    setText('cartel-trades', c.trades || '0');
+    const wrEl = document.getElementById('cartel-wr');
+    if (wrEl) {
+      wrEl.textContent = c.wr ? c.wr + '%' : '-';
+      wrEl.className = 'value ' + (parseFloat(c.wr) >= 50 ? 'success' : 'danger');
+    }
+    const pnlEl = document.getElementById('cartel-avg-pnl');
+    if (pnlEl) {
+      const pnl = parseFloat(c.avg_pnl) || 0;
+      pnlEl.textContent = (pnl >= 0 ? '+' : '') + pnl + '%';
+      pnlEl.className = 'value ' + (pnl >= 0 ? 'success' : 'danger');
+    }
+  }
+  if (stats.cartelGroups) {
+    setText('cartel-good-wallets', formatNumber(stats.cartelGroups.good_wallets));
+    setText('cartel-good-count', formatNumber(stats.cartelGroups.good_count));
+    setText('cartel-watched', formatNumber(stats.cartelGroups.good_wallets)); // WalletWatcher tracks all ELITE
+  }
+
+  // Strategy performance cards
+  for (const strat of ['std', 'neo', 'cartel']) {
+    const d = stats[strat + 'Stats'] || stats[strat] || {};
+    setText('strat-' + strat + '-trades', d.trades || '0');
+    const wrEl = document.getElementById('strat-' + strat + '-wr');
+    if (wrEl) {
+      wrEl.textContent = d.wr ? d.wr + '%' : '-';
+      wrEl.className = 'value ' + (parseFloat(d.wr) >= 50 ? 'success' : 'danger');
+    }
+    const pEl = document.getElementById('strat-' + strat + '-pnl');
+    if (pEl) {
+      const p = parseFloat(d.avg_pnl) || 0;
+      pEl.textContent = (p >= 0 ? '+' : '') + p + '%';
+      pEl.className = 'value ' + (p >= 0 ? 'success' : 'danger');
+    }
+  }
+
+  // Helius info
+  if (stats.helius) {
+    setText('helius-budget', Math.round(stats.helius.dailyLimit / 1000) + 'K');
+    setText('helius-used', stats.helius.note || 'in-process');
+  }
+
   // Update timestamp
   setText('last-update', new Date().toLocaleTimeString());
 }
@@ -142,7 +187,7 @@ function formatNumber(num) {
 
 // ━━━ Initialize ━━━
 function init() {
-  console.log('WalletSourceDB Dashboard v4.0 initialized');
+  console.log('WalletSourceDB Dashboard v10.14 initialized');
   fetchStats();
   setInterval(fetchStats, REFRESH_INTERVAL);
 }
@@ -189,7 +234,7 @@ async function loadPaperTrades() {
     // Per-strategy breakdown
     const stratDiv = document.getElementById('strategy-breakdown');
     if (s.strategies && stratDiv) {
-      const colors = {'RUGGER': '#e040fb', 'v10-MARKET': '#4fc3f7', 'RE-ENTRY': '#ff9800', 'EARLY': '#66bb6a'};
+      const colors = {'STD': '#ff9800', 'NEO': '#f44336', 'CARTEL': '#9c27b0', 'RUGGER': '#e040fb', 'v10-MARKET': '#4fc3f7', 'RE-ENTRY': '#ff9800', 'EARLY': '#66bb6a'};
       stratDiv.innerHTML = Object.entries(s.strategies).map(([name, st]) => {
         const color = colors[name] || '#888';
         const wrClass = st.win_rate >= 50 ? 'success' : 'danger';
@@ -222,7 +267,7 @@ async function loadPaperTrades() {
       const mcExit    = t.sell_mc   ? `$${t.sell_mc.toLocaleString('fr-FR', {maximumFractionDigits:0})}` : '—';
       
       // Strategy badge
-      const stratColors = {'RUGGER': '#e040fb', 'v10-MARKET': '#4fc3f7', 'RE-ENTRY': '#ff9800', 'EARLY': '#66bb6a'};
+      const stratColors = {'STD': '#ff9800', 'NEO': '#f44336', 'CARTEL': '#9c27b0', 'RUGGER': '#e040fb', 'v10-MARKET': '#4fc3f7', 'RE-ENTRY': '#ff9800', 'EARLY': '#66bb6a'};
       const stratColor = stratColors[t.entry_strategy] || '#888';
       const stratLabel = t.entry_strategy || 'UNKNOWN';
       
@@ -561,3 +606,39 @@ async function loadV9Stats() {
 
 loadV9Stats();
 setInterval(loadV9Stats, 15000);
+
+// ── System Health ─────────────────────────────────────────────────────────
+async function loadSystemHealth() {
+  try {
+    const res = await fetch('/api/system-health?t=' + Date.now());
+    if (!res.ok) return;
+    const d = await res.json();
+
+    const el = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+
+    // Uptime
+    const up = d.uptime || 0;
+    el('health-uptime', Math.floor(up/3600) + 'h ' + Math.floor((up%3600)/60) + 'm');
+
+    // Memory  
+    el('health-memory', (d.memory?.heapMB || '?') + ' MB');
+
+    // DB connections
+    el('health-db', (d.db?.active || '?') + ' active / ' + (d.db?.idle || '?') + ' idle');
+
+    // Open positions
+    el('health-open-pos', d.openPositions ?? '-');
+
+    // WS reconnects
+    el('health-ws-reconnects', d.wsReconnects ?? '-');
+  } catch (err) {
+    console.error('Health fetch error:', err.message);
+  }
+}
+// Ensure DOM is ready before starting health checks
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => { loadSystemHealth(); setInterval(loadSystemHealth, 10000); });
+} else {
+  loadSystemHealth();
+  setInterval(loadSystemHealth, 10000);
+}

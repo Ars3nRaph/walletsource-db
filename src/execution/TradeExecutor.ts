@@ -88,6 +88,8 @@ interface OpenPosition {
   postEntrySignal?: 'STRONG' | 'GOOD' | 'WEAK' | 'SELL_DOM';
   postEntryChecked?: boolean;  // true once 60s check done
   addOnBought?: boolean;       // true if add-on position placed on STRONG
+  eliteStrategy?: boolean;     // ELITE copy-trade strategy
+  eliteWallets?: Set<string>;  // which ELITE wallets triggered this entry
 }
 
 interface LiveTradeState {
@@ -469,6 +471,17 @@ export class TradeExecutor {
     const cached = this.rideCache.get(tokenAddress);
     const cascadeThresh = cached?.strategy?.cascadeThreshold ?? 5;
     
+    // v10.14.4: ELITE copy-exit — if ELITE wallet sells a token we hold via ELITE strategy, exit immediately
+    const elitePos = this.openPositions.get(tokenAddress);
+    if (txType === 'sell' && elitePos?.eliteStrategy && elitePos.eliteWallets?.has(trader)) {
+      const elitePnl = ((mcUsd - elitePos.entryMC) / elitePos.entryMC * 100);
+      logger.info({ token: tokenAddress.slice(0,8), trader: trader.slice(0,8), pnl: elitePnl.toFixed(1) },
+        '👑 ELITE wallet SELLING — copy-exit triggered');
+      // Trigger evaluation which will handle the sell
+      this.evaluating.delete(tokenAddress);
+      this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
+    }
+
     if (txType === 'sell' && state.recentSells >= cascadeThresh && state.recentBuys === 0
         && state?.sellVol > state?.buyVol * 0.5) {
       state.cascadeDetected = true;
@@ -509,7 +522,7 @@ export class TradeExecutor {
       
       // CARTEL: immediate entry when 2+ good wallets detected (T+2-120s)
       let cartelSig = this.cartelDetector.getSignal(tokenAddress);
-      if (cartelSig && cartelSig.goodWalletCount >= 2 && rtElapsedSec >= 2 && rtElapsedSec <= 120) {
+      if (cartelSig && (cartelSig.eliteWalletCount >= 2 || cartelSig.goodWalletCount >= 5) && rtElapsedSec >= 2 && rtElapsedSec <= 120) {
         // Trigger immediate evaluation — CARTEL has priority
         this.evaluating.delete(tokenAddress);
         this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
@@ -520,7 +533,7 @@ export class TradeExecutor {
       // Cost: ~200 credits/scan, budget allows ~1350 scans/day
       if (rtBuyCount >= 20 && rtElapsedSec >= 10 && rtElapsedSec <= 90) {
         this.cartelDetector.heliusScan(tokenAddress).then(sig => {
-          if (sig && sig.goodWalletCount >= 2) {
+          if (sig && (sig.eliteWalletCount >= 2 || sig.goodWalletCount >= 5)) {
             logger.info({ token: tokenAddress.slice(0,8), goodWallets: sig.goodWalletCount }, 
               '🔍 Helius scan discovered CARTEL signal!');
             this.evaluating.delete(tokenAddress);
@@ -576,6 +589,7 @@ export class TradeExecutor {
     const rtPos = this.openPositions.get(tokenAddress);
     if (rtPos && mcUsd > 0) {
       const rtPnl = ((mcUsd - rtPos.entryMC) / rtPos.entryMC) * 100;
+      const rtHoldSec = (Date.now() - rtPos.entryTime.getTime()) / 1000;
       const rtPeakPnl = ((rtPos.highestMC - rtPos.entryMC) / rtPos.entryMC) * 100;
       const rtDropFromPeak = rtPos.highestMC > 0 ? (rtPos.highestMC - mcUsd) / rtPos.highestMC : 0;
       
@@ -592,9 +606,12 @@ export class TradeExecutor {
       let rtDropLimit = 0;
       const rtIsNeo = rtPos.neoStrategy === true;
       const rtIsCartel = rtPos.cartelStrategy === true;
-      const rtTrailTrigger = (rtIsNeo || rtIsCartel) ? 25 : 50; // NEO v4.32: 30→25% to align with secondary trail trigger
+      const rtIsElite = rtPos.eliteStrategy === true;
+      const rtTrailTrigger = rtIsElite ? 5 : (rtIsNeo || rtIsCartel) ? 25 : 50; // ELITE-MIMIC: 5% // NEO v4.32: 30→25% to align with secondary trail trigger
       if (rtPeakPnl >= rtTrailTrigger) {
-        if (rtIsCartel) {
+        if (rtIsElite) {
+          rtDropLimit = 0.03; // ELITE-MIMIC: 3% from peak
+        } else if (rtIsCartel) {
           rtDropLimit = 0.20; // CARTEL: 20% trail
         } else if (rtIsNeo) {
           // NEO v4.32: tiered RT trail — match secondary trail logic, give rockets room to breathe
@@ -623,7 +640,20 @@ export class TradeExecutor {
       
       let rtShouldSell = false;
       let rtReason = '';
-      
+
+      // 0. ELITE-MIMIC: sell-surge early exit (RT)
+      if (rtIsElite && rtPnl < 0 && rtHoldSec >= 3) {
+        const rtState = this.liveState.get(tokenAddress);
+        const rtRecentSells = rtState?.recentSells ?? 0;
+        const rtRecentBuys = rtState?.recentBuys ?? 0;
+        const rtSb = rtRecentBuys > 0 ? rtRecentSells / rtRecentBuys : 0;
+        if (rtSb > 1.5 && rtRecentSells >= 3) {
+          rtReason = `⚡ RT-ELITE_SURGE sb=${rtSb.toFixed(2)} sells=${rtRecentSells} pnl=${rtPnl.toFixed(1)}% | MC ${mcUsd.toFixed(0)}`;
+          rtShouldSell = true;
+          this.consecutiveHardStops = 0;
+        }
+      }
+
       // 1. Tiered trailing stop
       if (rtDropLimit > 0 && rtDropFromPeak > rtDropLimit) {
         const captured = ((rtPos.highestMC * (1 - rtDropLimit) - rtPos.entryMC) / rtPos.entryMC * 100).toFixed(1);
@@ -632,8 +662,15 @@ export class TradeExecutor {
         this.consecutiveHardStops = 0; // CB reset on non-HS exit
       }
       
+      // 1b. ELITE max hold 120s (RT)
+      if (!rtShouldSell && rtIsElite && rtHoldSec > 120) {
+        rtReason = `⚡ RT-ELITE_MAX_HOLD 120s — pnl=${rtPnl.toFixed(1)}% | MC ${mcUsd.toFixed(0)}`;
+        rtShouldSell = true;
+        this.consecutiveHardStops = 0;
+      }
+
       // 2. Hard stop (NEO: -15%, others: -20%)
-      const rtHsThreshold = rtPos.neoStrategy ? -25 : -20; // NEO v4.15: -20% (raised from -15%)
+      const rtHsThreshold = rtPos.eliteStrategy ? -14 : rtPos.neoStrategy ? -25 : -20; // NEO v4.15: -20% (raised from -15%)
       if (!rtShouldSell && rtPnl <= rtHsThreshold) {
         rtReason = `⚡ RT-HARD_STOP — P&L ${rtPnl.toFixed(1)}% (threshold ${rtHsThreshold}%) | MC ${mcUsd.toFixed(0)}`;
         this.consecutiveHardStops++;
@@ -1101,9 +1138,13 @@ export class TradeExecutor {
 
     const isNeo = pos.neoStrategy === true;
     const isCartel = pos.cartelStrategy === true;
-    const trailTrigger = (isNeo || isCartel) ? 25 : 50; // NEO v4.27: 30219225 (catch 25-30% peakers before HS), CARTEL: 25%, others: 50%
+    const isElite = pos.eliteStrategy === true;
+    const trailTrigger = isElite ? 5 : (isNeo || isCartel) ? 25 : 50; // ELITE-MIMIC: 5% trigger (ELITE sell at 2% from peak median) // NEO v4.27: 30219225 (catch 25-30% peakers before HS), CARTEL: 25%, others: 50%
     let dropLimit = 0; // 0 = no trail, rely on hard stop
     if (peakPnl >= trailTrigger) {
+      if (isElite) {
+        dropLimit = 0.03; // ELITE-MIMIC: 3% drop from peak (median ELITE = 2.1%)
+      } else
       if (isCartel) {
         dropLimit = 0.20; // CARTEL: 20% trail (more room for big moves)
       } else if (isNeo) {
@@ -1201,7 +1242,20 @@ export class TradeExecutor {
       }
     }
 
-    const hsThreshold = pos.neoStrategy ? -25 : -20; // NEO v4.15: -20% (raised from -15%, aligns with STD; allow recovery room)
+    // ── ELITE-MIMIC: sell-surge early exit ──
+    if (isElite && pnlPct < 0 && holdSec >= 3) {
+      const recentSells = state?.recentSells ?? 0;
+      const recentBuys = state?.recentBuys ?? 0;
+      const sbRatio = recentBuys > 0 ? recentSells / recentBuys : 99;
+      if (sbRatio > 1.5 && recentSells >= 3) {
+        this.openPositions.delete(tokenAddress);
+        this.closedTokens.set(tokenAddress, { exitType: 'ELITE_SURGE', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+        this.consecutiveHardStops = 0;
+        return this.sell(100, 1.0, 'RIDE', `👑 ELITE_SURGE_EXIT sb=${sbRatio.toFixed(2)} sells=${recentSells} pnl=${pnlPct.toFixed(1)}% | MC ${currentMC.toFixed(0)}`, signals);
+      }
+    }
+
+        const hsThreshold = pos.eliteStrategy ? -14 : pos.neoStrategy ? -25 : -20; // ELITE-MIMIC: cut at -14% (ELITE median loss) // NEO v4.15: -20% (raised from -15%, aligns with STD; allow recovery room)
     if (pnlPct <= hsThreshold) {
       this.openPositions.delete(tokenAddress);
       this.closedTokens.set(tokenAddress, { exitType: 'HARD_STOP', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
@@ -1210,8 +1264,16 @@ export class TradeExecutor {
         this.circuitBreakerUntil = Date.now() + this.CB_PAUSE_MS;
         console.log(`🛑 CIRCUIT BREAKER — ${this.consecutiveHardStops} HS consécutifs → pause ${this.CB_PAUSE_MS/60000}min`);
       }
-      const hsLabel = pos.cartelStrategy ? '🤝 CARTEL' : pos.neoStrategy ? '🧠 NEO' : '🛑 v10';
+      const hsLabel = pos.eliteStrategy ? '👑 ELITE' : pos.cartelStrategy ? '🤝 CARTEL' : pos.neoStrategy ? '🧠 NEO' : '🛑 v10';
       return this.sell(100, 1.0, 'RIDE', `${hsLabel} HARD_STOP ${pnlPct.toFixed(1)}% | peak +${peakPnl.toFixed(0)}% (threshold ${hsThreshold}%) | MC ${currentMC.toFixed(0)}`, signals);
+    }
+
+    // ELITE-MIMIC: 120s max hold (ELITE avg hold = 41s win / 33s loss)
+    if (isElite && holdSec > 120) {
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'ELITE_MAX_HOLD', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops = 0;
+      return this.sell(100, 0.9, 'RIDE', `👑 ELITE_MAX_HOLD 120s — pnl=${pnlPct.toFixed(1)}% | MC ${currentMC.toFixed(0)}`, signals);
     }
 
     // 2. MAX HOLD: 5 minutes → force exit
@@ -1313,9 +1375,10 @@ export class TradeExecutor {
     const neoCount = Array.from(this.openPositions.values()).filter(p => p.neoStrategy).length;
     const cartelOpenCount = Array.from(this.openPositions.values()).filter(p => p.cartelStrategy).length;
     const stdCount = Array.from(this.openPositions.values()).filter(p => !p.neoStrategy && !p.earlyStrategy && !p.cartelStrategy).length;
-    const MAX_NEO = 3; // v10.13: raised from 2
-    const MAX_CARTEL = 3;
-    const MAX_STD = 3; // v10.13: raised from 2
+    const MAX_NEO = 1; // v10.14.4: NEO is losing
+    const MAX_CARTEL = 1; // v10.14.4: reduced for ELITE
+    const MAX_ELITE = 2; // v10.14.4: ELITE copy-trade strategy
+    const MAX_STD = 3; // v10.14.4
     const isNeoEntry = mcRatio < 2.0 && elapsedSec <= 75;
     if (isNeoEntry && neoCount >= MAX_NEO) {
       return this.none(`🚫 NEO pool full (${neoCount}/${MAX_NEO}) — skip`, 'RIDE');
@@ -1326,7 +1389,7 @@ export class TradeExecutor {
     if (!isNeoEntry && stdCount >= MAX_STD) {
       return this.none(`🚫 STD pool full (${stdCount}/${MAX_STD}) — skip`, 'RIDE');
     }
-    if (this.openPositions.size >= 8) { // v10.13: raised from 5
+    if (this.openPositions.size >= 7) { // v10.14.4: 3 STD + 1 NEO + 1 CARTEL + 2 ELITE
       return this.none(`🚫 Max total positions (5) — skip`, 'RIDE');
     }
 
@@ -1434,9 +1497,47 @@ export class TradeExecutor {
     // Backtest: 2+ good wallets → 72% WR, +51% avg, wallet +233%
     // Sizing: 2→0.50, 3→0.60, 4+→0.70 SOL
     // ══════════════════════════════════════════════════════════════
+    // ELITE COPY-TRADE STRATEGY v1.0
+    // ══════════════════════════════════════════════════════════════
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 5 && elapsedSec <= 60) {
+      const eliteBuyers = this.cartelDetector.getEliteBuyers(tokenAddress);
+      if (eliteBuyers && eliteBuyers.size >= 1) {
+        const sbRatio = sellCount > 0 ? sellCount / Math.max(buyCount, 1) : 0;
+        if (currentMC <= 6000 && mcRatio <= 2.0 && sbRatio <= 0.35) {
+          const eliteOpenCount = Array.from(this.openPositions.values()).filter(p => p.eliteStrategy).length;
+          if (eliteOpenCount >= MAX_ELITE) {
+            return this.none(`🚫 ELITE pool full (${eliteOpenCount}/${MAX_ELITE}) — skip`, 'RIDE');
+          }
+          if (this.openPositions.size >= 7) {
+            return this.none('🚫 Total pool full — skip', 'RIDE');
+          }
+          const wRisk = this.rideCache.get(tokenAddress)?.walletRiskScore ?? 0.5;
+          if (wRisk >= 0.65) {
+            return this.none(`🚫 ELITE: FADE risk=${wRisk.toFixed(2)}`, 'RIDE');
+          }
+          const elitePos = 0.25;
+          this.openPositions.set(tokenAddress, {
+            entryMC: currentMC, entryTime: new Date(), highestMC: currentMC, lowestMCAfterEntry: currentMC,
+            tradeCount: 100, walletAddress: '', peakTime: Date.now(), hadSignificantPump: false,
+            entryBuyVol: buyVol, entryBuyCount: buyCount, entryBuyerCount: uniqueBuyerCount,
+            entrySellersCount: sellCount, staleTicks: 0, ceilingHigh: currentMC,
+            pumpPeaks: [], pumpState: 'PUMP', cycleHigh: currentMC, dipLow: currentMC,
+            tickMCs: [currentMC], confirmationDone: false,
+            eliteStrategy: true, eliteWallets: new Set(eliteBuyers),
+          });
+          return {
+            action: 'BUY', confidence: 0.80, percentage: 100, playbook_strategy: 'RIDE',
+            wallet_risk_score: wRisk, position_sol: elitePos, quality_score: eliteBuyers.size,
+            reason: `👑 ELITE v1.0 BUY — ${eliteBuyers.size} elite wallets | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | ${uniqueBuyerCount}b sb=${sbRatio.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${elitePos}SOL`
+          };
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════
     if (!this.openPositions.has(tokenAddress) && elapsedSec >= 2 && elapsedSec <= 120) {
       const cartelSignal = this.cartelDetector.getSignal(tokenAddress);
-      if (cartelSignal && cartelSignal.goodWalletCount >= 2) {
+      if (cartelSignal && (cartelSignal.eliteWalletCount >= 2 || cartelSignal.goodWalletCount >= 5)) {
         // No circuit breaker for CARTEL — independent signal, not affected by STD/NEO HS
 
         // FADE block
@@ -1483,7 +1584,7 @@ export class TradeExecutor {
           wallet_risk_score: wRisk,
           position_sol: cartelPos,
           quality_score: cartelSignal.goodWalletCount,
-          reason: `🤝 CARTEL v1 BUY — ${cartelSignal.goodWalletCount} good wallets | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | ${uniqueBuyerCount}b pos=${cartelPos}SOL`
+          reason: `🤝 CARTEL v1.2 BUY — ${cartelSignal.goodWalletCount} good wallets | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | ${uniqueBuyerCount}b pos=${cartelPos}SOL`
         };
       }
     }
@@ -1540,7 +1641,7 @@ export class TradeExecutor {
         
         // Aggressive sizing: Q1+ proven winners, scale up with quality
         // Q1=0.20, Q2=0.35, Q3=0.55, Q4=0.65 (v4.3: more aggressive on high conviction; WR=84.8% supports it)
-        const neoQSizing: Record<number, number> = { 1: 0.10, 2: 0.25, 3: 0.45, 4: 0.50 }; // v10.13: aggressive sizing — Q3/Q4 proven +15-27% avg
+        const neoQSizing: Record<number, number> = { 1: 0.10, 2: 0.25, 3: 0.40, 4: 0.50 }; // v10.14.4: aggressive sizing — Q3/Q4 proven +15-27% avg
         const neoPos = neoQSizing[neoQ] || 0.20;
         
         this.lastBuyTimestamp = Date.now();
@@ -1833,7 +1934,7 @@ export class TradeExecutor {
       wallet_risk_score: wRisk,
       position_sol: riskPositionSol,
       quality_score: qualityScore,
-      reason: `${closedInfo ? "🔄 RE-ENTRY" : "🚀"} v10.10k BUY [${tier}] Q${qualityScore} — ${uniqueBuyerCount} buyers, $${buyVol.toFixed(0)} vol, ${mcRatio.toFixed(1)}x base | ${elapsedSec.toFixed(0)}s | momentum ✓ | dumps=${qDumps} sells=${sellCount}/${buyCount} avgBuy=$${avgBuySize.toFixed(0)} avgSell=$${(state?.avgSellSize || 0).toFixed(0)} topHolder=${(topHolderPct*100).toFixed(0)}% peak=${(state?.highestMC || currentMC).toFixed(0)} risk=${wRisk.toFixed(2)} Q=${qualityScore}×${qualityMultiplier.toFixed(1)} pos=${riskPositionSol}SOL`
+      reason: `${closedInfo ? "🔄 RE-ENTRY" : "🚀"} v10.14 BUY [${tier}] Q${qualityScore} — ${uniqueBuyerCount} buyers, $${buyVol.toFixed(0)} vol, ${mcRatio.toFixed(1)}x base | ${elapsedSec.toFixed(0)}s | momentum ✓ | dumps=${qDumps} sells=${sellCount}/${buyCount} avgBuy=$${avgBuySize.toFixed(0)} avgSell=$${(state?.avgSellSize || 0).toFixed(0)} topHolder=${(topHolderPct*100).toFixed(0)}% peak=${(state?.highestMC || currentMC).toFixed(0)} risk=${wRisk.toFixed(2)} Q=${qualityScore}×${qualityMultiplier.toFixed(1)} pos=${riskPositionSol}SOL`
     };
   }
 

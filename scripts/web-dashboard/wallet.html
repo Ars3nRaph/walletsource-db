@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>v10.11 — Wallet Simulation</title>
+  <title>v10.14.3 — Wallet Simulation</title>
   <link rel="stylesheet" href="styles.css">
   <style>
     .wallet-header { display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:24px; }
@@ -33,6 +33,7 @@
     .strat-cartel { border-left: 3px solid #a371f7 !important; }
     .strat-badge.cartel { background:#a371f722; color:#a371f7; border:1px solid #a371f755; }
     .strat-badge.std { background:#f0883e22; color:#f0883e; border:1px solid #f0883e55; }
+    .strat-badge.elite { background:#f1c40f22; color:#f1c40f; border:1px solid #f1c40f55; }
     .fee-card .fee-sub { font-size:11px; color:#484f58; margin-top:4px; }
     .trades-table { width:100%; border-collapse:collapse; font-size:12px; background:#0d1117; border-radius:12px; overflow:hidden; border:1px solid #21262d; }
     .trades-table th { background:#161b22; color:#8b949e; padding:10px 8px; text-align:left; font-weight:600; font-size:10px; text-transform:uppercase; letter-spacing:.5px; border-bottom:1px solid #21262d; position:sticky; top:0; }
@@ -115,7 +116,7 @@
 <body>
   <div class="container">
     <header>
-      <h1>🎩 v10.11 — Wallet</h1>
+      <h1>🎩 v10.14.3 — Wallet</h1>
       <p class="subtitle">Paper Portfolio — Risk-Adjusted 0.1-0.5 SOL • FADE blocked • Funder check • b≥70</p>
       <div class="nav-links">
         <a href="/">📊 Dashboard</a>
@@ -184,7 +185,7 @@
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px" id="strat-cards">
       <div class="strat-card" data-strat="std" onclick="toggleStrat('std')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #f0883e;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#58a6ff">🚀 STANDARD (v10.10k)</span>
+          <span style="font-size:16px;font-weight:700;color:#58a6ff">🚀 STANDARD (v10.14.3)</span>
           <span class="strat-badge std">STD</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center">
@@ -218,9 +219,9 @@
           Loading NEO config...
         </div>
       </div>
-      <div class="strat-card" data-strat="cartel" onclick="toggleStrat('cartel')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #a371f7;border-radius:12px;padding:20px;grid-column:1/-1">
+      <div class="strat-card" data-strat="cartel" onclick="toggleStrat('cartel')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #a371f7;border-radius:12px;padding:20px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#58a6ff">🤝 CARTEL (v1.0)</span>
+          <span style="font-size:16px;font-weight:700;color:#58a6ff">🤝 CARTEL (v1.2)</span>
           <span class="strat-badge cartel">CARTEL</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;text-align:center">
@@ -231,7 +232,24 @@
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="cartel-hs">—</div></div>
         </div>
         <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center">
-          2+ good wallets (65%+ WR) • HS -20% • Trail 20%@+30% • 0.50-0.70 SOL
+          2+ ELITE or 5+ GOOD • ratio≥1.5x • b≥40 • HS -20% • Trail 20%@+25%
+        </div>
+      </div>
+
+      <div class="strat-card" data-strat="elite" onclick="toggleStrat('elite')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #f1c40f;border-radius:12px;padding:20px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <span style="font-size:16px;font-weight:700;color:#f1c40f">👑 ELITE (v1.0)</span>
+          <span class="strat-badge" style="background:rgba(241,196,15,0.15);color:#f1c40f;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">ELITE</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;text-align:center">
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="elite-count">0</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Win Rate</div><div style="font-size:20px;font-weight:700;color:#3fb950" id="elite-wr">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Avg Net</div><div style="font-size:20px;font-weight:700" id="elite-avg">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="elite-sol">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="elite-hs">—</div></div>
+        </div>
+        <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center">
+          1+ ELITE wallet • mc≤$6K • sb≤0.35 • HS -25% • Trail 10%@+15% • copy-exit • 0.25 SOL
         </div>
       </div>
     </div>
@@ -388,7 +406,7 @@
   </div>
 <script>
 let equityChart=null;
-const activeStrats = new Set(['std','neo','cartel']);
+const activeStrats = new Set(['std','neo','cartel','elite']);
 let _lastWalletData = null;
 const PAGE_SIZE = 25;
 let currentPage = 0;
@@ -609,9 +627,9 @@ function applyAdvancedFilters(trades) {
 }
 
 function getTradeStrat(t) {
+  if (t.buy_reason && t.buy_reason.includes('ELITE')) return 'elite';
   if (t.buy_reason && t.buy_reason.includes('CARTEL')) return 'cartel';
   if (t.buy_reason && t.buy_reason.includes('NEO')) return 'neo';
-  
   return 'std';
 }
 
@@ -653,17 +671,19 @@ function renderWallet(d){
     const totalSlipSol=filteredTrades.reduce((a,t)=>a+(t.slippage_sol||0),0);
     const totalJitoSol=filteredTrades.reduce((a,t)=>a+(t.jito_buy_sol||0)+(t.jito_sell_sol||0),0);
     const totalPumpSol=filteredTrades.reduce((a,t)=>a+(t.pump_fee_buy_sol||0)+(t.pump_fee_sell_sol||0),0);
-    const finalBal=cfg.initial_sol+totalPnlSol;
-    const totalPnlPct=(totalPnlSol/cfg.initial_sol*100);
+    const openCostSol=openT.reduce((a,t)=>a+(t.position_sol||0)+(t.fees_sol||0),0); // wallet-sim deducts pos+jito only
+    const netPnlSol=totalPnlSol-openCostSol; // v10.14: subtract open position cost
+    const finalBal=cfg.initial_sol+netPnlSol;
+    const totalPnlPct=(netPnlSol/cfg.initial_sol*100);
     const wrPct=closed.length>0?(wins/closed.length*100).toFixed(1):'0.0';
     const avgPnl=closed.length>0?(closed.reduce((a,t)=>a+(t.pnl_pct||0),0)/closed.length).toFixed(1):'0.0';
     const totalAllFees=totalFeesSol+totalSlipSol;
     const feesDrag=(totalAllFees/cfg.initial_sol*100).toFixed(2);
-    const s={final_balance_sol:finalBal,final_balance_usd:finalBal*cfg.sol_price_usd,total_pnl_sol:totalPnlSol,total_pnl_pct:totalPnlPct,total_fees_sol:totalFeesSol,total_slippage_sol:totalSlipSol,total_jito_sol:totalJitoSol,total_pump_fees_sol:totalPumpSol,fees_drag_pct:feesDrag,total_trades:closed.length,wins,losses,win_rate_pct:wrPct,avg_pnl_pct:avgPnl,open:openT.length};
+    const s={final_balance_sol:finalBal,final_balance_usd:finalBal*cfg.sol_price_usd,total_pnl_sol:netPnlSol,total_pnl_pct:totalPnlPct,total_fees_sol:totalFeesSol,total_slippage_sol:totalSlipSol,total_jito_sol:totalJitoSol,total_pump_fees_sol:totalPumpSol,fees_drag_pct:feesDrag,total_trades:closed.length,wins,losses,win_rate_pct:wrPct,avg_pnl_pct:avgPnl,open:openT.length};
     const trades=filteredTrades;
     document.getElementById('config-bar').innerHTML=[
       `💰 Initial: <span class="val">${cfg.initial_sol} SOL</span>`,
-      `📊 Slip: <span class="val">${cfg.slippage_buy_bps/100}%↑ / ${cfg.slippage_sell_bps/100}%↓</span>`,
+      `📊 Slip: <span class="val">${(cfg.slippage_buy_bps/100).toFixed(1)}%↑ / ${(cfg.slippage_sell_bps/100).toFixed(1)}%↓</span>`,
       `🏷️ Pump: <span class="val">${cfg.pump_fee_bps/100}%</span>`,
       `⚡ Jito: <span class="val">${(cfg.jito_tip_buy_sol*1e9/1000).toFixed(0)}k↑ / ${(cfg.jito_tip_sell_sol*1e9/1000).toFixed(0)}k↓ lam</span>`,
       `💲 SOL: <span class="val">$${cfg.sol_price_usd}</span>`
@@ -696,10 +716,9 @@ function renderWallet(d){
     if(!filteredTrades.length){document.getElementById('empty-state').style.display='';document.getElementById('trades-table').style.display='none';}
     else{document.getElementById('empty-state').style.display='none';document.getElementById('trades-table').style.display='';}
 
-    // Strategy card stats (always from ALL trades, not filtered)
-    const allReal = allTrades.filter(t=>t.action!=='SKIP');
+    // Strategy card stats — computed from FILTERED trades (respects date/period/filters)
+    const stratSource = filteredTrades;
     
-    const stdTrades = allReal.filter(t => t.action !== 'OPEN' && t.buy_reason && !t.buy_reason.includes('NEO') && !t.buy_reason.includes('RUGGER') && !t.buy_reason.includes('CARTEL'));
     function stratStats(arr, prefix) {
       const closed = arr.filter(t => t.action === 'WIN' || t.action === 'LOSS');
       const w = closed.filter(t => t.action === 'WIN').length;
@@ -718,14 +737,24 @@ function renderWallet(d){
         const hsCount = closed.filter(t => t.exit_reason && t.exit_reason.includes('HARD')).length;
         const hsEl = document.getElementById(prefix + '-hs');
         if (hsEl) { hsEl.textContent = hsCount + ' (' + (hsCount/n*100).toFixed(0) + '%)'; hsEl.style.color = hsCount/n > 0.3 ? '#f85149' : '#8b949e'; }
+      } else {
+        document.getElementById(prefix + '-wr').textContent = '—';
+        document.getElementById(prefix + '-avg').textContent = '—';
+        const solEl = document.getElementById(prefix + '-sol');
+        if (solEl) { solEl.textContent = '—'; solEl.style.color = '#8b949e'; }
+        const hsEl = document.getElementById(prefix + '-hs');
+        if (hsEl) { hsEl.textContent = '—'; hsEl.style.color = '#8b949e'; }
       }
     }
 
+    const stdTrades = stratSource.filter(t => getTradeStrat(t) === 'std');
     stratStats(stdTrades, 'std');
-    const neoTrades = allReal.filter(t => t.buy_reason && t.buy_reason.includes('NEO'));
+    const neoTrades = stratSource.filter(t => getTradeStrat(t) === 'neo');
     stratStats(neoTrades, 'neo');
-    const cartelTrades = allReal.filter(t => t.buy_reason && t.buy_reason.includes('CARTEL'));
+    const cartelTrades = stratSource.filter(t => getTradeStrat(t) === 'cartel');
     stratStats(cartelTrades, 'cartel');
+    const eliteTrades = stratSource.filter(t => getTradeStrat(t) === 'elite');
+    stratStats(eliteTrades, 'elite');
     // Load NEO config for dynamic params display
     fetch('/api/neo-config').then(r=>r.json()).then(nc=>{
       const e=nc.entry||{};const x=nc.exit||{};const sz=nc.sizing||{};
@@ -750,8 +779,8 @@ function renderPage() {
     const tbody=document.getElementById('trades-body');
     tbody.innerHTML=pageTrades.map((t,pi)=>{ const i = start + pi;
       const cls=t.action==='WIN'?'win':t.action==='LOSS'?'loss':'open';
-      const strat=t.buy_reason&&t.buy_reason.includes('CARTEL')?'cartel':t.buy_reason&&t.buy_reason.includes('NEO')?'neo':'std';
-      const stratLabel=strat==='cartel'?'🤝 CARTEL':strat==='neo'?'🧠 NEO':'🚀 STD';
+      const strat=t.buy_reason&&t.buy_reason.includes('ELITE')?'elite':t.buy_reason&&t.buy_reason.includes('CARTEL')?'cartel':t.buy_reason&&t.buy_reason.includes('NEO')?'neo':'std';
+      const stratLabel=strat==='elite'?'👑 ELITE':strat==='cartel'?'🤝 CARTEL':strat==='neo'?'🧠 NEO':'🚀 STD';
       const stratCls='strat-'+strat;
       const slipB=t.slippage_buy_sol||0,slipS=t.slippage_sell_sol||0;
       const pumpB=t.pump_fee_buy_sol||0,pumpS=t.pump_fee_sell_sol||0;
