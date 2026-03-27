@@ -1538,7 +1538,7 @@ export class TradeExecutor {
       const eliteBuyers = this.cartelDetector.getEliteBuyers(tokenAddress);
       if (eliteBuyers && eliteBuyers.size >= 1) {
         const sbRatio = sellCount > 0 ? sellCount / Math.max(buyCount, 1) : 0;
-        if (currentMC <= 6000 && mcRatio <= 2.0 && sbRatio <= 0.35) {
+        if (currentMC <= 12000 && mcRatio <= 2.0) { // v1.2: mc raised 6K→12K (ELITE profitable to 12K), sb removed (71% WR even at 0.50+)
           const eliteOpenCount = Array.from(this.openPositions.values()).filter(p => p.eliteStrategy).length;
           if (eliteOpenCount >= MAX_ELITE) {
             return this.none(`🚫 ELITE pool full (${eliteOpenCount}/${MAX_ELITE}) — skip`, 'RIDE');
