@@ -515,7 +515,7 @@ export class TradeExecutor {
       
       // CARTEL: immediate entry when 2+ good wallets detected (T+2-120s)
       let cartelSig = this.cartelDetector.getSignal(tokenAddress);
-      if (cartelSig && (cartelSig.eliteWalletCount >= 2 || cartelSig.goodWalletCount >= 5) && rtElapsedSec >= 2 && rtElapsedSec <= 120) {
+      if (cartelSig && cartelSig.sniperCount >= 2 && rtElapsedSec >= 2 && rtElapsedSec <= 120) {
         // Trigger immediate evaluation — CARTEL has priority
         this.evaluating.delete(tokenAddress);
         this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
@@ -525,19 +525,7 @@ export class TradeExecutor {
 
       // ELITE RT check removed — replaced by SWARM (poll-based, T=20-90s)
       
-      // v10.14.2: Helius buyer scan — discover hidden good wallets on ALL promising tokens
-      // Trigger: 20+ unique buyers, within 90s of detection (even if CARTEL already detected — may find more wallets)
-      // Cost: ~200 credits/scan, budget allows ~1350 scans/day
-      if (rtBuyCount >= 20 && rtElapsedSec >= 10 && rtElapsedSec <= 90) {
-        this.cartelDetector.heliusScan(tokenAddress).then(sig => {
-          if (sig && (sig.eliteWalletCount >= 2 || sig.goodWalletCount >= 5)) {
-            logger.info({ token: tokenAddress.slice(0,8), goodWallets: sig.goodWalletCount }, 
-              '🔍 Helius scan discovered CARTEL signal!');
-            this.evaluating.delete(tokenAddress);
-            this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
-          }
-        }).catch(() => {});
-      }
+      // CARTEL v2.0: Helius scan supprimé — détection via PumpPortal stream uniquement
 
       // RUGGER: immediate entry for qualified wallets (T+3-30s)
       const rtWallet = rtCached?.walletAddress || '';
@@ -1303,23 +1291,23 @@ export class TradeExecutor {
     }
 
     // NEO v4.52: STALE_EARLYBLEED (50-88s) — fills gap between STALE_EARLY (peak<0.5) and STALE_FAST (90s+)
-    // Targets tokens with tiny peak (0.5-1.5%) bleeding at -13%+ in 50-88s window → heading for HS at -25%
+    // NEO v4.55: Targets tokens with tiny peak (0.5-2.5%) bleeding at -13%+ in 50-88s window → heading for HS at -25%
     // Saves ~12pp per trade vs HS (exit at -14% vs -33% avg). Risk low: peak<1.5% = no real momentum.
-    if (isNeo && holdSec > 50 && holdSec <= 88 && pnlPct < -13 && peakPnl < 1.5) {
+    if (isNeo && holdSec > 50 && holdSec <= 88 && pnlPct < -13 && peakPnl < 2.5) {
       this.openPositions.delete(tokenAddress);
       this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
       this.consecutiveHardStops = 0;
-      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.52 STALE_EARLYBLEED ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — gap fill early exit`, signals);
+      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.55 STALE_EARLYBLEED ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — gap fill early exit`, signals);
     }
 
     // NEO v4.51: STALE_FAST (90s) — token bleeding slowly with no peak = exit before further deterioration
-    // Gap rugs fire HS at tick 0. STALE_FAST catches slow bleeds: -8%+ at 90s, peak <1.5% = no momentum.
+    // NEO v4.55: STALE_FAST catches slow bleeds: -8%+ at 90s, peak <2.5% = no momentum (expanded from 1.5%).
     // Expected: saves ~20-25% vs HS on ~5-10% of trades in 90-170s window.
-    if (isNeo && holdSec > 90 && holdSec <= 170 && pnlPct < -8 && peakPnl < 1.5) {
+    if (isNeo && holdSec > 90 && holdSec <= 170 && pnlPct < -8 && peakPnl < 2.5) {
       this.openPositions.delete(tokenAddress);
       this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
       this.consecutiveHardStops = 0;
-      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.51 STALE_FAST ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — slow bleed exit`, signals);
+      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.55 STALE_FAST ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — slow bleed exit`, signals);
     }
 
     // NEO v4.54: STALE_MID (150s) — token crabbing with no momentum = zombie trade [tightened: 180→150s, pnl<5→3%, peak<15→12%]
@@ -1582,7 +1570,7 @@ export class TradeExecutor {
     // ══════════════════════════════════════════════════════════════
     if (!this.openPositions.has(tokenAddress) && elapsedSec >= 2 && elapsedSec <= 120) {
       const cartelSignal = this.cartelDetector.getSignal(tokenAddress);
-      if (cartelSignal && (cartelSignal.eliteWalletCount >= 2 || cartelSignal.goodWalletCount >= 5)) {
+      if (cartelSignal && cartelSignal.sniperCount >= 2) {
         // No circuit breaker for CARTEL — independent signal, not affected by STD/NEO HS
 
         // FADE block
@@ -1628,8 +1616,8 @@ export class TradeExecutor {
           action: 'BUY', confidence: cartelSignal.confidence, percentage: 100, playbook_strategy: 'RIDE',
           wallet_risk_score: wRisk,
           position_sol: cartelPos,
-          quality_score: cartelSignal.goodWalletCount,
-          reason: `🤝 CARTEL v1.2 BUY — ${cartelSignal.goodWalletCount} good wallets | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | ${uniqueBuyerCount}b pos=${cartelPos}SOL`
+          quality_score: cartelSignal.sniperCount,
+          reason: `🎯 CARTEL v2.0 BUY — ${cartelSignal.sniperCount} snipers | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | ${uniqueBuyerCount}b pos=${cartelPos}SOL`
         };
       }
     }

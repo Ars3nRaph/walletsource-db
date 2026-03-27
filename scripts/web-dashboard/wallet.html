@@ -117,7 +117,7 @@
   <div class="container">
     <header>
       <h1>🎩 v10.14.4 — Wallet</h1>
-      <p class="subtitle">Paper Portfolio — STD v10.14.4 • NEO v4.53 • CARTEL v1.2 • SWARM v1.0</p>
+      <p class="subtitle">Paper Portfolio — STD v10.14.4 • NEO v4.55 • CARTEL v2.0 • SWARM v1.0</p>
       <div class="nav-links">
         <a href="/">📊 Dashboard</a>
         <a href="/graphs">📈 Graphs</a>
@@ -221,7 +221,7 @@
       </div>
       <div class="strat-card" data-strat="cartel" onclick="toggleStrat('cartel')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #a371f7;border-radius:12px;padding:20px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#58a6ff">🤝 CARTEL (v1.2)</span>
+          <span style="font-size:16px;font-weight:700;color:#a371f7">🎯 CARTEL (v2.0)</span>
           <span class="strat-badge cartel">CARTEL</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;text-align:center">
@@ -232,7 +232,7 @@
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="cartel-hs">—</div></div>
         </div>
         <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center">
-          2+ ELITE or 5+ GOOD • ratio≥1.5x • b≥40 • HS -20% • Trail 20%@+25%
+          17 snipers on-chain vérifiés • 2+ convergent &lt;60s • 6.6% rocket rate • HS -20% • Trail 20%@+25%
         </div>
       </div>
 
@@ -406,7 +406,7 @@
   </div>
 <script>
 let equityChart=null;
-const activeStrats = new Set(['std','neo','cartel','elite']);
+const activeStrats = new Set(['std','neo','cartel','elite','swarm']);
 let _lastWalletData = null;
 const PAGE_SIZE = 25;
 let currentPage = 0;
@@ -724,7 +724,7 @@ function renderWallet(d){
       const closed = arr.filter(t => t.action === 'WIN' || t.action === 'LOSS');
       const w = closed.filter(t => t.action === 'WIN').length;
       const n = closed.length;
-      document.getElementById(prefix + '-count').textContent = n || '0';
+      const countEl = document.getElementById(prefix + '-count'); if (countEl) countEl.textContent = n || '0'; else return;
       if (n > 0) {
         const wr = (w / n * 100).toFixed(0);
         document.getElementById(prefix + '-wr').textContent = wr + '%';
@@ -754,8 +754,7 @@ function renderWallet(d){
     stratStats(neoTrades, 'neo');
     const cartelTrades = stratSource.filter(t => getTradeStrat(t) === 'cartel');
     stratStats(cartelTrades, 'cartel');
-    const eliteTrades = stratSource.filter(t => getTradeStrat(t) === 'elite');
-    stratStats(eliteTrades, 'elite');
+    // elite card removed — legacy trades classified as 'elite' exist but no DOM card
     const swarmTrades = stratSource.filter(t => getTradeStrat(t) === 'swarm');
     stratStats(swarmTrades, 'swarm');
     // Load NEO config for dynamic params display
@@ -782,7 +781,7 @@ function renderPage() {
     const tbody=document.getElementById('trades-body');
     tbody.innerHTML=pageTrades.map((t,pi)=>{ const i = start + pi;
       const cls=t.action==='WIN'?'win':t.action==='LOSS'?'loss':'open';
-      const strat=t.buy_reason&&t.buy_reason.includes('SWARM')?'swarm':t.buy_reason.includes('ELITE')?'elite':t.buy_reason&&t.buy_reason.includes('CARTEL')?'cartel':t.buy_reason&&t.buy_reason.includes('NEO')?'neo':'std';
+      const strat=t.buy_reason&&t.buy_reason.includes('SWARM')?'swarm':t.buy_reason&&t.buy_reason.includes('ELITE')?'elite':t.buy_reason&&t.buy_reason.includes('CARTEL')?'cartel':t.buy_reason&&t.buy_reason.includes('NEO')?'neo':'std';
       const stratLabel=strat==='swarm'?'🐝 SWARM':strat==='elite'?'👑 ELITE':strat==='cartel'?'🤝 CARTEL':strat==='neo'?'🧠 NEO':'🚀 STD';
       const stratCls='strat-'+strat;
       const slipB=t.slippage_buy_sol||0,slipS=t.slippage_sell_sol||0;

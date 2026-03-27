@@ -1,233 +1,180 @@
 import type { Pool } from 'pg';
-import type { HeliusBuyerScanner } from '../api/HeliusBuyerScanner.js';
 import { logger } from '../utils/logger.js';
 
 /**
- * CartelDetector v1.0 — Detects high-WR wallet convergence on tokens
- * 
- * A "good wallet" = one that historically buys early (within 90s of detection)
- * on tokens that subsequently pump 20%+, with 65%+ win rate on 15+ tokens.
- * 
- * When multiple good wallets buy the same token early, it's a strong buy signal:
- *   2 good wallets → 67.6% WR, +51% avg
- *   3 good wallets → 61.4% WR (but higher avg peak)
- *   5+ good wallets → 88.9% WR
+ * CartelDetector v2.0 — Sniper Wallet Convergence
+ *
+ * Replaces fake ELITE/GOOD (wallet_stats WR) with REAL on-chain verified snipers.
+ *
+ * These 17 wallets were identified by analyzing 4 days of trade_events:
+ * - Each was present in the first 60s of tokens that did 10x+
+ * - Rocket precision: 3-40% (vs 0.46% base rate = up to 87x edge)
+ * - When 2+ converge: 6.6% rocket rate, 16.3% rate for x4+
+ *
+ * Detection flow:
+ *   trade_events stream → onTrade() → tokenSniperBuyers map
+ *   evaluateEntry() → getSignal() → sniperCount >= 2 within 60s → BUY
+ *
+ * No Helius needed. Pure PumpPortal stream.
  */
 
 export interface CartelSignal {
+  sniperCount: number;
+  snipers: string[];           // which sniper wallets bought
+  confidence: number;          // 0-1
+  positionSol: number;         // sized by sniper count
+  combinedScore: number;       // sum of signal_scores
+  // Legacy fields for compatibility
   goodWalletCount: number;
-  eliteWalletCount: number;   // v1.2: wallets with WR >= 75% (real P&L)
-  goodWallets: string[];      // which good wallets bought this token
-  confidence: number;          // 0-1 based on count
-  positionSol: number;        // sized by confidence
+  eliteWalletCount: number;
+  goodWallets: string[];
+}
+
+interface SniperInfo {
+  rocketPct: number;
+  signalScore: number;
+  avgEntrySec: number;
 }
 
 export class CartelDetector {
   private pool: Pool;
-  private goodWallets: Map<string, { tokens: number; wr: number }> = new Map();
+  private snipers: Map<string, SniperInfo> = new Map();
   private lastRefresh = 0;
   private refreshing = false;
-  private refreshIntervalMs = 3600_000; // refresh every hour
+  private readonly REFRESH_MS = 3_600_000; // 1h
   private ready = false;
 
-  // Track which good wallets bought each active token
-  private tokenGoodBuyers: Map<string, Set<string>> = new Map();
-  private buyerScanner: HeliusBuyerScanner | null = null;
-  private scannedTokens = new Set<string>(); // prevent duplicate scans
+  // token → set of sniper wallets that bought early
+  private tokenSniperBuyers: Map<string, { wallets: Set<string>; firstAt: number }> = new Map();
 
   constructor(pool: Pool) {
     this.pool = pool;
   }
 
-  setBuyerScanner(scanner: HeliusBuyerScanner): void {
-    this.buyerScanner = scanner;
-    logger.info('🤝 CartelDetector: HeliusBuyerScanner wired');
-  }
-
-  /**
-   * Scan a token's on-chain buyers via Helius Enhanced API
-   * Called when a token looks promising (30+ buyers) to discover
-   * good wallets that bought before our WS detected them
-   * Cost: ~200 credits per scan. Budget: ~1350 scans/day.
-   */
-  async heliusScan(tokenAddress: string): Promise<CartelSignal | null> {
-    if (!this.buyerScanner || !this.ready) return null;
-    if (this.scannedTokens.has(tokenAddress)) return null; // already scanned
-    this.scannedTokens.add(tokenAddress);
-    
-    // Evict old entries to prevent memory leak
-    if (this.scannedTokens.size > 5000) {
-      const arr = Array.from(this.scannedTokens);
-      for (let i = 0; i < 2500; i++) this.scannedTokens.delete(arr[i]);
-    }
-
-    const matches = await this.buyerScanner.findGoodWalletBuyers(tokenAddress, this.goodWallets as any);
-    
-    // Add discovered good wallets to our in-memory tracker
-    for (const match of matches) {
-      if (!this.tokenGoodBuyers.has(tokenAddress)) {
-        this.tokenGoodBuyers.set(tokenAddress, new Set());
-      }
-      this.tokenGoodBuyers.get(tokenAddress)!.add(match.wallet);
-    }
-
-    return this.getSignal(tokenAddress);
-  }
+  // No-op: Helius scanner no longer needed
+  setBuyerScanner(_scanner: unknown): void {}
+  async heliusScan(_token: string): Promise<CartelSignal | null> { return null; }
 
   async init(): Promise<void> {
     this.refreshing = true;
-    await this.refreshGoodWallets();
+    await this.refreshSnipers();
     this.refreshing = false;
-    logger.info({ goodWallets: this.goodWallets.size }, '🤝 CartelDetector initialized');
+    logger.info({ snipers: this.snipers.size }, '🎯 CartelDetector v2.0 initialized — real on-chain snipers');
   }
 
-  private async refreshGoodWallets(): Promise<void> {
+  private async refreshSnipers(): Promise<void> {
     try {
-      // Fast read from persistent wallet_stats (populated by WalletStatsWorker)
-      const result = await this.pool.query(`
-        SELECT wallet_address, tokens_total, win_rate
-        FROM wallet_stats
-        WHERE category IN ('ELITE', 'GOOD')
-        ORDER BY win_rate DESC
+      const res = await this.pool.query(`
+        SELECT wallet_address, rocket_pct, signal_score, avg_entry_sec
+        FROM sniper_wallets
+        ORDER BY signal_score DESC
       `);
-
-      this.goodWallets.clear();
-      for (const row of result.rows) {
-        this.goodWallets.set(row.wallet_address, {
-          tokens: parseInt(row.tokens_total),
-          wr: parseFloat(row.win_rate) * 100,
+      this.snipers.clear();
+      for (const row of res.rows) {
+        this.snipers.set(row.wallet_address, {
+          rocketPct: parseFloat(row.rocket_pct),
+          signalScore: parseFloat(row.signal_score),
+          avgEntrySec: parseFloat(row.avg_entry_sec),
         });
       }
       this.lastRefresh = Date.now();
       this.ready = true;
-      logger.info({ count: this.goodWallets.size }, 'Good wallets refreshed from wallet_stats');
+      logger.info({ count: this.snipers.size }, '🎯 Sniper wallets refreshed from DB');
     } catch (err) {
-      logger.error({ err }, 'Failed to refresh good wallets');
+      logger.error({ err }, 'Failed to refresh sniper wallets');
     }
   }
 
-  /** Call on each trade event to track good wallet activity per token */
+  /** Called on every trade_event from PumpPortal stream */
   onTrade(tokenAddress: string, traderWallet: string, txType: string): void {
-    if (txType !== 'buy') return;
-    if (!this.ready) return;
+    if (txType !== 'buy' || !this.ready) return;
 
-    // Auto-refresh hourly (with stampede guard)
-    if (!this.refreshing && Date.now() - this.lastRefresh > this.refreshIntervalMs) {
+    // Auto-refresh hourly
+    if (!this.refreshing && Date.now() - this.lastRefresh > this.REFRESH_MS) {
       this.refreshing = true;
-      this.refreshGoodWallets().catch(() => {}).finally(() => { this.refreshing = false; });
+      this.refreshSnipers().catch(() => {}).finally(() => { this.refreshing = false; });
     }
 
-    if (!this.goodWallets.has(traderWallet)) return;
+    if (!this.snipers.has(traderWallet)) return;
 
-    if (!this.tokenGoodBuyers.has(tokenAddress)) {
-      this.tokenGoodBuyers.set(tokenAddress, new Set());
+    const now = Date.now();
+    if (!this.tokenSniperBuyers.has(tokenAddress)) {
+      this.tokenSniperBuyers.set(tokenAddress, { wallets: new Set(), firstAt: now });
     }
-    const buyers = this.tokenGoodBuyers.get(tokenAddress)!;
-    if (!buyers.has(traderWallet)) {
-      buyers.add(traderWallet);
-      const count = buyers.size;
-      const walletInfo = this.goodWallets.get(traderWallet)!;
+    const entry = this.tokenSniperBuyers.get(tokenAddress)!;
+
+    // Reset window if first sniper was >60s ago (token too old)
+    if (now - entry.firstAt > 60_000) {
+      entry.wallets.clear();
+      entry.firstAt = now;
+    }
+
+    if (!entry.wallets.has(traderWallet)) {
+      entry.wallets.add(traderWallet);
+      const info = this.snipers.get(traderWallet)!;
       logger.info({
         token: tokenAddress.slice(0, 8),
         wallet: traderWallet.slice(0, 8),
-        walletWR: walletInfo.wr,
-        goodCount: count,
-      }, `🤝 Good wallet #${count} detected`);
+        rocketPct: info.rocketPct.toFixed(1) + '%',
+        sniperCount: entry.wallets.size,
+      }, `🎯 Sniper #${entry.wallets.size} detected`);
     }
   }
 
-  /** Check if a token has cartel signal — call from TradeExecutor */
+  /** Returns signal if ≥2 snipers bought this token within 60s */
   getSignal(tokenAddress: string): CartelSignal | null {
-    const buyers = this.tokenGoodBuyers.get(tokenAddress);
-    if (!buyers || buyers.size < 2) return null;
+    const entry = this.tokenSniperBuyers.get(tokenAddress);
+    if (!entry || entry.wallets.size < 2) return null;
 
-    const count = buyers.size;
-    // v1.2: count ELITE wallets (WR >= 75% real P&L)
-    let eliteCount = 0;
-    for (const w of buyers) {
-      const info = this.goodWallets.get(w);
-      if (info && info.wr >= 75) eliteCount++;
-    }
-    // Sizing: 2→0.50, 3→0.60, 4+→0.70
-    const positionSol = count >= 4 ? 0.70 : count >= 3 ? 0.60 : 0.50;
-    const confidence = Math.min(0.95, 0.70 + count * 0.05);
+    // Check window still valid
+    if (Date.now() - entry.firstAt > 90_000) return null;
+
+    const walletList = Array.from(entry.wallets);
+    const count = walletList.length;
+
+    // Combined signal score from all converging snipers
+    const combinedScore = walletList.reduce((sum, w) => {
+      return sum + (this.snipers.get(w)?.signalScore ?? 0);
+    }, 0);
+
+    // Position sizing: 2 snipers→0.40, 3→0.55, 4+→0.70 SOL
+    const positionSol = count >= 4 ? 0.70 : count >= 3 ? 0.55 : 0.40;
+    const confidence = Math.min(0.95, 0.65 + count * 0.10);
 
     return {
-      goodWalletCount: count,
-      eliteWalletCount: eliteCount,
-      goodWallets: Array.from(buyers),
+      sniperCount: count,
+      snipers: walletList,
       confidence,
       positionSol,
+      combinedScore,
+      // Legacy compat
+      goodWalletCount: count,
+      eliteWalletCount: count,
+      goodWallets: walletList,
     };
   }
 
-  /** Get ELITE wallets that bought this token (WR >= 75%) */
-  getEliteBuyers(tokenAddress: string): Set<string> | null {
-    const buyers = this.tokenGoodBuyers.get(tokenAddress);
-    if (!buyers || buyers.size === 0) return null;
+  /** Legacy compat — used by old Helius RT path, now returns null */
+  getEliteBuyers(_token: string): Set<string> | null { return null; }
 
-    const elites = new Set<string>();
-    for (const w of buyers) {
-      const info = this.goodWallets.get(w);
-      if (info && info.wr >= 75) elites.add(w);
-    }
-    return elites.size > 0 ? elites : null;
-  }
-
-  /** Clean up expired tokens (call periodically) */
   cleanupToken(tokenAddress: string): void {
-    this.tokenGoodBuyers.delete(tokenAddress);
+    this.tokenSniperBuyers.delete(tokenAddress);
   }
 
-  /** Get stats for dashboard */
-  getStats(): { goodWalletCount: number; trackedTokens: number } {
+  getStats(): { goodWalletCount: number; trackedTokens: number; sniperCount: number } {
     return {
-      goodWalletCount: this.goodWallets.size,
-      trackedTokens: this.tokenGoodBuyers.size,
+      goodWalletCount: this.snipers.size,
+      sniperCount: this.snipers.size,
+      trackedTokens: this.tokenSniperBuyers.size,
     };
   }
 
   isGoodWallet(wallet: string): boolean {
-    return this.goodWallets.has(wallet);
+    return this.snipers.has(wallet);
   }
-  // Track watched wallet buys for cross-wallet cartel detection (even untracked tokens)
-  private watchedWalletTokenBuys: Map<string, { wallets: Set<string>; firstAt: number }> = new Map();
 
-  /**
-   * Called by WalletWatcher when a monitored (ELITE/GOOD) wallet buys any token.
-   * 2+ watched wallets buying same token within 120s emits a CARTEL signal.
-   */
+  // Legacy compat
   onWatchedWalletBuy(tokenAddress: string, walletAddress: string): void {
-    const now = Date.now();
-    const WINDOW_MS = 120_000;
-    if (!this.watchedWalletTokenBuys.has(tokenAddress)) {
-      this.watchedWalletTokenBuys.set(tokenAddress, { wallets: new Set(), firstAt: now });
-    }
-    const entry = this.watchedWalletTokenBuys.get(tokenAddress)!;
-    if (now - entry.firstAt > WINDOW_MS) {
-      entry.wallets.clear();
-      entry.firstAt = now;
-    }
-    entry.wallets.add(walletAddress);
-    if (entry.wallets.size >= 2) {
-      const count = entry.wallets.size;
-      logger.info({
-        token: tokenAddress.slice(0, 8),
-        watchedCount: count,
-      }, 'CARTEL SIGNAL: watched wallets converging on token');
-      if (!this.tokenGoodBuyers.has(tokenAddress)) {
-        this.tokenGoodBuyers.set(tokenAddress, new Set());
-      }
-      const buyers = this.tokenGoodBuyers.get(tokenAddress)!;
-      for (const w of entry.wallets) buyers.add(w);
-    }
-    if (this.watchedWalletTokenBuys.size > 2000) {
-      const cutoff = now - WINDOW_MS * 2;
-      for (const [tok, e] of this.watchedWalletTokenBuys) {
-        if (e.firstAt < cutoff) this.watchedWalletTokenBuys.delete(tok);
-      }
-    }
+    this.onTrade(tokenAddress, walletAddress, 'buy');
   }
-
 }
-
