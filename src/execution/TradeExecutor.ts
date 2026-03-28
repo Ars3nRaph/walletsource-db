@@ -519,16 +519,10 @@ export class TradeExecutor {
       const rtBuyCount = state.buyCount || 0;
       const rtMcs = state.recentMCs || [];
       
-      // CARTEL: immediate entry when 2+ snipers detected (T+2-120s)
-      // v2.1: min MC $5K + min 50 buyers + circuit breaker
-      let cartelSig = this.cartelDetector.getSignal(tokenAddress);
-      const cartelCircuitOpen = this.cartelCircuitBreakerUntil > Date.now();
-      if (cartelSig && cartelSig.sniperCount >= 2 && rtElapsedSec >= 2 && rtElapsedSec <= 120
-          && mcUsd >= 5000 && rtBuyers >= 50 && !cartelCircuitOpen) {
-        // Trigger immediate evaluation — CARTEL has priority
-        this.evaluating.delete(tokenAddress);
-        this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
-      }
+      // CARTEL DISABLED v2.3 — mécanisme sniper PumpPortal inférieur à v1.x wallet_stats
+      // v2.0 stats: 46.1% WR, +1.2% avg, 44.7% HS rate vs v1.x: 57.1% WR, +13.0% avg, 29.6% HS
+      // Raising sniper threshold makes it worse (3+ = 34.8% WR, -4.2% avg). Full redesign needed.
+      // const cartelSig = this.cartelDetector.getSignal(tokenAddress);
 
 
 
@@ -1515,7 +1509,7 @@ export class TradeExecutor {
     // Entry: immediate (no buyer threshold needed)
     // Exit: at P25 target MC of wallet's history, or hard stop -20%
     // ══════════════════════════════════════════════════════════════
-    if (false && !this.openPositions.has(tokenAddress) && !this.ruggerPositions.has(tokenAddress) && elapsedSec >= 3 && elapsedSec <= 30) {
+    if (!this.openPositions.has(tokenAddress) && !this.ruggerPositions.has(tokenAddress) && elapsedSec >= 3 && elapsedSec <= 30) {
       // Refresh profiles periodically
       await this.ruggerProfiler.refreshProfiles();
       
@@ -1616,9 +1610,10 @@ export class TradeExecutor {
 
 
     // ══════════════════════════════════════════════════════════════
+    // CARTEL DISABLED v2.3 — see RT path comment above for reasoning
     if (!this.openPositions.has(tokenAddress) && elapsedSec >= 2 && elapsedSec <= 120) {
       const cartelSignal = this.cartelDetector.getSignal(tokenAddress);
-      if (cartelSignal && cartelSignal.sniperCount >= 2) {
+      if (cartelSignal && cartelSignal.sniperCount >= 999) { // v2.3: DISABLED (seuil 999 = jamais)
         // v2.1: Circuit breaker check
         if (this.cartelCircuitBreakerUntil > Date.now()) {
           return this.none(`🔌 CARTEL: circuit breaker actif jusqu'à ${new Date(this.cartelCircuitBreakerUntil).toISOString()}`, 'RIDE');
