@@ -1205,7 +1205,7 @@ export class TradeExecutor {
     // STD/CARTEL keep 50% threshold. STD: no trail below 50%, so 50% is correct for them.
     const pump3Threshold = isNeo ? 25 : (isCartel ? 25 : 15); // STD v10.15: aligned with trail trigger 15% (was 50%)
     // v10.13: PUMP3 disabled for STD until 2026-03-25 20:23 UTC (Raph request)
-    const pump3DisabledForSTD = !isNeo && !isCartel && Date.now() < new Date("2026-03-25T20:23:00Z").getTime();
+    const pump3DisabledForSTD = !isNeo && !isCartel; // STD v10.16: PUMP3 DISABLED for STD permanently — 56% of tokens continue +20%+ after exit, avg +41.7pp left on table. Trail@15% handles these correctly.
     if (!pump3DisabledForSTD && pos.pumpPeaks && pos.pumpPeaks.length >= 3 && peakPnl < pump3Threshold) {
       const thirdPeak = pos.pumpPeaks[2];
       const dropFrom3rd = (thirdPeak - currentMC) / thirdPeak;
