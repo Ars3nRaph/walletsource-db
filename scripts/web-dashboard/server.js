@@ -16,6 +16,28 @@ dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// AUTH — HTTP Basic Auth sur toutes les routes
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const DASH_USER = process.env.DASHBOARD_USER || 'raph';
+const DASH_PASS = process.env.DASHBOARD_PASS || 'changeme';
+
+app.use((req, res, next) => {
+  const auth = req.headers['authorization'];
+  if (!auth || !auth.startsWith('Basic ')) {
+    res.set('WWW-Authenticate', 'Basic realm="WalletSource Dashboard"');
+    return res.status(401).send('Authentification requise');
+  }
+  const [user, pass] = Buffer.from(auth.slice(6), 'base64').toString().split(':');
+  if (user !== DASH_USER || pass !== DASH_PASS) {
+    res.set('WWW-Authenticate', 'Basic realm="WalletSource Dashboard"');
+    return res.status(401).send('Identifiants incorrects');
+  }
+  next();
+});
+
+
 const PORT = process.env.DASHBOARD_PORT || 3001;
 
 // PostgreSQL pool
