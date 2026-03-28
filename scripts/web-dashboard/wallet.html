@@ -117,7 +117,7 @@
   <div class="container">
     <header>
       <h1>🎩 v10.16 — Wallet</h1>
-      <p class="subtitle">Paper Portfolio — STD v10.16 • NEO v4.61 • CARTEL v2.1 • SWARM v1.0</p>
+      <p class="subtitle">Paper Portfolio — STD v10.16 • NEO v4.61 • SWARM v1.0</p>
       <div class="nav-links">
         <a href="/">📊 Dashboard</a>
         <a href="/graphs">📈 Graphs</a>
@@ -219,22 +219,7 @@
           Loading NEO config...
         </div>
       </div>
-      <div class="strat-card" data-strat="cartel" onclick="toggleStrat('cartel')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #a371f7;border-radius:12px;padding:20px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#a371f7">🎯 CARTEL (DÉSACTIVÉ)</span>
-          <span class="strat-badge cartel">CARTEL</span>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;text-align:center">
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="cartel-count">0</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Win Rate</div><div style="font-size:20px;font-weight:700;color:#3fb950" id="cartel-wr">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Avg Net</div><div style="font-size:20px;font-weight:700" id="cartel-avg">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="cartel-sol">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="cartel-hs">—</div></div>
-        </div>
-        <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center">
-          ⛔ Désactivé v2.3 — mécanisme sniper PumpPortal inférieur à v1.x. Redesign requis.
-        </div>
-      </div>
+
 
       <div class="strat-card" data-strat="swarm" onclick="toggleStrat('swarm')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #f1c40f;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
@@ -405,7 +390,7 @@
   </div>
 <script>
 let equityChart=null;
-const activeStrats = new Set(['std','neo','cartel','elite','swarm']);
+const activeStrats = new Set(['std','neo','elite','swarm']); // CARTEL removed
 let _lastWalletData = null;
 const PAGE_SIZE = 25;
 let currentPage = 0;
@@ -652,7 +637,7 @@ async function loadWallet(){
 function renderWallet(d){
     const{config:cfg,trades:allTrades}=d;
     // Filter trades by active strategies
-    const realTrades=allTrades.filter(t=>t.action!=='SKIP');
+    const realTrades=allTrades.filter(t=>t.action!=='SKIP' && t.buy_strategy!=='CARTEL'); // CARTEL excluded
     // v10.13: Populate version filter dropdown
     const vSelect=document.getElementById('f-version');
     if(vSelect&&vSelect.options.length<=1){
@@ -751,8 +736,7 @@ function renderWallet(d){
     stratStats(stdTrades, 'std');
     const neoTrades = stratSource.filter(t => getTradeStrat(t) === 'neo');
     stratStats(neoTrades, 'neo');
-    const cartelTrades = stratSource.filter(t => getTradeStrat(t) === 'cartel');
-    stratStats(cartelTrades, 'cartel');
+    // CARTEL stats removed
     // elite card removed — legacy trades classified as 'elite' exist but no DOM card
     const swarmTrades = stratSource.filter(t => getTradeStrat(t) === 'swarm');
     stratStats(swarmTrades, 'swarm');
