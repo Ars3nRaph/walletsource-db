@@ -597,7 +597,7 @@ export class TradeExecutor {
       const rtIsNeo = rtPos.neoStrategy === true;
       const rtIsCartel = rtPos.cartelStrategy === true;
       const rtIsSwarm = rtPos.swarmStrategy === true;
-      const rtTrailTrigger = rtIsSwarm ? 40 : (rtIsNeo || rtIsCartel) ? 25 : 50; // SWARM: trail from +40%, NEO/CARTEL: 25%, STD: 50%
+      const rtTrailTrigger = rtIsSwarm ? 40 : (rtIsNeo || rtIsCartel) ? 25 : 15; // SWARM: trail from +40%, NEO/CARTEL: 25%, STD: 15% (v10.15: was 50%, backtest +8.4pp on PUMP3 exits)
       if (rtPeakPnl >= rtTrailTrigger) {
         if (rtIsSwarm) {
           rtDropLimit = 0.20; // SWARM: 20% trail drop
@@ -969,14 +969,12 @@ export class TradeExecutor {
 
             if (sellVol60 > buyVol60) {
               pos.postEntrySignal = 'SELL_DOM';
-              // SELL_DOM: 18% WR, avg -19.1% → exit immediately
+              // v10.15: SELL_DOM_60s DISABLED for STD — backtest shows avg +1.4% exit vs +14.9% natural PUMP3
+              // Tokens often bounce after initial sell pressure. Keeping position = +0.6 SOL improvement per period.
               const pnl60 = ((currentMC - pos.entryMC) / pos.entryMC * 100);
-              logger.info({ token: tokenAddress.slice(0, 8), buyVol: buyVol60.toFixed(0), sellVol: sellVol60.toFixed(0), postBuyers, pnl: pnl60.toFixed(1) },
-                '🚫 v10.13 SELL_DOM at 60s — exiting STD position');
-              this.openPositions.delete(tokenAddress);
-              return this.sell(100, 0.95, 'RIDE',
-                `🚫 v10.13 SELL_DOM_60s — sell>${'$'}${sellVol60.toFixed(0)} > buy>${'$'}${buyVol60.toFixed(0)} (${postBuyers}b) | P&L ${pnl60.toFixed(1)}%`,
-                this.emptySignals());
+              logger.info({ token: tokenAddress.slice(0, 8), buyVol: buyVol60.toFixed(0), sellVol: sellVol60.toFixed(0), pnl: pnl60.toFixed(1) },
+                '⚠️ v10.15 SELL_DOM detected (ignored for STD — disabled)');
+              // INTENTIONALLY NOT EXITING — let natural exits (trail/PUMP3/HS) handle
             } else if (volRatio60 > 5 && postBuyers >= 15) {
               pos.postEntrySignal = 'STRONG';
               pos.addOnBought = true;
@@ -1143,7 +1141,7 @@ export class TradeExecutor {
     const isNeo = pos.neoStrategy === true;
     const isCartel = pos.cartelStrategy === true;
     const isSwarm = pos.swarmStrategy === true;
-    const trailTrigger = isSwarm ? 40 : (isNeo || isCartel) ? 25 : 50; // SWARM: trail from +40% // NEO/CARTEL: 25%, STD: 50%
+    const trailTrigger = isSwarm ? 40 : (isNeo || isCartel) ? 25 : 15; // SWARM: trail from +40% // NEO/CARTEL: 25%, STD: 15% (v10.15: was 50%, backtest +8.4pp)
     let dropLimit = 0; // 0 = no trail, rely on hard stop
     if (peakPnl >= trailTrigger) {
       if (isSwarm) {
@@ -1205,7 +1203,7 @@ export class TradeExecutor {
     // v10.10i: PUMP3 EXIT — 3 pumps without reaching trail trigger = token is crab, exit at -7% from 3rd peak
     // NEO v4.19: NEO trail triggers at +30% → PUMP3 threshold also 30% (was 50%). Faster crab exit, matches trail.
     // STD/CARTEL keep 50% threshold. STD: no trail below 50%, so 50% is correct for them.
-    const pump3Threshold = isNeo ? 25 : 50; // NEO v4.27: aligned with trail trigger (25%)
+    const pump3Threshold = isNeo ? 25 : (isCartel ? 25 : 15); // STD v10.15: aligned with trail trigger 15% (was 50%)
     // v10.13: PUMP3 disabled for STD until 2026-03-25 20:23 UTC (Raph request)
     const pump3DisabledForSTD = !isNeo && !isCartel && Date.now() < new Date("2026-03-25T20:23:00Z").getTime();
     if (!pump3DisabledForSTD && pos.pumpPeaks && pos.pumpPeaks.length >= 3 && peakPnl < pump3Threshold) {
@@ -1221,30 +1219,9 @@ export class TradeExecutor {
       }
     }
 
-    // v10.10c: LOWER HIGH EXIT on pump 3+
-    // If 3rd pump fails to break significantly above 2nd pump → momentum dead, exit
-    // Backtest: p2<50% margin15% → 469 triggers, +5.7% exit, saves +2.9%, WR 54%
-    if (pos.pumpPeaks && pos.pumpPeaks.length >= 2 && pos.pumpState === 'PUMP') {
-      const lastPeak = pos.pumpPeaks[pos.pumpPeaks.length - 1];
-      const lastPeakPnl = (lastPeak - pos.entryMC) / pos.entryMC * 100;
-      // Only apply when previous peaks were small (<50%) — don't cut moonshots
-      if (lastPeakPnl < 50) {
-        // Current pump cycle high vs last recorded peak
-        const margin = (pos.cycleHigh - lastPeak) / lastPeak;
-        if (margin < 0.15) {
-          // Lower high (or barely higher) — check for -10% drop from current cycle high
-          const dropFromCycle = (pos.cycleHigh - currentMC) / pos.cycleHigh;
-          if (dropFromCycle >= 0.10) {
-            this.openPositions.delete(tokenAddress);
-            this.closedTokens.set(tokenAddress, { exitType: 'LOWER_HIGH', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
-      this.consecutiveHardStops = 0; // CB reset on non-HS exit
-            return this.sell(100, 0.90, 'RIDE',
-              `📉 v10.10 LOWER HIGH — pump ${pos.pumpPeaks.length + 1} failed (cycle +${((pos.cycleHigh-pos.entryMC)/pos.entryMC*100).toFixed(0)}% vs prev +${lastPeakPnl.toFixed(0)}%) | P&L ${pnlPct.toFixed(1)}%`,
-              signals);
-          }
-        }
-      }
-    }
+    // v10.15: LOWER HIGH EXIT DISABLED for STD
+    // Backtest: 10 trades avg -14.1%, 0% above breakeven. Tokens flagged as "lower high" still recover.
+    // Keeping position → natural PUMP3/trail/HS exits add ~+0.4 SOL per period.
 
     // ── ELITE-MIMIC: sell-surge early exit ──
     if (false) { // copy-exit removed
@@ -2202,7 +2179,7 @@ export class TradeExecutor {
       // v10.13: If token peaked above trail trigger but never trailed (WS gap),
       // simulate trail exit instead of closing at current (crashed) MC
       const peakPnl = (pos.highestMC - pos.entryMC) / pos.entryMC * 100;
-      const trailTrigger = pos.neoStrategy ? 25 : (pos.cartelStrategy ? 30 : 50);
+      const trailTrigger = pos.neoStrategy ? 25 : (pos.cartelStrategy ? 30 : 15); // STD v10.15: 50→15
       if (peakPnl > trailTrigger && !lastKnownMC) {
         // Token should have trailed — estimate exit at peak - default trail drop
         const trailDrop = pos.neoStrategy ? 0.15 : 0.20;
