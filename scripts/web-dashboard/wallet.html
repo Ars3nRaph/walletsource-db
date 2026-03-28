@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>v10.14.4 — Wallet Simulation</title>
+  <title>v10.16 — Wallet Simulation</title>
   <link rel="stylesheet" href="styles.css">
   <style>
     .wallet-header { display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:24px; }
@@ -116,8 +116,8 @@
 <body>
   <div class="container">
     <header>
-      <h1>🎩 v10.14.4 — Wallet</h1>
-      <p class="subtitle">Paper Portfolio — STD v10.14.4 • NEO v4.55 • CARTEL v2.0 • SWARM v1.0</p>
+      <h1>🎩 v10.16 — Wallet</h1>
+      <p class="subtitle">Paper Portfolio — STD v10.16 • NEO v4.61 • CARTEL v2.1 • SWARM v1.0</p>
       <div class="nav-links">
         <a href="/">📊 Dashboard</a>
         <a href="/graphs">📈 Graphs</a>
@@ -185,7 +185,7 @@
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;margin-bottom:24px" id="strat-cards">
       <div class="strat-card" data-strat="std" onclick="toggleStrat('std')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #f0883e;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#58a6ff">🚀 STANDARD (v10.14.4)</span>
+          <span style="font-size:16px;font-weight:700;color:#58a6ff">🚀 STANDARD (v10.16)</span>
           <span class="strat-badge std">STD</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center">
@@ -198,12 +198,12 @@
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="std-hs">—</div></div>
         </div>
         <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="std-params">
-          b≥70 • ratio 2.0-3.0x • d&lt;30 • HS -20% • Trail 20%@+50% • 0.30-0.50 SOL
+          b≥75 • ratio 2.0-3.0x • d&lt;25 • HS -20% • Trail 20%@+15% • No PUMP3 • No SELL_DOM • 0.30-0.50 SOL
         </div>
       </div>
       <div class="strat-card" data-strat="neo" onclick="toggleStrat('neo')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #da3633;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#da3633">🧠 NEO (v4.55)</span>
+          <span style="font-size:16px;font-weight:700;color:#da3633">🧠 NEO (v4.61)</span>
           <span class="strat-badge neo">NEO</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center">
@@ -221,7 +221,7 @@
       </div>
       <div class="strat-card" data-strat="cartel" onclick="toggleStrat('cartel')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #a371f7;border-radius:12px;padding:20px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#a371f7">🎯 CARTEL (v2.0)</span>
+          <span style="font-size:16px;font-weight:700;color:#a371f7">🎯 CARTEL (v2.1)</span>
           <span class="strat-badge cartel">CARTEL</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;text-align:center">
@@ -232,7 +232,7 @@
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="cartel-hs">—</div></div>
         </div>
         <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center">
-          17 snipers on-chain vérifiés • 2+ convergent &lt;60s • 6.6% rocket rate • HS -20% • Trail 20%@+25%
+          2+ snipers convergent • MC≥$5K • ≥50 buyers • HS -20% • Trail 20%@+25% • Circuit breaker 3HS→30min
         </div>
       </div>
 
