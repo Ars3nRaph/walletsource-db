@@ -682,7 +682,7 @@ app.get('/api/wallet-sim', async (req, res) => {
       `SELECT token_address, timestamp, mc_usd, confidence, position_sol, quality_score,
               wallet_risk, buyers, ratio, dumps, sell_ratio, top_holder_pct, avg_buy_usd,
               reason, buy_strategy, strategy, strategy_version
-       FROM paper_trades WHERE action='BUY' ORDER BY timestamp`
+       FROM paper_trades WHERE action='BUY' AND buy_strategy != 'CARTEL' ORDER BY timestamp`
     );
     const { rows: sells } = await pool.query(
       `SELECT token_address, timestamp, mc_usd, exit_type, pnl_pct, peak_pct, reason
@@ -816,7 +816,7 @@ app.get('/api/live-wallet', async (req, res) => {
     let walletAddress = null;
     try {
       const { rows: wRows } = await pool.query(
-        `SELECT wallet_address FROM live_trades WHERE wallet_address IS NOT NULL ORDER BY executed_at DESC LIMIT 1`
+        `SELECT wallet_address FROM live_trades_v2 WHERE wallet_address IS NOT NULL ORDER BY executed_at DESC LIMIT 1`
       );
       if (wRows[0]?.wallet_address) {
         walletAddress = wRows[0].wallet_address;
@@ -835,7 +835,7 @@ app.get('/api/live-wallet', async (req, res) => {
              fee_sol, jito_tip_sol, slippage_sol, slippage_pct,
              tx_signature, reason, jito_bundle, tip_lamports,
              latency_ms, executed_at, wallet_address, parsed_ok
-      FROM live_trades WHERE side='BUY' ORDER BY executed_at
+      FROM live_trades_v2 WHERE side='BUY' ORDER BY executed_at
     `);
 
     // Récupérer les SELL
@@ -845,7 +845,7 @@ app.get('/api/live-wallet', async (req, res) => {
              fee_sol, jito_tip_sol, slippage_sol, slippage_pct,
              tx_signature, tx_sig_buy, reason,
              latency_ms, executed_at, parsed_ok
-      FROM live_trades WHERE side='SELL' ORDER BY executed_at
+      FROM live_trades_v2 WHERE side='SELL' ORDER BY executed_at
     `);
 
     const sellMap = {};

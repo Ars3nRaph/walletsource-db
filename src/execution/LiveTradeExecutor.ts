@@ -644,13 +644,13 @@ export class LiveTradeExecutor {
     tx: string; reason: string; pnl?: number; pnlPct?: number;
     tokensAmount?: bigint; feeSol?: number; jitoTipSol?: number;
     slippageSol?: number; slippagePct?: number;
-    txSigBuy?: string; parsedOk?: boolean;
+    txSigBuy?: string; parsedOk?: boolean; exitType?: string; pnlGross?: number;
   }) {
     try {
       await this.pool.query(`
-        INSERT INTO live_trades 
-          (token_address, side, sol_in, sol_out, pnl_sol, pnl_pct, tx_signature,
-           reason, jito_bundle, tip_lamports, latency_ms,
+        INSERT INTO live_trades_v2 
+          (token_address, side, sol_intended, sol_out_actual, pnl_sol, pnl_pct, tx_signature,
+           reason, jito_bundle, jito_tip_sol, latency_ms,
            sol_actual, tokens_amount, fee_sol, jito_tip_sol,
            slippage_sol, slippage_pct, tx_sig_buy, wallet_address, parsed_ok)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
