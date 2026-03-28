@@ -182,6 +182,8 @@ export class TradeExecutor {
   private readonly CB_PAUSE_MS = 15 * 60 * 1000; // v4.18: reduced 30min→15min pause
   public ruggerProfiler: RuggerProfiler;
   public cartelDetector: CartelDetector;
+  private cartelCircuitBreakerUntil = 0;     // timestamp: pause CARTEL si 3 HS consécutifs
+  private cartelConsecHS = 0;                 // compteur HS consécutifs CARTEL
   private funderLookup: FunderLookup;
   private ruggerPositions = new Set<string>(); // Tokens entered via rugger strategy
   private sweepInterval: NodeJS.Timeout | null = null;
@@ -513,9 +515,12 @@ export class TradeExecutor {
       const rtBuyCount = state.buyCount || 0;
       const rtMcs = state.recentMCs || [];
       
-      // CARTEL: immediate entry when 2+ good wallets detected (T+2-120s)
+      // CARTEL: immediate entry when 2+ snipers detected (T+2-120s)
+      // v2.1: min MC $5K + min 50 buyers + circuit breaker
       let cartelSig = this.cartelDetector.getSignal(tokenAddress);
-      if (cartelSig && cartelSig.sniperCount >= 2 && rtElapsedSec >= 2 && rtElapsedSec <= 120) {
+      const cartelCircuitOpen = this.cartelCircuitBreakerUntil > Date.now();
+      if (cartelSig && cartelSig.sniperCount >= 2 && rtElapsedSec >= 2 && rtElapsedSec <= 120
+          && mcUsd >= 5000 && rtBuyers >= 50 && !cartelCircuitOpen) {
         // Trigger immediate evaluation — CARTEL has priority
         this.evaluating.delete(tokenAddress);
         this.maybeEvaluateLive(tokenAddress, mcUsd).catch(() => {});
@@ -654,14 +659,24 @@ export class TradeExecutor {
         this.consecutiveHardStops = 0;
       }
 
-      // 2. Hard stop (NEO: -15%, others: -20%)
-      const rtHsThreshold = rtPos.swarmStrategy ? -20 : rtPos.neoStrategy ? -25 : -20; // SWARM -20%, NEO -25%, STD -20%
+      // 2. Hard stop (NEO: -20% v4.59 was -25%, others: -20%)
+      const rtHsThreshold = rtPos.swarmStrategy ? -20 : rtPos.neoStrategy ? -20 : -20; // SWARM -20%, NEO -20% (v4.59: aligned with STD), STD -20%
       if (!rtShouldSell && rtPnl <= rtHsThreshold) {
         rtReason = `⚡ RT-HARD_STOP — P&L ${rtPnl.toFixed(1)}% (threshold ${rtHsThreshold}%) | MC ${mcUsd.toFixed(0)}`;
         this.consecutiveHardStops++;
         if (this.consecutiveHardStops >= this.CB_MAX_HS) {
           this.circuitBreakerUntil = Date.now() + this.CB_PAUSE_MS;
           console.log(`🛑 CIRCUIT BREAKER — ${this.consecutiveHardStops} HS consécutifs → pause ${this.CB_PAUSE_MS/60000}min`);
+        }
+        // v2.1: CARTEL circuit breaker — pause 30min après 3 HS consécutifs
+        if (rtPos.cartelStrategy) {
+          this.cartelConsecHS++;
+          if (this.cartelConsecHS >= 3) {
+            this.cartelCircuitBreakerUntil = Date.now() + 30 * 60_000;
+            logger.warn({ consec: this.cartelConsecHS }, '🔌 CARTEL circuit breaker — 3 HS consécutifs → pause 30min');
+          }
+        } else {
+          this.cartelConsecHS = 0; // reset si autre stratégie gagne entre deux
         }
         rtShouldSell = true;
       }
@@ -690,6 +705,8 @@ export class TradeExecutor {
         const rtSellResult = this.sell(100, 1.0, 'RIDE', rtReason, this.emptySignals());
         this.openPositions.delete(tokenAddress);
         const rtExitType = rtReason.includes('HARD_STOP') ? 'HARD_STOP' : rtReason.includes('RUGGER') ? 'RUGGER_TARGET' : 'TRAIL';
+        // Reset CARTEL circuit breaker counter on any non-HS exit
+        if (rtPos.cartelStrategy && rtExitType !== 'HARD_STOP') this.cartelConsecHS = 0;
         this.closedTokens.set(tokenAddress, { 
           exitType: rtExitType, exitMC: mcUsd, exitTime: Date.now(), 
           entryMC: rtPos.entryMC, peakMC: rtPos.highestMC, 
@@ -1242,7 +1259,7 @@ export class TradeExecutor {
       }
     }
 
-        const hsThreshold = pos.swarmStrategy ? -20 : pos.neoStrategy ? -25 : -20; // SWARM -20% // NEO -25%
+        const hsThreshold = pos.swarmStrategy ? -20 : pos.neoStrategy ? -20 : -20; // SWARM -20% // NEO -20% (v4.59: -25→-20, saves avg 15pp on HS trades)
     if (pnlPct <= hsThreshold) {
       this.openPositions.delete(tokenAddress);
       this.closedTokens.set(tokenAddress, { exitType: 'HARD_STOP', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
@@ -1251,7 +1268,15 @@ export class TradeExecutor {
         this.circuitBreakerUntil = Date.now() + this.CB_PAUSE_MS;
         console.log(`🛑 CIRCUIT BREAKER — ${this.consecutiveHardStops} HS consécutifs → pause ${this.CB_PAUSE_MS/60000}min`);
       }
-      const hsLabel = pos.swarmStrategy ? '🐝 SWARM' : pos.cartelStrategy ? '🤝 CARTEL' : pos.neoStrategy ? '🧠 NEO' : '🛑 v10';
+      // v2.1: CARTEL circuit breaker
+      if (pos.cartelStrategy) {
+        this.cartelConsecHS++;
+        if (this.cartelConsecHS >= 3) {
+          this.cartelCircuitBreakerUntil = Date.now() + 30 * 60_000;
+          logger.warn({ consec: this.cartelConsecHS }, '🔌 CARTEL circuit breaker — 3 HS consécutifs → pause 30min');
+        }
+      }
+      const hsLabel = pos.swarmStrategy ? '🐝 SWARM' : pos.cartelStrategy ? '🎯 CARTEL' : pos.neoStrategy ? '🧠 NEO' : '🛑 v10';
       return this.sell(100, 1.0, 'RIDE', `${hsLabel} HARD_STOP ${pnlPct.toFixed(1)}% | peak +${peakPnl.toFixed(0)}% (threshold ${hsThreshold}%) | MC ${currentMC.toFixed(0)}`, signals);
     }
 
@@ -1271,7 +1296,18 @@ export class TradeExecutor {
       return this.sell(100, 0.9, 'RIDE', `⏰ v10 MAX HOLD 5min — P&L ${pnlPct.toFixed(1)}%`, signals);
     }
 
-    // NEO v4.54: STALE_MICRO (30-50s) — token never moved up, already -10%+ = slow gap rug, exit early
+    // NEO v4.61: STALE_ULTRAEARLY (5-25s) — token at -15%+ with zero upward movement = instant gap rug
+    // v4.60 was 10-25s. Expanded to 5s: -15% in 5-9s with no peak = overwhelming rug signal (saves ~13pp vs HS).
+    // Data: ALL 95 HS trades had peak=0% and hold<30s. This fires BEFORE the -20% HS threshold.
+    // Risk: near-zero — a token at -15% in 5-25s with no peak NEVER recovers on pump.fun.
+    if (isNeo && holdSec > 5 && holdSec <= 25 && pnlPct < -15 && peakPnl < 0.5) {
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops++;
+      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.61 STALE_ULTRAEARLY ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — instant gap rug`, signals);
+    }
+
+        // NEO v4.54: STALE_MICRO (30-50s) — token never moved up, already -10%+ = slow gap rug, exit early
     // Gap: STALE_EARLY covers pnl<-13%, MICRO fills -10 to -13% window in 30-50s. Peak<0.5% = no upward signal.
     // Saves ~15pp per trade vs HS avg (-10% vs -35% avg HS). 16t in -10 to -5% RT-TRAIL range could be caught.
     if (isNeo && holdSec > 30 && holdSec <= 50 && pnlPct < -10 && peakPnl < 0.5) {
@@ -1310,6 +1346,26 @@ export class TradeExecutor {
       return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.55 STALE_FAST ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — slow bleed exit`, signals);
     }
 
+    // NEO v4.57: STALE_MIDBLEED (90-150s) — token had minor pump (2.5-12% peak) but now bleeding -8%+
+    // Gap between STALE_FAST (peak<2.5%) and STALE_MID (>150s). Failed mini-rockets: exit at -8% vs -25% HS.
+    // Saves ~17pp per trade. Risk low: peak<12% = no real momentum, -8%+ already committed to downside.
+    if (isNeo && holdSec > 90 && holdSec <= 150 && pnlPct < -8 && peakPnl >= 2.5 && peakPnl < 12) {
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops = 0;
+      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.57 STALE_MIDBLEED ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — failed mini-rocket exit`, signals);
+    }
+
+    // NEO v4.58: STALE_GHOSTZONE (90-150s) — token pumped 12-24% (below trail trigger) but now bleeding -10%+
+    // Gap in STALE coverage: MIDBLEED covers peak<12%, trail covers peak>=25%. 12-24% range was unprotected.
+    // Saves ~17pp per trade (exit at -10% vs HS avg -35%). Risk: peak 12-24% = initial momentum but failed.
+    if (isNeo && holdSec > 90 && holdSec <= 150 && pnlPct < -10 && peakPnl >= 12 && peakPnl < 25) {
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops = 0;
+      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.58 STALE_GHOSTZONE ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — failed near-trail exit`, signals);
+    }
+
     // NEO v4.54: STALE_MID (150s) — token crabbing with no momentum = zombie trade [tightened: 180→150s, pnl<5→3%, peak<15→12%]
     // Data: 90 marginal trades (-10% to +10%) deployed 18 SOL for +0.29 SOL net. Cut crab zombies earlier.
     // v4.54: earlier exit (150s vs 180s) + tighter thresholds. Saves ~8% per trade vs letting run to 0%.
@@ -1318,6 +1374,16 @@ export class TradeExecutor {
       this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
       this.consecutiveHardStops = 0;
       return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.50 STALE_MID ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — crab zombie`, signals);
+    }
+
+    // NEO v4.58: STALE_MID_PRETRAIL (150s+) — token pumped 12-24% (ghost zone) but crabbing/bleeding >150s
+    // Extends STALE_MID coverage to peak 12-24% range. These tokens showed initial momentum but failed trail.
+    // pnl < 0 at 150s+ with near-trail peak = unlikely to recover, exit before potential HS at -25%.
+    if (isNeo && holdSec > 150 && pnlPct < 0 && peakPnl >= 12 && peakPnl < 25) {
+      this.openPositions.delete(tokenAddress);
+      this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.consecutiveHardStops = 0;
+      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.58 STALE_MID_PRETRAIL ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — ghost zone stall`, signals);
     }
 
     // NEO v4.48: STALE_EXIT late-stage (650s) — tokens stuck negative after 10min+ = momentum dead
@@ -1571,7 +1637,20 @@ export class TradeExecutor {
     if (!this.openPositions.has(tokenAddress) && elapsedSec >= 2 && elapsedSec <= 120) {
       const cartelSignal = this.cartelDetector.getSignal(tokenAddress);
       if (cartelSignal && cartelSignal.sniperCount >= 2) {
-        // No circuit breaker for CARTEL — independent signal, not affected by STD/NEO HS
+        // v2.1: Circuit breaker check
+        if (this.cartelCircuitBreakerUntil > Date.now()) {
+          return this.none(`🔌 CARTEL: circuit breaker actif jusqu'à ${new Date(this.cartelCircuitBreakerUntil).toISOString()}`, 'RIDE');
+        }
+
+        // v2.1: Minimum MC $5K — entrées < $3K ont 25% WR (vs 61% à $5K-8K)
+        if (currentMC < 5000) {
+          return this.none(`🚫 CARTEL: MC $${currentMC.toFixed(0)} < $5K minimum`, 'RIDE');
+        }
+
+        // v2.1: Minimum buyers 50 — HS avg 66b vs winners 80b, 50 est le seuil bas
+        if (uniqueBuyerCount < 50) {
+          return this.none(`🚫 CARTEL: ${uniqueBuyerCount} buyers < 50 minimum`, 'RIDE');
+        }
 
         // FADE block
         const wRisk = this.rideCache.get(tokenAddress)?.walletRiskScore ?? 0.5;
@@ -1707,7 +1786,7 @@ export class TradeExecutor {
           wallet_risk_score: wRisk,
           position_sol: neoPos,
           quality_score: neoQ,
-          reason: `🧠 NEO v4.56 BUY Q${neoQ} — ${neoBuyers}b ${neoSellers}s sr=${neoSellRatio.toFixed(2)} vel=${neoVelocity} | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)} pos=${neoPos}SOL`
+          reason: `🧠 NEO v4.61 BUY Q${neoQ} — ${neoBuyers}b ${neoSellers}s sr=${neoSellRatio.toFixed(2)} vel=${neoVelocity} | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)} pos=${neoPos}SOL`
         };
       }
     }
