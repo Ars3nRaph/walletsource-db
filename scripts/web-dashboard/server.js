@@ -807,135 +807,182 @@ app.get('/api/neo-config', async (req, res) => {
 app.get('/wallet', (req, res) => res.sendFile(path.join(__dirname, 'wallet.html')));
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// GET /api/live-wallet — Live trading data from live_trades table
+// GET /api/live-wallet — même format que wallet-sim, données réelles
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 app.get('/api/live-wallet', async (req, res) => {
   try {
-    // Solde réel du wallet via RPC
+    // 1. Solde réel on-chain
     let walletBalance = null;
-    let walletAddress = null;
+    let walletAddress = process.env.TRADING_WALLET_ADDRESS || null;
     try {
-      const { rows: wRows } = await pool.query(
-        `SELECT wallet_address FROM live_trades_v2 WHERE wallet_address IS NOT NULL ORDER BY executed_at DESC LIMIT 1`
-      );
-      if (wRows[0]?.wallet_address) {
-        walletAddress = wRows[0].wallet_address;
-        const rpcRes = await fetch(process.env.HELIUS_RPC_URL || process.env.SOLANA_RPC_URL, {
+      if (!walletAddress) {
+        const { rows } = await pool.query(
+          `SELECT wallet_address FROM live_trades_v2 WHERE wallet_address IS NOT NULL ORDER BY executed_at DESC LIMIT 1`
+        );
+        walletAddress = rows[0]?.wallet_address || null;
+      }
+      if (walletAddress) {
+        const rpcUrl = process.env.HELIUS_RPC_URL || process.env.SOLANA_RPC_URL || `https://mainnet.helius-rpc.com/?api-key=${process.env.HELIUS_API_KEY}`;
+        const rpcRes = await fetch(rpcUrl, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [walletAddress] })
         });
         const rpcData = await rpcRes.json();
         walletBalance = (rpcData?.result?.value ?? 0) / 1e9;
       }
-    } catch(e) { /* ignore */ }
+    } catch(e) { /* rpc optionnel */ }
 
-    // Récupérer les BUY
+    // 2. Récupérer les BUY depuis live_trades_v2
     const { rows: buys } = await pool.query(`
-      SELECT id, token_address, sol_in, sol_actual, tokens_amount,
+      SELECT token_address, sol_intended, sol_actual,
              fee_sol, jito_tip_sol, slippage_sol, slippage_pct,
-             tx_signature, reason, jito_bundle, tip_lamports,
-             latency_ms, executed_at, wallet_address, parsed_ok
+             tx_signature, reason, buy_strategy, strategy_version,
+             quality_score, latency_ms, executed_at, wallet_address, parsed_ok
       FROM live_trades_v2 WHERE side='BUY' ORDER BY executed_at
     `);
 
-    // Récupérer les SELL
+    // 3. Récupérer les SELL
     const { rows: sells } = await pool.query(`
-      SELECT id, token_address, sol_in, sol_out, sol_actual,
-             pnl_sol, pnl_pct, tokens_amount,
-             fee_sol, jito_tip_sol, slippage_sol, slippage_pct,
-             tx_signature, tx_sig_buy, reason,
+      SELECT token_address, sol_out_actual, sol_actual,
+             pnl_sol, pnl_pct, pnl_gross_sol,
+             fee_sol, jito_tip_sol, slippage_sol,
+             tx_signature, tx_sig_buy, reason, exit_type,
              latency_ms, executed_at, parsed_ok
       FROM live_trades_v2 WHERE side='SELL' ORDER BY executed_at
     `);
 
     const sellMap = {};
     for (const s of sells) {
-      sellMap[s.token_address] = sellMap[s.token_address] || [];
-      sellMap[s.token_address].push(s);
+      const key = s.tx_sig_buy || s.token_address;
+      sellMap[key] = sellMap[key] || [];
+      sellMap[key].push(s);
     }
 
-    let totalPnl = 0, totalFees = 0, totalJito = 0, totalSlippage = 0;
+    // 4. Reconstruire le wallet réel — balance initiale = premier dépôt estimé
+    //    On part du solde actuel et on remonte (ou on part de 0 et on accumule)
+    let balance = walletBalance ?? 0;
+    let totalFees = 0, totalJito = 0, totalSlip = 0;
     let wins = 0, losses = 0;
     const tradeLog = [];
 
+    // Calculer P&L cumulé pour retrouver balance initiale
+    // balance_initiale = balance_actuelle - somme(pnl_net)
+    const completedSells = sells.filter(s => s.pnl_sol !== null);
+    const totalPnl = completedSells.reduce((sum, s) => sum + (parseFloat(s.pnl_sol) || 0), 0);
+    const initialBalance = walletBalance !== null ? walletBalance - totalPnl : 0;
+    balance = initialBalance;
+
     for (const buy of buys) {
-      const sell = sellMap[buy.token_address]?.find(s => !s._used);
+      const key = buy.tx_signature || buy.token_address;
+      const sellArr = sellMap[key] || sellMap[buy.token_address] || [];
+      const sell = sellArr.find(s => !s._used);
       if (sell) sell._used = true;
 
-      const solIn = parseFloat(buy.sol_in) || 0;
-      const solOut = sell ? parseFloat(sell.sol_out || sell.sol_actual || 0) : null;
-      const pnlSol = sell ? parseFloat(sell.pnl_sol) || 0 : null;
-      const pnlPct = sell ? parseFloat(sell.pnl_pct) || 0 : null;
-      const feeSol = (parseFloat(buy.fee_sol) || 0) + (sell ? parseFloat(sell.fee_sol) || 0 : 0);
-      const jitoSol = (parseFloat(buy.jito_tip_sol) || 0) + (sell ? parseFloat(sell.jito_tip_sol) || 0 : 0);
-      const slipSol = (parseFloat(buy.slippage_sol) || 0) + (sell ? parseFloat(sell.slippage_sol) || 0 : 0);
+      const pos     = parseFloat(buy.sol_intended || buy.sol_actual || 0);
+      const feeBuy  = parseFloat(buy.fee_sol || 0);
+      const jitoBuy = parseFloat(buy.jito_tip_sol || 0);
+      const slipBuy = parseFloat(buy.slippage_sol || 0);
+      const before  = balance;
+      balance -= (pos + feeBuy + jitoBuy);
 
-      if (pnlSol !== null) {
-        totalPnl += pnlSol;
-        totalFees += feeSol;
-        totalJito += jitoSol;
-        totalSlippage += slipSol;
+      let pnlSol = null, pnlPct = null, exitType = null, exitReason = null;
+      let feeSell = 0, jitoSell = 0, slipSell = 0, solReceived = null;
+
+      if (sell) {
+        solReceived = parseFloat(sell.sol_out_actual || sell.sol_actual || 0);
+        feeSell  = parseFloat(sell.fee_sol  || 0);
+        jitoSell = parseFloat(sell.jito_tip_sol || 0);
+        slipSell = parseFloat(sell.slippage_sol || 0);
+        pnlSol   = parseFloat(sell.pnl_sol);
+        pnlPct   = parseFloat(sell.pnl_pct);
+        exitType = sell.exit_type || (() => {
+          const r = sell.reason || '';
+          if (r.includes('HARD_STOP')) return 'HARD_STOP';
+          if (r.includes('RT-TRAIL') || r.includes('TRAIL')) return 'RT-TRAIL';
+          if (r.includes('PUMP3')) return 'PUMP3';
+          return 'OTHER';
+        })();
+        exitReason = sell.reason;
+        balance += (solReceived - feeSell - jitoSell);
         if (pnlSol > 0) wins++; else losses++;
       }
 
-      // Extraire exit_type depuis le reason
-      const sellReason = sell?.reason || '';
-      let exitType = 'OPEN';
-      if (sellReason.includes('HARD_STOP')) exitType = 'HARD_STOP';
-      else if (sellReason.includes('RT-TRAIL') || sellReason.includes('TRAIL')) exitType = 'RT-TRAIL';
-      else if (sellReason.includes('PUMP3')) exitType = 'PUMP3';
-      else if (sell) exitType = 'OTHER';
+      const tFee  = feeBuy  + feeSell;
+      const tJito = jitoBuy + jitoSell;
+      const tSlip = slipBuy + slipSell;
+      if (sell) { totalFees += tFee; totalJito += tJito; totalSlip += tSlip; }
 
       tradeLog.push({
-        token: buy.token_address.slice(0, 12) + '…',
+        // identique wallet-sim
+        token: buy.token_address.slice(0,12) + '…',
         token_full: buy.token_address,
         action: sell && pnlSol !== null ? (pnlSol >= 0 ? 'WIN' : 'LOSS') : 'OPEN',
         timestamp: buy.executed_at,
         sell_timestamp: sell?.executed_at || null,
-        position_sol: solIn,
-        buy_strategy: 'LIVE',
-        strategy_version: 'LIVE v1.0',
+        position_sol: parseFloat(pos.toFixed(4)),
+        position_tier: buy.buy_strategy || 'LIVE',
+        buy_strategy: buy.buy_strategy || 'LIVE',
+        strategy_version: buy.strategy_version || 'LIVE',
+        quality_score: buy.quality_score,
+        buy_mc: null, sell_mc: null, mc_change_pct: null,
+        confidence: null,
+        buy_reason: buy.reason,
+        exit_reason: exitReason,
+        exit_type: exitType,
+        fees_sol: parseFloat(tFee.toFixed(6)),
+        slippage_sol: parseFloat(tSlip.toFixed(6)),
+        jito_sol: parseFloat(tJito.toFixed(6)),
+        jito_buy_sol: parseFloat(jitoBuy.toFixed(6)),
+        jito_sell_sol: parseFloat((sell ? jitoSell : 0).toFixed(6)),
+        base_fee_sol: parseFloat((feeBuy + feeSell).toFixed(6)),
+        pump_fees_sol: 0,
+        slippage_buy_sol: parseFloat(slipBuy.toFixed(6)),
+        slippage_sell_sol: parseFloat(slipSell.toFixed(6)),
+        wallet_impact_pct: pnlSol !== null && before > 0 ? parseFloat((pnlSol/before*100).toFixed(2)) : null,
         pnl_sol: pnlSol !== null ? parseFloat(pnlSol.toFixed(6)) : null,
         pnl_pct: pnlPct !== null ? parseFloat(pnlPct.toFixed(2)) : null,
-        exit_type: exitType,
-        exit_reason: sellReason,
-        buy_reason: buy.reason,
-        fees_sol: parseFloat(feeSol.toFixed(6)),
-        jito_sol: parseFloat(jitoSol.toFixed(6)),
-        slippage_sol: parseFloat(slipSol.toFixed(6)),
-        fee_sol_buy: parseFloat(buy.fee_sol || 0),
-        fee_sol_sell: sell ? parseFloat(sell.fee_sol || 0) : 0,
-        jito_tip_sol_buy: parseFloat(buy.jito_tip_sol || 0),
-        jito_tip_sol_sell: sell ? parseFloat(sell.jito_tip_sol || 0) : 0,
-        slippage_pct: parseFloat(buy.slippage_pct || 0),
+        balance_before: parseFloat(before.toFixed(4)),
+        balance_after: parseFloat(balance.toFixed(4)),
+        // extra live
         tx_buy: buy.tx_signature,
         tx_sell: sell?.tx_signature || null,
+        parsed_ok: buy.parsed_ok,
         latency_buy_ms: buy.latency_ms,
         latency_sell_ms: sell?.latency_ms || null,
-        parsed_ok: buy.parsed_ok && (sell ? sell.parsed_ok : true),
-        sol_out: solOut,
       });
     }
 
     const completed = tradeLog.filter(t => t.pnl_pct !== null);
-    const avgPnl = completed.length ? completed.reduce((s, t) => s + t.pnl_pct, 0) / completed.length : 0;
-    const wr = (wins + losses) > 0 ? parseFloat((wins / (wins + losses) * 100).toFixed(1)) : 0;
+    const avgPnl = completed.length ? completed.reduce((s,t) => s+t.pnl_pct, 0)/completed.length : 0;
+    const wr = (wins+losses) > 0 ? parseFloat((wins/(wins+losses)*100).toFixed(1)) : 0;
+    const finalBal = walletBalance ?? parseFloat(balance.toFixed(4));
+    const drag = finalBal > initialBalance
+      ? parseFloat(((totalFees+totalSlip)/(totalFees+totalSlip+finalBal-initialBalance)*100).toFixed(1)) : 0;
 
     res.json({
       success: true,
-      wallet: {
-        address: walletAddress,
-        balance_sol: walletBalance !== null ? parseFloat(walletBalance.toFixed(4)) : null,
+      wallet: { address: walletAddress, balance_sol: walletBalance },
+      config: {
+        initial_sol: parseFloat(initialBalance.toFixed(4)),
+        sol_price_usd: 140,
+        slippage_buy_bps: 0, slippage_sell_bps: 0,
+        pump_fee_bps: 0, priority_fee_sol: 0,
+        jito_tip_buy_sol: 0, jito_tip_sell_sol: 0, max_mc_pct: 0
       },
       summary: {
-        total_trades: completed.length,
-        open: tradeLog.filter(t => t.action === 'OPEN').length,
-        wins, losses, win_rate_pct: wr,
+        final_balance_sol: parseFloat(finalBal.toFixed(4)),
+        total_pnl_sol: parseFloat(totalPnl.toFixed(4)),
+        total_pnl_pct: initialBalance > 0 ? parseFloat(((finalBal/initialBalance-1)*100).toFixed(2)) : 0,
+        total_trades: completed.length + tradeLog.filter(t=>t.action==='OPEN').length,
+        wins, losses,
+        open: tradeLog.filter(t=>t.action==='OPEN').length,
+        win_rate_pct: wr,
         avg_pnl_pct: parseFloat(avgPnl.toFixed(2)),
-        total_pnl_sol: parseFloat(totalPnl.toFixed(6)),
         total_fees_sol: parseFloat(totalFees.toFixed(6)),
+        total_slippage_sol: parseFloat(totalSlip.toFixed(6)),
         total_jito_sol: parseFloat(totalJito.toFixed(6)),
-        total_slippage_sol: parseFloat(totalSlippage.toFixed(6)),
+        total_pump_fees_sol: 0,
+        fees_drag_pct: drag,
       },
       trades: tradeLog
     });

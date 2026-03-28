@@ -116,8 +116,8 @@
 <body>
   <div class="container">
     <header>
-      <h1>🔴 Wallet 2.0 — Live Trading</h1>
-      <p class="subtitle">Live Trading — Données on-chain réelles</p>
+      <h1>🔴 Wallet 2.0</h1>
+      <p class="subtitle">🔴 Live Trading — Wallet <span id="live-wallet-short" style="color:#f0883e;font-size:12px"></span></p>
       <div class="nav-links">
         <a href="/">📊 Dashboard</a>
         <a href="/graphs">📈 Graphs</a>
@@ -183,38 +183,34 @@
 
     <!-- Strategy Comparison Card -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;margin-bottom:24px" id="strat-cards">
-      <!-- Carte Wallet Balance -->
-      <div style="background:linear-gradient(135deg,#0d1117,#1a1f2e);border:1px solid #ff4444;border-radius:12px;padding:20px">
+      <div class="strat-card" data-strat="std" onclick="toggleStrat('std')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #f0883e;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#ff4444">🔴 LIVE WALLET</span>
-          <span style="background:rgba(255,68,68,0.15);color:#ff4444;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">REAL $</span>
+          <span style="font-size:16px;font-weight:700;color:#58a6ff">🚀 STANDARD (v10.16)</span>
+          <span class="strat-badge std">STD</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center">
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Balance</div><div style="font-size:20px;font-weight:700;color:#f0883e" id="live-balance">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">P&L Total</div><div style="font-size:20px;font-weight:700" id="live-pnl">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Win Rate</div><div style="font-size:20px;font-weight:700;color:#3fb950" id="live-wr">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="std-count">0</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Win Rate</div><div style="font-size:20px;font-weight:700;color:#3fb950" id="std-wr">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Avg Net</div><div style="font-size:20px;font-weight:700" id="std-avg">—</div></div>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center;margin-top:10px">
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:16px;font-weight:700;color:#e6edf3" id="live-trades">0</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Avg P&L</div><div style="font-size:16px;font-weight:700" id="live-avg">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Open</div><div style="font-size:16px;font-weight:700;color:#58a6ff" id="live-open">0</div></div>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;text-align:center;margin-top:10px">
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="std-sol">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="std-hs">—</div></div>
         </div>
-        <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="live-wallet-addr">Chargement...</div>
+        <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="std-params">
+          b≥75 • ratio 2.0-3.0x • d&lt;25 • HS -20% • Trail 20%@+15% • No PUMP3 • No SELL_DOM • 0.30-0.50 SOL
+        </div>
       </div>
-      <!-- Carte Fees réels -->
-      <div style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #30363d;border-radius:12px;padding:20px">
+      <div class="strat-card" data-strat="neo" onclick="toggleStrat('neo')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #da3633;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#8b949e">⛽ FEES ON-CHAIN</span>
-          <span style="background:rgba(139,148,158,0.15);color:#8b949e;padding:2px 8px;border-radius:6px;font-size:11px">RÉELS</span>
+          <span style="font-size:16px;font-weight:700;color:#da3633">🧠 NEO (v4.61)</span>
+          <span class="strat-badge neo">NEO</span>
         </div>
-        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;text-align:center">
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Réseau Solana</div><div style="font-size:18px;font-weight:700;color:#e6edf3" id="live-fee-network">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Jito Tips</div><div style="font-size:18px;font-weight:700;color:#f1c40f" id="live-fee-jito">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Slippage</div><div style="font-size:18px;font-weight:700;color:#f0883e" id="live-fee-slip">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total Fees</div><div style="font-size:18px;font-weight:700;color:#da3633" id="live-fee-total">—</div></div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center">
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="neo-count">0</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Win Rate</div><div style="font-size:20px;font-weight:700;color:#3fb950" id="neo-wr">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Avg Net</div><div style="font-size:20px;font-weight:700" id="neo-avg">—</div></div>
         </div>
-      </div>
-      
         <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;text-align:center;margin-top:10px">
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="neo-sol">—</div></div>
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="neo-hs">—</div></div>
@@ -225,7 +221,18 @@
       </div>
 
 
-      
+      <div class="strat-card" data-strat="swarm" onclick="toggleStrat('swarm')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #f1c40f;border-radius:12px;padding:20px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <span style="font-size:16px;font-weight:700;color:#f1c40f">🐝 SWARM (v1.0)</span>
+          <span class="strat-badge" style="background:rgba(241,196,15,0.15);color:#f1c40f;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">SWARM</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;text-align:center">
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="swarm-count">0</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Win Rate</div><div style="font-size:20px;font-weight:700;color:#3fb950" id="swarm-wr">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Avg Net</div><div style="font-size:20px;font-weight:700" id="swarm-avg">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="swarm-sol">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="swarm-hs">—</div></div>
+        </div>
         <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center">
           ≥80 buyers • avg_buy&lt;$25 • ratio 2.0-3.5x • T=20-90s • sb&lt;0.4 • mc&lt;$12K • HS -20% • Trail 20%@+40% • 0.35 SOL • Max 2 slots
         </div>
@@ -383,7 +390,7 @@
   </div>
 <script>
 let equityChart=null;
-const activeStrats = new Set(['live','std','neo','elite','swarm']); // all shown in live
+const activeStrats = new Set(['std','neo','elite','swarm']); // CARTEL removed
 let _lastWalletData = null;
 const PAGE_SIZE = 25;
 let currentPage = 0;
@@ -630,7 +637,7 @@ async function loadWallet(){
 function renderWallet(d){
     const{config:cfg,trades:allTrades}=d;
     // Filter trades by active strategies
-    const realTrades=allTrades.filter(t=>t.action!=='SKIP'); // Live: show all trades
+    const realTrades=allTrades.filter(t=>t.action!=='SKIP' && t.buy_strategy!=='CARTEL'); // CARTEL excluded
     // v10.13: Populate version filter dropdown
     const vSelect=document.getElementById('f-version');
     if(vSelect&&vSelect.options.length<=1){
@@ -772,11 +779,7 @@ function renderPage() {
         <td><span class="strat-badge ${strat}">${stratLabel}</span></td>
         <td style="font-size:10px;color:#8b949e;white-space:nowrap" title="${t.strategy_version||''}">${verShort}</td>
         <td style="white-space:nowrap;font-size:11px">${fmtTime(t.timestamp)}</td>
-        <td>
-          <a href="https://pump.fun/${t.token_full}" target="_blank" style="color:#58a6ff;text-decoration:none;font-size:12px">${t.token}</a>
-          ${t.tx_buy ? `<br><a href="https://solscan.io/tx/${t.tx_buy}" target="_blank" style="color:#484f58;font-size:9px">🔗 buy tx</a>` : ''}
-          ${t.tx_sell ? `<a href="https://solscan.io/tx/${t.tx_sell}" target="_blank" style="color:#484f58;font-size:9px"> · sell tx</a>` : ''}
-        </td>
+        <td><a href="https://pump.fun/${t.token_full}" target="_blank" style="color:#58a6ff;text-decoration:none;font-size:12px">${t.token}</a></td>
         <td style="font-size:12px">${t.position_sol.toFixed(2)}</td>
         <td style="font-size:12px">$${t.buy_mc.toLocaleString()}</td>
         <td class="${cls}" style="font-weight:600">${t.mc_change_pct!==null?(t.mc_change_pct>=0?'+':'')+t.mc_change_pct+'%':'—'}</td>
@@ -1080,6 +1083,6 @@ function setupChartTools() {
 
 loadWallet();setInterval(loadWallet,10000);
 </script>
-<script>setInterval(() => { if(typeof loadData === "function") loadData(); }, 10000);</script>
+<script>setInterval(()=>{if(typeof loadData==="function")loadData();},10000);</script>
 </body>
 </html>
