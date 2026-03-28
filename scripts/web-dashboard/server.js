@@ -775,6 +775,7 @@ app.get('/api/wallet-sim', async (req, res) => {
         wallet_impact_pct: pnlSOL !== null ? parseFloat((pnlSOL / before * 100).toFixed(2)) : null,
         pnl_sol: pnlSOL !== null ? parseFloat(pnlSOL.toFixed(6)) : null,
         pnl_pct: pnlPct !== null ? parseFloat(pnlPct.toFixed(2)) : null,
+        peak_pct: sell?.peak_pct != null ? parseFloat(parseFloat(sell.peak_pct).toFixed(1)) : null,
         balance_before: parseFloat(before.toFixed(4)),
         balance_after: parseFloat(balance.toFixed(4))
       });
