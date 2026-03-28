@@ -805,3 +805,144 @@ app.get('/api/neo-config', async (req, res) => {
 
 // Serve wallet page
 app.get('/wallet', (req, res) => res.sendFile(path.join(__dirname, 'wallet.html')));
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GET /api/live-wallet — Live trading data from live_trades table
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+app.get('/api/live-wallet', async (req, res) => {
+  try {
+    // Solde réel du wallet via RPC
+    let walletBalance = null;
+    let walletAddress = null;
+    try {
+      const { rows: wRows } = await pool.query(
+        `SELECT wallet_address FROM live_trades WHERE wallet_address IS NOT NULL ORDER BY executed_at DESC LIMIT 1`
+      );
+      if (wRows[0]?.wallet_address) {
+        walletAddress = wRows[0].wallet_address;
+        const rpcRes = await fetch(process.env.HELIUS_RPC_URL || process.env.SOLANA_RPC_URL, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [walletAddress] })
+        });
+        const rpcData = await rpcRes.json();
+        walletBalance = (rpcData?.result?.value ?? 0) / 1e9;
+      }
+    } catch(e) { /* ignore */ }
+
+    // Récupérer les BUY
+    const { rows: buys } = await pool.query(`
+      SELECT id, token_address, sol_in, sol_actual, tokens_amount,
+             fee_sol, jito_tip_sol, slippage_sol, slippage_pct,
+             tx_signature, reason, jito_bundle, tip_lamports,
+             latency_ms, executed_at, wallet_address, parsed_ok
+      FROM live_trades WHERE side='BUY' ORDER BY executed_at
+    `);
+
+    // Récupérer les SELL
+    const { rows: sells } = await pool.query(`
+      SELECT id, token_address, sol_in, sol_out, sol_actual,
+             pnl_sol, pnl_pct, tokens_amount,
+             fee_sol, jito_tip_sol, slippage_sol, slippage_pct,
+             tx_signature, tx_sig_buy, reason,
+             latency_ms, executed_at, parsed_ok
+      FROM live_trades WHERE side='SELL' ORDER BY executed_at
+    `);
+
+    const sellMap = {};
+    for (const s of sells) {
+      sellMap[s.token_address] = sellMap[s.token_address] || [];
+      sellMap[s.token_address].push(s);
+    }
+
+    let totalPnl = 0, totalFees = 0, totalJito = 0, totalSlippage = 0;
+    let wins = 0, losses = 0;
+    const tradeLog = [];
+
+    for (const buy of buys) {
+      const sell = sellMap[buy.token_address]?.find(s => !s._used);
+      if (sell) sell._used = true;
+
+      const solIn = parseFloat(buy.sol_in) || 0;
+      const solOut = sell ? parseFloat(sell.sol_out || sell.sol_actual || 0) : null;
+      const pnlSol = sell ? parseFloat(sell.pnl_sol) || 0 : null;
+      const pnlPct = sell ? parseFloat(sell.pnl_pct) || 0 : null;
+      const feeSol = (parseFloat(buy.fee_sol) || 0) + (sell ? parseFloat(sell.fee_sol) || 0 : 0);
+      const jitoSol = (parseFloat(buy.jito_tip_sol) || 0) + (sell ? parseFloat(sell.jito_tip_sol) || 0 : 0);
+      const slipSol = (parseFloat(buy.slippage_sol) || 0) + (sell ? parseFloat(sell.slippage_sol) || 0 : 0);
+
+      if (pnlSol !== null) {
+        totalPnl += pnlSol;
+        totalFees += feeSol;
+        totalJito += jitoSol;
+        totalSlippage += slipSol;
+        if (pnlSol > 0) wins++; else losses++;
+      }
+
+      // Extraire exit_type depuis le reason
+      const sellReason = sell?.reason || '';
+      let exitType = 'OPEN';
+      if (sellReason.includes('HARD_STOP')) exitType = 'HARD_STOP';
+      else if (sellReason.includes('RT-TRAIL') || sellReason.includes('TRAIL')) exitType = 'RT-TRAIL';
+      else if (sellReason.includes('PUMP3')) exitType = 'PUMP3';
+      else if (sell) exitType = 'OTHER';
+
+      tradeLog.push({
+        token: buy.token_address.slice(0, 12) + '…',
+        token_full: buy.token_address,
+        action: sell && pnlSol !== null ? (pnlSol >= 0 ? 'WIN' : 'LOSS') : 'OPEN',
+        timestamp: buy.executed_at,
+        sell_timestamp: sell?.executed_at || null,
+        position_sol: solIn,
+        buy_strategy: 'LIVE',
+        strategy_version: 'LIVE v1.0',
+        pnl_sol: pnlSol !== null ? parseFloat(pnlSol.toFixed(6)) : null,
+        pnl_pct: pnlPct !== null ? parseFloat(pnlPct.toFixed(2)) : null,
+        exit_type: exitType,
+        exit_reason: sellReason,
+        buy_reason: buy.reason,
+        fees_sol: parseFloat(feeSol.toFixed(6)),
+        jito_sol: parseFloat(jitoSol.toFixed(6)),
+        slippage_sol: parseFloat(slipSol.toFixed(6)),
+        fee_sol_buy: parseFloat(buy.fee_sol || 0),
+        fee_sol_sell: sell ? parseFloat(sell.fee_sol || 0) : 0,
+        jito_tip_sol_buy: parseFloat(buy.jito_tip_sol || 0),
+        jito_tip_sol_sell: sell ? parseFloat(sell.jito_tip_sol || 0) : 0,
+        slippage_pct: parseFloat(buy.slippage_pct || 0),
+        tx_buy: buy.tx_signature,
+        tx_sell: sell?.tx_signature || null,
+        latency_buy_ms: buy.latency_ms,
+        latency_sell_ms: sell?.latency_ms || null,
+        parsed_ok: buy.parsed_ok && (sell ? sell.parsed_ok : true),
+        sol_out: solOut,
+      });
+    }
+
+    const completed = tradeLog.filter(t => t.pnl_pct !== null);
+    const avgPnl = completed.length ? completed.reduce((s, t) => s + t.pnl_pct, 0) / completed.length : 0;
+    const wr = (wins + losses) > 0 ? parseFloat((wins / (wins + losses) * 100).toFixed(1)) : 0;
+
+    res.json({
+      success: true,
+      wallet: {
+        address: walletAddress,
+        balance_sol: walletBalance !== null ? parseFloat(walletBalance.toFixed(4)) : null,
+      },
+      summary: {
+        total_trades: completed.length,
+        open: tradeLog.filter(t => t.action === 'OPEN').length,
+        wins, losses, win_rate_pct: wr,
+        avg_pnl_pct: parseFloat(avgPnl.toFixed(2)),
+        total_pnl_sol: parseFloat(totalPnl.toFixed(6)),
+        total_fees_sol: parseFloat(totalFees.toFixed(6)),
+        total_jito_sol: parseFloat(totalJito.toFixed(6)),
+        total_slippage_sol: parseFloat(totalSlippage.toFixed(6)),
+      },
+      trades: tradeLog
+    });
+  } catch (err) {
+    console.error('live-wallet error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/wallet2', (req, res) => res.sendFile(path.join(__dirname, 'wallet2.html')));
