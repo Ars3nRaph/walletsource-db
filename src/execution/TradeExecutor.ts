@@ -651,8 +651,8 @@ export class TradeExecutor {
       }
       
       // 1b. ELITE max hold 120s (RT)
-      if (!rtShouldSell && rtIsSwarm && rtHoldSec > 300) { // SWARM: max 300s hold
-        rtReason = `⚡ RT-ELITE_MAX_HOLD 300s — pnl=${rtPnl.toFixed(1)}% | MC ${mcUsd.toFixed(0)}`;
+      if (!rtShouldSell && rtIsSwarm && rtHoldSec > 600) { // SWARM: max 600s hold (v1.1: 300→600s)
+        rtReason = `⚡ RT-ELITE_MAX_HOLD 600s — pnl=${rtPnl.toFixed(1)}% | MC ${mcUsd.toFixed(0)}`;
         rtShouldSell = true;
         this.consecutiveHardStops = 0;
       }
@@ -1018,7 +1018,7 @@ export class TradeExecutor {
             winRate: 0,
             evPerTrade: 0,
             cascadeThreshold: 8,
-            maxHoldSec: 300,
+            maxHoldSec: 600, // SWARM v1.1: 300→600s — let rockets run
             stopLossPct: 0.15,
             trailingStopPct: 0.10,
           }
