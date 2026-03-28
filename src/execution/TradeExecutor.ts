@@ -502,7 +502,11 @@ export class TradeExecutor {
     // ══════════════════════════════════════════════════════════════
     if (!this.openPositions.has(tokenAddress) && state) {
       const rtClosed = this.closedTokens.get(tokenAddress);
-      if (!rtClosed || rtClosed.exitType === 'TRAIL') {
+      // v2.2: CARTEL bloque re-entry pendant 5min sur tout exit (trail inclus — fix same-token double entry)
+      const rtCartelSignalHere = this.cartelDetector.getSignal(tokenAddress);
+      const rtIsCartelCandidate = !!rtCartelSignalHere;
+      const rtCartelCooldown = rtIsCartelCandidate && rtClosed && (Date.now() - rtClosed.exitTime) < 5 * 60_000;
+      if ((!rtClosed || rtClosed.exitType === 'TRAIL') && !rtCartelCooldown) {
       const rtCached = this.rideCache.get(tokenAddress);
       const rtBuyers = state.uniqueBuyers?.size ?? 0;
       const rtBaselineMC = rtCached?.fdvAtDetection || this.firstMC.get(tokenAddress) || mcUsd;
@@ -675,9 +679,9 @@ export class TradeExecutor {
             this.cartelCircuitBreakerUntil = Date.now() + 30 * 60_000;
             logger.warn({ consec: this.cartelConsecHS }, '🔌 CARTEL circuit breaker — 3 HS consécutifs → pause 30min');
           }
-        } else {
-          this.cartelConsecHS = 0; // reset si autre stratégie gagne entre deux
         }
+        // NOTE: cartelConsecHS ne se reset PAS sur une victoire concurrente (v2.2 bugfix)
+        // Le reset se fait uniquement via le circuit breaker (timeout 30min)
         rtShouldSell = true;
       }
       
@@ -705,8 +709,8 @@ export class TradeExecutor {
         const rtSellResult = this.sell(100, 1.0, 'RIDE', rtReason, this.emptySignals());
         this.openPositions.delete(tokenAddress);
         const rtExitType = rtReason.includes('HARD_STOP') ? 'HARD_STOP' : rtReason.includes('RUGGER') ? 'RUGGER_TARGET' : 'TRAIL';
-        // Reset CARTEL circuit breaker counter on any non-HS exit
-        if (rtPos.cartelStrategy && rtExitType !== 'HARD_STOP') this.cartelConsecHS = 0;
+        // v2.2: cartelConsecHS ne se reset PAS sur win (positions concurrentes faussaient le compteur)
+        // Reset automatique quand le circuit breaker expire (30min)
         this.closedTokens.set(tokenAddress, { 
           exitType: rtExitType, exitMC: mcUsd, exitTime: Date.now(), 
           entryMC: rtPos.entryMC, peakMC: rtPos.highestMC, 
@@ -1245,11 +1249,12 @@ export class TradeExecutor {
         this.circuitBreakerUntil = Date.now() + this.CB_PAUSE_MS;
         console.log(`🛑 CIRCUIT BREAKER — ${this.consecutiveHardStops} HS consécutifs → pause ${this.CB_PAUSE_MS/60000}min`);
       }
-      // v2.1: CARTEL circuit breaker
+      // v2.2: CARTEL circuit breaker (bugfix: plus de reset sur wins concurrents)
       if (pos.cartelStrategy) {
         this.cartelConsecHS++;
         if (this.cartelConsecHS >= 3) {
           this.cartelCircuitBreakerUntil = Date.now() + 30 * 60_000;
+          this.cartelConsecHS = 0; // reset après déclenchement pour le prochain cycle
           logger.warn({ consec: this.cartelConsecHS }, '🔌 CARTEL circuit breaker — 3 HS consécutifs → pause 30min');
         }
       }
@@ -1673,7 +1678,7 @@ export class TradeExecutor {
           wallet_risk_score: wRisk,
           position_sol: cartelPos,
           quality_score: cartelSignal.sniperCount,
-          reason: `🎯 CARTEL v2.0 BUY — ${cartelSignal.sniperCount} snipers | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | ${uniqueBuyerCount}b pos=${cartelPos}SOL`
+          reason: `🎯 CARTEL v2.2 BUY — ${cartelSignal.sniperCount} snipers | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | ${uniqueBuyerCount}b pos=${cartelPos}SOL`
         };
       }
     }
