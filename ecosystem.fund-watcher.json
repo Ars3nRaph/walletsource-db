@@ -1,0 +1,12 @@
+{
+  "apps": [{
+    "name": "fund-watcher",
+    "script": "./scripts/fund-watcher.mjs",
+    "cwd": "/root/walletsource-db",
+    "autorestart": true,
+    "watch": false,
+    "env_file": ".env",
+    "log_file": "./logs/fund-watcher.log",
+    "time": true
+  }]
+}
