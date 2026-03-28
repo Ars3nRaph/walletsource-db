@@ -252,8 +252,37 @@ export class LiveTradeExecutor {
         });
         this.dailyStats.trades++;
         this.dailyStats.totalTipSol += this.config.jitoTipBuyLamports / LAMPORTS_PER_SOL;
-        await this.dbLog('BUY', tokenMint, positionSol, 0, result.txSignature, signal.reason ?? '');
-        logger.info({ token: tokenMint.slice(0, 8), tx: result.txSignature.slice(0, 16), ms: result.latencyMs }, '✅ BUY OK');
+        // Parse on-chain pour données réelles
+        const onChainBuy = await this.parseOnChainTx(result.txSignature, this.keypair.publicKey.toBase58());
+        const realSolSpent = onChainBuy.parsedOk ? Math.abs(onChainBuy.solDelta) : positionSol;
+        const slippageSol  = onChainBuy.parsedOk ? (realSolSpent - positionSol) : 0;
+        const jitoTipSol   = this.config.jitoTipBuyLamports / 1e9;
+
+        // Mettre à jour la position avec le vrai montant de tokens reçus
+        if (onChainBuy.parsedOk && onChainBuy.tokenDelta > 0n) {
+          const pos = this.openPositions.get(tokenMint);
+          if (pos) pos.tokenAmount = onChainBuy.tokenDelta;
+        }
+
+        await this.dbLogFull({
+          side: 'BUY', mint: tokenMint, solIn: positionSol, solOut: 0,
+          tx: result.txSignature, reason: signal.reason ?? '',
+          tokensAmount: onChainBuy.tokenDelta,
+          feeSol: onChainBuy.feeSol,
+          jitoTipSol,
+          slippageSol,
+          slippagePct: positionSol > 0 ? (slippageSol / positionSol * 100) : 0,
+          parsedOk: onChainBuy.parsedOk,
+        });
+
+        logger.info({
+          token: tokenMint.slice(0, 8), tx: result.txSignature.slice(0, 16),
+          ms: result.latencyMs,
+          realSol: realSolSpent.toFixed(6),
+          tokens: onChainBuy.tokenDelta.toString().slice(0, 10),
+          fee: onChainBuy.feeSol.toFixed(6),
+          slippage: `\${slippageSol >= 0 ? '+' : ''}\${slippageSol.toFixed(6)} SOL (\${(slippageSol/positionSol*100).toFixed(2)}%)`,
+        }, '✅ BUY OK — on-chain verified');
       }
       return result;
     } catch (err: any) {
@@ -276,20 +305,47 @@ export class LiveTradeExecutor {
       const tx = await this.buildSellTx(mintPk, pos.tokenAmount);
       const result = await this.send(tx, this.config.jitoTipSellLamports, 'SELL');
 
-      if (result.success) {
-        const pnlSol = (result.solReceived ?? 0) - pos.entrySol;
-        const pnlPct = pos.entrySol > 0 ? (pnlSol / pos.entrySol * 100) : 0;
+      if (result.success && result.txSignature) {
+        // Parse on-chain — lire le vrai SOL reçu
+        const onChainSell = await this.parseOnChainTx(result.txSignature, this.keypair.publicKey.toBase58());
+        const realSolReceived = onChainSell.parsedOk ? Math.abs(onChainSell.solDelta) : (result.solReceived ?? 0);
+        const jitoTipSol = this.config.jitoTipSellLamports / 1e9;
+
+        // P&L réel: SOL reçu - SOL dépensé - fees - tips
+        const totalCost  = pos.entrySol + onChainSell.feeSol + jitoTipSol;
+        const pnlSol     = realSolReceived - totalCost;
+        const pnlPct     = pos.entrySol > 0 ? (pnlSol / pos.entrySol * 100) : 0;
+        const slippageSol = onChainSell.parsedOk ? (realSolReceived - pos.entrySol - (pnlSol > 0 ? pnlSol : 0)) : 0;
+
         this.dailyStats.trades++;
-        this.dailyStats.totalPnlSol += pnlSol;
-        this.dailyStats.totalTipSol += this.config.jitoTipSellLamports / LAMPORTS_PER_SOL;
+        this.dailyStats.totalPnlSol  += pnlSol;
+        this.dailyStats.totalFeeSol  += onChainSell.feeSol;
+        this.dailyStats.totalTipSol  += jitoTipSol;
         if (pnlSol > 0) this.dailyStats.wins++; else this.dailyStats.losses++;
         this.openPositions.delete(tokenMint);
-        await this.dbLog('SELL', tokenMint, pos.entrySol, result.solReceived ?? 0,
-          result.txSignature ?? '', signal.reason ?? '', pnlSol, pnlPct);
+
+        await this.dbLogFull({
+          side: 'SELL', mint: tokenMint, solIn: pos.entrySol, solOut: realSolReceived,
+          tx: result.txSignature, reason: signal.reason ?? '',
+          pnl: pnlSol, pnlPct,
+          tokensAmount: pos.tokenAmount,
+          feeSol: onChainSell.feeSol,
+          jitoTipSol,
+          slippageSol,
+          slippagePct: pos.entrySol > 0 ? (slippageSol / pos.entrySol * 100) : 0,
+          txSigBuy: pos.entryTxSig,
+          parsedOk: onChainSell.parsedOk,
+        });
+
         logger.info({
-          token: tokenMint.slice(0, 8), pnl: `${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(4)} SOL`,
+          token: tokenMint.slice(0, 8),
+          pnl: `\${pnlSol >= 0 ? '+' : ''}\${pnlSol.toFixed(6)} SOL`,
+          realReceived: realSolReceived.toFixed(6),
+          feeSol: onChainSell.feeSol.toFixed(6),
+          jitoTip: jitoTipSol.toFixed(6),
           ms: result.latencyMs,
-        }, pnlSol >= 0 ? '✅ SELL WIN' : '❌ SELL LOSS');
+          parsedOk: onChainSell.parsedOk,
+        }, pnlSol >= 0 ? '✅ SELL WIN (on-chain verified)' : '❌ SELL LOSS (on-chain verified)');
       }
       return result;
     } catch (err: any) {
@@ -524,4 +580,110 @@ export class LiveTradeExecutor {
       );
     } catch { /* table may not exist yet */ }
   }
+  // ━━━ ON-CHAIN PARSE — lit les vraies valeurs depuis la blockchain ━━━
+
+  private async parseOnChainTx(sig: string, walletPubkey: string): Promise<OnChainResult> {
+    try {
+      // Attendre que la tx soit disponible (jusqu'à 10 tentatives)
+      let tx = null;
+      for (let i = 0; i < 10; i++) {
+        tx = await this.connection.getTransaction(sig, {
+          maxSupportedTransactionVersion: 0,
+          commitment: 'confirmed',
+        });
+        if (tx) break;
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      if (!tx?.meta) return { solDelta: 0, tokenDelta: 0n, feeSol: 0, parsedOk: false };
+
+      // Trouver l'index du wallet dans accountKeys
+      const keys = tx.transaction.message.staticAccountKeys ?? 
+                   (tx.transaction.message as any).accountKeys ?? [];
+      const walletIdx = keys.findIndex((k: any) => k.toBase58() === walletPubkey);
+      
+      if (walletIdx === -1) return { solDelta: 0, tokenDelta: 0n, feeSol: 0, parsedOk: false };
+
+      // SOL delta réel (pre → post balance)
+      const preSol  = (tx.meta.preBalances[walletIdx]  ?? 0) / 1e9;
+      const postSol = (tx.meta.postBalances[walletIdx] ?? 0) / 1e9;
+      const feeSol  = (tx.meta.fee ?? 0) / 1e9;
+      // solDelta inclut les fees — on les sépare pour avoir le montant net d'échange
+      const solDelta = postSol - preSol + feeSol; // positif = reçu, négatif = dépensé
+
+      // Token delta (pre → post token balances)
+      let tokenDelta = 0n;
+      const preTokens  = tx.meta.preTokenBalances  ?? [];
+      const postTokens = tx.meta.postTokenBalances ?? [];
+      for (const post of postTokens) {
+        if (post.owner === walletPubkey) {
+          const pre = preTokens.find(p => p.accountIndex === post.accountIndex);
+          const preAmt  = BigInt(pre?.uiTokenAmount?.amount  ?? '0');
+          const postAmt = BigInt(post.uiTokenAmount?.amount  ?? '0');
+          tokenDelta += postAmt - preAmt;
+        }
+      }
+
+      logger.info({
+        sig: sig.slice(0, 16),
+        solDelta: solDelta.toFixed(6),
+        tokenDelta: tokenDelta.toString(),
+        feeSol: feeSol.toFixed(6),
+      }, '🔍 On-chain parse OK');
+
+      return { solDelta, tokenDelta, feeSol, parsedOk: true };
+    } catch (err: any) {
+      logger.warn({ sig: sig.slice(0, 16), error: err.message }, '⚠️ On-chain parse failed');
+      return { solDelta: 0, tokenDelta: 0n, feeSol: 0, parsedOk: false };
+    }
+  }
+
+  // ━━━ DB LOG enrichi avec données on-chain ━━━
+
+  private async dbLogFull(params: {
+    side: string; mint: string; solIn: number; solOut: number;
+    tx: string; reason: string; pnl?: number; pnlPct?: number;
+    tokensAmount?: bigint; feeSol?: number; jitoTipSol?: number;
+    slippageSol?: number; slippagePct?: number;
+    txSigBuy?: string; parsedOk?: boolean;
+  }) {
+    try {
+      await this.pool.query(`
+        INSERT INTO live_trades 
+          (token_address, side, sol_in, sol_out, pnl_sol, pnl_pct, tx_signature,
+           reason, jito_bundle, tip_lamports, latency_ms,
+           sol_actual, tokens_amount, fee_sol, jito_tip_sol,
+           slippage_sol, slippage_pct, tx_sig_buy, wallet_address, parsed_ok)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+        [
+          params.mint, params.side, params.solIn, params.solOut,
+          params.pnl ?? null, params.pnlPct ?? null, params.tx,
+          params.reason, true, this.config.jitoTipBuyLamports, null,
+          Math.abs(params.side === 'BUY' ? (params.solIn + (params.slippageSol ?? 0)) : params.solOut),
+          params.tokensAmount ? params.tokensAmount.toString() : null,
+          params.feeSol ?? null,
+          params.jitoTipSol ?? null,
+          params.slippageSol ?? null,
+          params.slippagePct ?? null,
+          params.txSigBuy ?? null,
+          this.keypair.publicKey.toBase58(),
+          params.parsedOk ?? false,
+        ]
+      );
+    } catch (e: any) {
+      logger.warn({ error: e.message }, 'dbLogFull failed');
+    }
+  }
+
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ON-CHAIN TRANSACTION PARSER
+// Lit les données réelles depuis la blockchain après confirmation
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+interface OnChainResult {
+  solDelta: number;       // SOL réellement échangé (négatif = dépensé, positif = reçu)
+  tokenDelta: bigint;     // tokens reçus/vendus
+  feeSol: number;         // frais réseau Solana
+  parsedOk: boolean;
 }
