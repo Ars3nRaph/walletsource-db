@@ -259,6 +259,27 @@ export class PaperTradeExecutor extends TradeExecutor {
   /**
    * Log paper trade to file (v4.2 spot with stagnation detection)
    */
+
+  /** Forward BUY/SELL signals to LiveTradeExecutor */
+  protected onLiveSignal(signal: any, tokenAddress: string, currentMC: number): void {
+    if (!this.liveExecutor) return;
+    this.liveExecutor.executeSignal(signal, tokenAddress, currentMC)
+      .then((result: any) => {
+        if (result) {
+          logger.info({
+            action: signal.action,
+            token: tokenAddress.slice(0, 8),
+            success: result.success,
+            tx: result.txSignature?.slice(0, 16),
+            ms: result.latencyMs,
+            jito: result.jitoBundle,
+          }, result.success ? '💰 LIVE TRADE OK' : '⚠️ LIVE TRADE FAIL');
+        }
+      })
+      .catch((err: any) => {
+        logger.error({ error: err?.message, token: tokenAddress.slice(0, 8) }, '❌ Live execution error');
+      });
+  }
   public onSweepClose(token: string, signal: TradeSignal, mc: number): void {
     // v10.10h: compute elapsed from token detection (consistent with all other log entries)
     const rideEntry = this.rideCache?.get(token);

@@ -242,6 +242,7 @@ export class TradeExecutor {
         this.closePosition(tokenAddress);
         // Emit to paper trade log via overrideable method
         this.onSweepClose(tokenAddress, sweepResult, lastMC);
+                this.onLiveSignal(sweepResult, tokenAddress, lastMC);
       }
     }
   }
@@ -712,6 +713,7 @@ export class TradeExecutor {
         this.ruggerPositions.delete(tokenAddress);
         // Log to paper trades
         this.onSweepClose(tokenAddress, rtSellResult, mcUsd);
+                this.onLiveSignal(rtSellResult, tokenAddress, mcUsd);
         return; // Done — position closed instantly
       }
     }
@@ -892,6 +894,10 @@ export class TradeExecutor {
   // MAIN EVALUATION
   // ─────────────────────────────────────────────────────────────
 
+
+  /** Hook for live trade forwarding — overridden by PaperTradeExecutor */
+  protected onLiveSignal(_signal: any, _tokenAddress: string, _currentMC: number): void {}
+
   async evaluateTrade(
     tokenAddress: string,
     elapsedMinutes: number,
@@ -1034,11 +1040,15 @@ export class TradeExecutor {
 
       // ── MANAGE OPEN POSITION ──
       if (pos) {
-        return this.managePosition(tokenAddress, pos, ws, currentMC, elapsedSec, state);
+        const mResult = this.managePosition(tokenAddress, pos, ws, currentMC, elapsedSec, state);
+        if (mResult.action === 'BUY' || mResult.action === 'SELL') this.onLiveSignal(mResult, tokenAddress, currentMC);
+        return mResult;
       }
 
       // ── EVALUATE ENTRY ──
-      return await this.evaluateEntry(tokenAddress, ws, currentMC, baselineMC, mcRatio, elapsedSec, state, cached!.walletAddress);
+      const eResult = await this.evaluateEntry(tokenAddress, ws, currentMC, baselineMC, mcRatio, elapsedSec, state, cached!.walletAddress);
+      if (eResult.action === 'BUY' || eResult.action === 'SELL') this.onLiveSignal(eResult, tokenAddress, currentMC);
+      return eResult;
 
     } catch (err) {
       logger.error({ err, tokenAddress }, 'TradeExecutor error');
