@@ -204,7 +204,9 @@ export class TradeExecutor {
       const holdSec = (now - pos.entryTime.getTime()) / 1000;
       const cached = this.rideCache.get(tokenAddress);
       const ws = cached ? this.walletStrategies.get(cached!.walletAddress) : null;
-      const maxHold = ws?.maxHoldSec ?? 600; // v10.10h: 10min max (was 180s)
+      // SWARM: max hold 600s (v1.1) — use dedicated limit, not wallet strategy maxHoldSec
+      const isSwarmPos = pos.swarmStrategy === true;
+      const maxHold = isSwarmPos ? 600 : (ws?.maxHoldSec ?? 600); // v10.10h: 10min max (was 180s)
       
       // Stale: no new trades AND past max hold time
       if (!this.openPositions.has(tokenAddress)) continue;
@@ -212,10 +214,12 @@ export class TradeExecutor {
       const lastTickAge = pos.peakTime ? (now - pos.peakTime) / 1000 : holdSec;
       // Only sweep if BOTH conditions: past max hold AND very few ticks (truly stale)
       const isStale = holdSec > maxHold && pos.tradeCount < 5;
-      // OR: held very long (>10min) with no trades for a while
-      const isAbandoned = holdSec > 600 && pos.tradeCount < 10;
+      // OR: held very long (>10min) with no trades for a while — SWARM exempt (let rockets run)
+      const isAbandoned = !isSwarmPos && holdSec > 600 && pos.tradeCount < 10;
       // v10.13: Token stopped receiving ticks (>5min since last tick + past max hold)
-      const isNoTicks = holdSec > maxHold && lastTickAge > 300;
+      // SWARM: no-ticks sweep requires lastTickAge > 600s (not 300s) — swarm tokens can go quiet mid-pump
+      const noTicksThreshold = isSwarmPos ? 600 : 300;
+      const isNoTicks = holdSec > maxHold && lastTickAge > noTicksThreshold;
       const isNeoTimeout = pos.neoStrategy === true && holdSec > 900;
       const isCartelTimeout = pos.cartelStrategy === true && holdSec > 900; // NEO v4.23: hard 15min timeout regardless of ticks
       if (isStale || isAbandoned || isNeoTimeout || isCartelTimeout || isNoTicks) {
