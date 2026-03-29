@@ -169,7 +169,7 @@ export class LiveTradeExecutor {
     if (now - this.blockhashCache.fetchedAt < 30_000 && this.blockhashCache.blockhash) {
       return this.blockhashCache.blockhash;
     }
-    const { blockhash } = await this.connection.getLatestBlockhash('confirmed');
+    const { blockhash } = await this.connection.getLatestBlockhash("confirmed");
     this.blockhashCache = { blockhash, fetchedAt: now };
     return blockhash;
   }
@@ -617,7 +617,7 @@ export class LiveTradeExecutor {
   // ━━━ HELPERS ━━━
 
   private async buildV0Tx(ixs: TransactionInstruction[]): Promise<VersionedTransaction> {
-    const { blockhash } = await this.connection.getLatestBlockhash('confirmed');
+    const blockhash = await this.getCachedBlockhash();
     const msg = new TransactionMessage({ payerKey: this.keypair.publicKey, recentBlockhash: blockhash, instructions: ixs }).compileToV0Message();
     return new VersionedTransaction(msg);
   }
