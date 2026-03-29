@@ -608,9 +608,8 @@ export class TradeExecutor {
         } else if (rtIsCartel) {
           rtDropLimit = 0.20; // CARTEL: 20% trail
         } else if (rtIsNeo) {
-          // NEO v4.62: simplified trail 25%→15%@125% (backtest +1.61 SOL, HS 29→22%)
-          // Activation lowered to 15% (from 25%) — catches more exits before HS
-          rtDropLimit = rtPeakPnl >= 125 ? 0.15 : 0.25; // v4.62: tight at rockets, wide below
+          // NEO v4.63: 3-tier trail — low-peak <40% uses 15% (no negative capture), mid 40-124% uses 25%, rockets 125%+ use 15%
+          rtDropLimit = rtPeakPnl >= 125 || rtPeakPnl < 40 ? 0.15 : 0.25; // v4.63: low-peak safe zone (breakeven at 17.6% vs 33.3%)
         } else if (rtSellerRatio >= 0 && rtSellerRatio <= 0.20) {
           rtDropLimit = 0.27; // v10.19: healthy → wide trail (was 0.25)
         } else if (rtSellerRatio > 0.40) {
@@ -1158,8 +1157,8 @@ export class TradeExecutor {
       if (isCartel) {
         dropLimit = 0.20; // CARTEL: 20% trail (more room for big moves)
       } else if (isNeo) {
-        // NEO v4.62: simplified trail 25%→15%@125% (backtest +1.61 SOL, HS 29→22%)
-        dropLimit = peakPnl >= 125 ? 0.15 : 0.25;
+        // NEO v4.63: 3-tier trail — low-peak <40% uses 15% (no negative capture), mid 40-124% uses 25%, rockets 125%+ use 15%
+        dropLimit = peakPnl >= 125 || peakPnl < 40 ? 0.15 : 0.25; // v4.63: low-peak safe zone
       } else if (sellerGrowthRatio >= 0 && sellerGrowthRatio <= 0.20) {
         dropLimit = 0.27; // v10.19: healthy → wide trail (was 0.25)
       } else if (sellerGrowthRatio > 0.40) {

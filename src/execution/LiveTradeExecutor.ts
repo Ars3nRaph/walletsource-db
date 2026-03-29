@@ -125,6 +125,7 @@ interface OpenLivePosition {
   tokenAmount: bigint;
   entryTime: Date;
   walletAddress: string;
+  buyReason: string;
 }
 
 interface TradeResult {
@@ -334,6 +335,7 @@ export class LiveTradeExecutor {
           entryMC: currentMC, entrySol: positionSol,
           tokenAmount: result.tokensReceived ?? 0n,
           entryTime: new Date(), walletAddress: '',
+          buyReason: signal.reason ?? "",
         });
         this.dailyStats.trades++;
         this.dailyStats.totalTipSol += this.config.jitoTipBuyLamports / LAMPORTS_PER_SOL;
@@ -429,6 +431,7 @@ export class LiveTradeExecutor {
           slippagePct: pos.entrySol > 0 ? (slippageSol / pos.entrySol * 100) : 0,
           txSigBuy: pos.entryTxSig,
           parsedOk: onChainSell.parsedOk,
+          buyReason: pos.buyReason,
         });
 
         logger.info({
@@ -706,7 +709,7 @@ export class LiveTradeExecutor {
     tx: string; reason: string; pnl?: number; pnlPct?: number;
     tokensAmount?: bigint; feeSol?: number; jitoTipSol?: number;
     slippageSol?: number; slippagePct?: number;
-    txSigBuy?: string; parsedOk?: boolean; exitType?: string; pnlGross?: number;
+    txSigBuy?: string; parsedOk?: boolean; exitType?: string; pnlGross?: number; buyReason?: string;
   }) {
     try {
       await this.pool.query(`
@@ -714,8 +717,9 @@ export class LiveTradeExecutor {
           (token_address, side, sol_intended, sol_out_actual, pnl_sol, pnl_pct, tx_signature,
            reason, jito_bundle, jito_tip_sol, latency_ms,
            sol_actual, tokens_amount, fee_sol,
-           slippage_sol, slippage_pct, tx_sig_buy, wallet_address, parsed_ok)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+           slippage_sol, slippage_pct, tx_sig_buy, wallet_address, parsed_ok,
+           buy_strategy, strategy_version, exit_type)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
         [
           params.mint, params.side, params.solIn, params.solOut,
           params.pnl ?? null, params.pnlPct ?? null, params.tx,
@@ -728,6 +732,10 @@ export class LiveTradeExecutor {
           params.txSigBuy ?? null,
           this.keypair.publicKey.toBase58(),
           params.parsedOk ?? false,
+          // Detect strategy from reason
+          (params.buyReason || params.reason).includes('SWARM') ? 'SWARM' : (params.buyReason || params.reason).includes('NEO') ? 'NEO' : (params.buyReason || params.reason).includes('CARTEL') ? 'CARTEL' : 'STD',
+          params.reason.match(/v[\d.]+/)?.[0] ?? null,
+          params.exitType ?? null,
         ]
       );
     } catch (e: any) {

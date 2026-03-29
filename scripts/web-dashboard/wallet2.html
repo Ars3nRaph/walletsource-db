@@ -856,7 +856,7 @@ function renderPage() {
         <td style="white-space:nowrap;font-size:11px">${fmtTime(t.timestamp)}</td>
         <td><a href="https://pump.fun/${t.token_full}" target="_blank" style="color:#58a6ff;text-decoration:none;font-size:12px">${t.token}</a></td>
         <td style="font-size:12px">${t.position_sol.toFixed(2)}</td>
-        <td style="font-size:12px">$${t.buy_mc.toLocaleString()}</td>
+        <td style="font-size:12px">${t.buy_mc?("$"+t.buy_mc.toLocaleString()):"—"}</td>
         <td class="${cls}" style="font-weight:600" title="${
           t.action==='OPEN'?'Position ouverte':
           (t.exit_type&&(t.exit_type.includes('TRAIL')))?('Peak atteint: +'+(t.peak_pct||t.mc_change_pct||'?')+'%'):
