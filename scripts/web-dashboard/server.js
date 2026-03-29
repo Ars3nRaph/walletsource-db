@@ -1168,7 +1168,7 @@ app.post('/api/live-toggle', async (req, res) => {
     fsSync.writeFileSync(envPath, content);
     
     // Safe restart
-    cp.execSync('bash scripts/safe-restart.sh --force', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
+    cp.execSync('bash scripts/safe-restart.sh', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
     
     res.json({ success: true, DRY_RUN: !enabled, message: enabled ? 'LIVE TRADING ENABLED' : 'LIVE TRADING DISABLED (paper only)' });
   } catch (err) {
@@ -1202,7 +1202,7 @@ app.post('/api/strategy-toggle', async (req, res) => {
     
     // Compile + restart
     cp.execSync('npx tsc', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
-    cp.execSync('bash scripts/safe-restart.sh --force', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
+    cp.execSync('bash scripts/safe-restart.sh', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
     
     res.json({ success: true, strategy, enabled, slots: newVal });
   } catch (err) {
@@ -1257,7 +1257,7 @@ app.post('/api/config/save', async (req, res) => {
       fsSync.writeFileSync(tsPath, ts);
       fsSync.writeFileSync(envPath, env);
       cp.execSync('npx tsc', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
-      cp.execSync('bash scripts/safe-restart.sh --force', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
+      cp.execSync('bash scripts/safe-restart.sh', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
     }
     
     res.json({ success: true, message: changed ? 'Config saved + bot restarted' : 'No changes' });
