@@ -126,6 +126,7 @@ interface OpenLivePosition {
   entryTime: Date;
   walletAddress: string;
   buyReason: string;
+  realEntrySol: number;
 }
 
 interface TradeResult {
@@ -335,7 +336,7 @@ export class LiveTradeExecutor {
           entryMC: currentMC, entrySol: positionSol,
           tokenAmount: result.tokensReceived ?? 0n,
           entryTime: new Date(), walletAddress: '',
-          buyReason: signal.reason ?? "",
+          buyReason: signal.reason ?? "", realEntrySol: 0,
         });
         this.dailyStats.trades++;
         this.dailyStats.totalTipSol += this.config.jitoTipBuyLamports / LAMPORTS_PER_SOL;
@@ -346,9 +347,12 @@ export class LiveTradeExecutor {
         const jitoTipSol   = this.config.jitoTipBuyLamports / 1e9;
 
         // Mettre à jour la position avec le vrai montant de tokens reçus
-        if (onChainBuy.parsedOk && onChainBuy.tokenDelta > 0n) {
+        if (onChainBuy.parsedOk) {
           const pos = this.openPositions.get(tokenMint);
-          if (pos) pos.tokenAmount = onChainBuy.tokenDelta;
+          if (pos) {
+            if (onChainBuy.tokenDelta > 0n) pos.tokenAmount = onChainBuy.tokenDelta;
+            pos.realEntrySol = Math.abs(onChainBuy.solDelta);
+          }
         }
 
         await this.dbLogFull({
@@ -407,11 +411,12 @@ export class LiveTradeExecutor {
         const realSolReceived = onChainSell.parsedOk ? Math.abs(onChainSell.solDelta) : (result.solReceived ?? 0);
         const jitoTipSol = this.config.jitoTipSellLamports / 1e9;
 
-        // P&L réel: SOL reçu - SOL dépensé - fees - tips
-        const totalCost  = pos.entrySol + onChainSell.feeSol + jitoTipSol;
-        const pnlSol     = realSolReceived - totalCost;
-        const pnlPct     = pos.entrySol > 0 ? (pnlSol / pos.entrySol * 100) : 0;
-        const slippageSol = onChainSell.parsedOk ? (realSolReceived - pos.entrySol - (pnlSol > 0 ? pnlSol : 0)) : 0;
+        // P&L réel: SOL reçu - SOL dépensé (solDelta already normalizes for network fees)
+        // pos.realEntrySol = abs(solDelta) from BUY parseOnChainTx (actual exchange amount)
+        const realBuyCost = pos.realEntrySol || pos.entrySol;
+        const pnlSol     = realSolReceived - realBuyCost;
+        const pnlPct     = realBuyCost > 0 ? (pnlSol / realBuyCost * 100) : 0;
+        const slippageSol = onChainSell.parsedOk ? (realSolReceived - pos.entrySol) : 0;
 
         this.dailyStats.trades++;
         this.dailyStats.totalPnlSol  += pnlSol;
@@ -718,8 +723,8 @@ export class LiveTradeExecutor {
            reason, jito_bundle, jito_tip_sol, latency_ms,
            sol_actual, tokens_amount, fee_sol,
            slippage_sol, slippage_pct, tx_sig_buy, wallet_address, parsed_ok,
-           buy_strategy, strategy_version, exit_type)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+           buy_strategy, strategy_version, exit_type, mc_usd, buyers, ratio, quality_score)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
         [
           params.mint, params.side, params.solIn, params.solOut,
           params.pnl ?? null, params.pnlPct ?? null, params.tx,
@@ -736,6 +741,11 @@ export class LiveTradeExecutor {
           (params.buyReason || params.reason).includes('SWARM') ? 'SWARM' : (params.buyReason || params.reason).includes('NEO') ? 'NEO' : (params.buyReason || params.reason).includes('CARTEL') ? 'CARTEL' : 'STD',
           params.reason.match(/v[\d.]+/)?.[0] ?? null,
           params.exitType ?? null,
+          // Parse buyers/ratio/quality from reason string
+          null, // mc_usd — not reliably available in reason
+          (() => { const m = (params.buyReason || params.reason).match(/(\d+)b\s/); return m ? parseInt(m[1]) : null; })(),  // buyers
+          (() => { const m = (params.buyReason || params.reason).match(/(\d+\.\d+)x/); return m ? parseFloat(m[1]) : null; })(),  // ratio
+          (() => { const m = (params.buyReason || params.reason).match(/Q(\d)/); return m ? parseInt(m[1]) : null; })(),  // quality_score
         ]
       );
     } catch (e: any) {
