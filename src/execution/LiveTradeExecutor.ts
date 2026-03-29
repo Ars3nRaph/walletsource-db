@@ -248,7 +248,7 @@ export class LiveTradeExecutor {
     const dedupKey = `${signal.action}:${tokenMint}`;
     const lastSeen = this.recentSignals.get(dedupKey);
     if (lastSeen && Date.now() - lastSeen < 5000) {
-      logger.info({ token: tokenMint.slice(0,8), action: signal.action }, '🔄 DEDUP — skipping duplicate signal');
+      logger.info({ token: tokenMint, action: signal.action }, '🔄 DEDUP — skipping duplicate signal');
       return null;
     }
     this.recentSignals.set(dedupKey, Date.now());
@@ -259,7 +259,7 @@ export class LiveTradeExecutor {
     }
 
     if (this.config.dryRun) {
-      logger.info({ token: tokenMint.slice(0, 8), action: signal.action }, '🏜️ DRY RUN — skipped');
+      logger.info({ token: tokenMint, action: signal.action }, '🏜️ DRY RUN — skipped');
       return { success: true, latencyMs: 0, txSignature: 'DRY_RUN' };
     }
 
@@ -279,7 +279,7 @@ export class LiveTradeExecutor {
     this.killed = true;
     for (const [mint] of this.openPositions) {
       try { await this.executeSell(mint, { action: 'SELL', confidence: 1, percentage: 100, reason: '🚨 EMERGENCY', playbook_strategy: 'RIDE' }); }
-      catch (e) { logger.error({ error: e, token: mint.slice(0, 8) }, 'Emergency close failed'); }
+      catch (e) { logger.error({ error: e, token: mint }, 'Emergency close failed'); }
     }
   }
 
@@ -314,7 +314,7 @@ export class LiveTradeExecutor {
       if (positionSol <= 0)
         return { success: false, error: 'Position 0', latencyMs: Date.now() - t0 };
 
-      logger.info({ token: tokenMint.slice(0, 8), sol: positionSol.toFixed(4), mc: currentMC.toFixed(0), risk: signal.wallet_risk_score?.toFixed(2) ?? '?' }, '🟢 LIVE BUY');
+      logger.info({ token: tokenMint, sol: positionSol.toFixed(4), mc: currentMC.toFixed(0), risk: signal.wallet_risk_score?.toFixed(2) ?? '?' }, '🟢 LIVE BUY');
 
       const mintPk = new PublicKey(tokenMint);
       const tx = await this.buildBuyTx(mintPk, positionSol);
@@ -359,7 +359,7 @@ export class LiveTradeExecutor {
         });
 
         logger.info({
-          token: tokenMint.slice(0, 8), tx: result.txSignature.slice(0, 16),
+          token: tokenMint, tx: result.txSignature.slice(0, 16),
           ms: result.latencyMs,
           realSol: realSolSpent.toFixed(6),
           tokens: onChainBuy.tokenDelta.toString().slice(0, 10),
@@ -369,7 +369,7 @@ export class LiveTradeExecutor {
       }
       return result;
     } catch (err: any) {
-      logger.error({ error: err.message, token: tokenMint.slice(0, 8) }, '❌ BUY FAIL');
+      logger.error({ error: err.message, token: tokenMint }, '❌ BUY FAIL');
       return { success: false, error: err.message, latencyMs: Date.now() - t0 };
     }
   }
@@ -382,7 +382,7 @@ export class LiveTradeExecutor {
     if (!pos) return { success: false, error: 'No position', latencyMs: 0 };
 
     try {
-      logger.info({ token: tokenMint.slice(0, 8), reason: signal.reason?.slice(0, 50) }, '🔴 LIVE SELL');
+      logger.info({ token: tokenMint, reason: signal.reason?.slice(0, 50) }, '🔴 LIVE SELL');
 
       // Tip dynamique selon urgence: HARD_STOP → urgent (p99), sinon sell (p95)
       const isUrgent = (signal.reason ?? '').includes('HARD_STOP') || (signal.reason ?? '').includes('STOP_LOSS');
@@ -430,7 +430,7 @@ export class LiveTradeExecutor {
         });
 
         logger.info({
-          token: tokenMint.slice(0, 8),
+          token: tokenMint,
           pnl: `\${pnlSol >= 0 ? '+' : ''}\${pnlSol.toFixed(6)} SOL`,
           realReceived: realSolReceived.toFixed(6),
           feeSol: onChainSell.feeSol.toFixed(6),
@@ -441,7 +441,7 @@ export class LiveTradeExecutor {
       }
       return result;
     } catch (err: any) {
-      logger.error({ error: err.message, token: tokenMint.slice(0, 8) }, '❌ SELL FAIL — RETRY');
+      logger.error({ error: err.message, token: tokenMint }, '❌ SELL FAIL — RETRY');
       // Sell failures are critical — retry once
       try { return await this.executeSell(tokenMint, signal); }
       catch { return { success: false, error: err.message, latencyMs: Date.now() - t0 }; }
