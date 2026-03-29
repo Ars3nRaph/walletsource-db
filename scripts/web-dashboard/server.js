@@ -14,6 +14,32 @@ import fs from 'fs/promises';
 
 dotenv.config();
 
+// ═══ SOL Price — Live from CoinGecko, cached 12h ═══
+let solPriceCache = { price: 140, fetchedAt: 0 };
+const SOL_PRICE_TTL = 12 * 60 * 60 * 1000; // 12 hours
+
+async function getSolPrice() {
+  const now = Date.now();
+  if (now - solPriceCache.fetchedAt < SOL_PRICE_TTL && solPriceCache.price > 0) {
+    return solPriceCache.price;
+  }
+  try {
+    const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd');
+    const d = await r.json();
+    if (d?.solana?.usd) {
+      solPriceCache = { price: d.solana.usd, fetchedAt: now };
+      console.log('[SOL PRICE] Updated: $' + d.solana.usd);
+    }
+  } catch(e) {
+    console.error('[SOL PRICE] Fetch failed, using cached:', solPriceCache.price, e.message);
+  }
+  return solPriceCache.price;
+}
+
+// Fetch on startup
+getSolPrice();
+
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 
@@ -809,7 +835,7 @@ app.get('/api/wallet-sim', async (req, res) => {
     res.json({
       success: true,
       config: {
-        initial_sol: INITIAL_SOL, sol_price_usd: 140,
+        initial_sol: INITIAL_SOL, sol_price_usd: await getSolPrice(),
         slippage_buy_bps: BUY_SLIP * 10000, slippage_sell_bps: SELL_SLIP * 10000,
         pump_fee_bps: PUMP_FEE * 10000, priority_fee_sol: JITO_BUY, jito_tip_buy_sol: JITO_BUY, jito_tip_sell_sol: JITO_SELL, max_mc_pct: 10
       },
@@ -1006,7 +1032,7 @@ app.get('/api/live-wallet', async (req, res) => {
       wallet: { address: walletAddress, balance_sol: walletBalance },
       config: {
         initial_sol: parseFloat(initialBalance.toFixed(4)),
-        sol_price_usd: 140,
+        sol_price_usd: await getSolPrice(),
         slippage_buy_bps: 0, slippage_sell_bps: 0,
         pump_fee_bps: 0, priority_fee_sol: 0,
         jito_tip_buy_sol: 0, jito_tip_sell_sol: 0, max_mc_pct: 0
@@ -1449,3 +1475,21 @@ app.get('/api/logs-live/download/:filename', (req, res) => {
 
 // GET /logs-live — serve the page
 app.get('/logs-live', (req, res) => res.sendFile(path.join(__dirname, 'logs-live.html')));
+
+// GET /api/sol-price — current price + last update
+app.get('/api/sol-price', async (req, res) => {
+  const price = await getSolPrice();
+  res.json({ 
+    success: true, 
+    price, 
+    fetchedAt: new Date(solPriceCache.fetchedAt).toISOString(),
+    ageMinutes: Math.round((Date.now() - solPriceCache.fetchedAt) / 60000)
+  });
+});
+
+// POST /api/sol-price/refresh — force refresh
+app.post('/api/sol-price/refresh', async (req, res) => {
+  solPriceCache.fetchedAt = 0; // force refetch
+  const price = await getSolPrice();
+  res.json({ success: true, price, message: 'Price refreshed' });
+});
