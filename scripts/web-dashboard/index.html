@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WalletSource v10.14.4 — Dashboard</title>
+  <title>WalletSource v10.18 — Dashboard</title>
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"></script>
@@ -12,8 +12,8 @@
   <div class="container">
     <!-- Header -->
     <header>
-      <h1>🎩 WalletSource v10.14.4</h1>
-      <p class="subtitle">v10.14.4 — Market Validation • ELITE v1.1 • CARTEL v1.2 • NEO v4.48 • Helius</p>
+      <h1>🎩 WalletSource v10.18</h1>
+      <p class="subtitle">v10.18 — STD v10.18 • NEO v4.61 • SWARM v1.1 • CARTEL DÉSACTIVÉ • Helius</p>
       <div class="status-badge" id="status-badge">
         <span class="dot"></span>
         <span id="status-text">Connecting...</span>
@@ -221,31 +221,31 @@
         </div>
       </div>
 
-      <!-- CARTEL Detection v1.1 -->
-      <div class="stat-card" style="border-left:3px solid #9c27b0">
+      <!-- SWARM v1.1 -->
+      <div class="stat-card" style="border-left:3px solid #f59e0b">
         <div class="stat-header">
-          <span class="icon">🤝</span>
-          <h3>CARTEL v1.1</h3>
+          <span class="icon">🐝</span>
+          <h3>SWARM v1.1</h3>
         </div>
         <div class="stat-row">
-          <span class="label">ELITE Wallets (WR≥75%)</span>
-          <span class="value" id="cartel-good-wallets">-</span>
+          <span class="label">Entry: b≥80 • avgBuy&lt;$25</span>
+          <span class="value" style="font-size:0.7rem;color:#f59e0b">ACTIVE</span>
         </div>
         <div class="stat-row">
-          <span class="label">GOOD Wallets (WR≥65%)</span>
-          <span class="value info" id="cartel-good-count">-</span>
+          <span class="label">Ratio</span>
+          <span class="value" style="font-size:0.7rem">2.0-3.5x • T=20-90s</span>
         </div>
         <div class="stat-row">
-          <span class="label">Watched (Helius WSS)</span>
-          <span class="value" id="cartel-watched">-</span>
+          <span class="label">Exit</span>
+          <span class="value" style="font-size:0.7rem">trail 20%@+40% • HS -20%</span>
         </div>
         <div class="stat-row">
-          <span class="label">Entry: GW≥5 • ratio≥1.5x • b≥40</span>
-          <span class="value" style="font-size:0.7rem;color:#a855f7">ACTIVE</span>
+          <span class="label">Max hold</span>
+          <span class="value" style="font-size:0.7rem">600s • 2 slots</span>
         </div>
         <div class="stat-row">
           <span class="label">Sizing</span>
-          <span class="value" style="font-size:0.7rem">adaptive ≤0.50 SOL</span>
+          <span class="value" style="font-size:0.7rem">0.25-0.35 SOL</span>
         </div>
       </div>
 
@@ -324,37 +324,37 @@
 <h2>🎯 Strategy Performance (live)</h2>
       <div class="stats-grid" style="margin-bottom:1rem">
         <div class="stat-card" style="border-left:3px solid #ff9800">
-          <div class="stat-header"><span class="icon">🔵</span><h3>STD (v10.14.4)</h3></div>
+          <div class="stat-header"><span class="icon">🔵</span><h3>STD (v10.18)</h3></div>
           <div class="stat-row"><span class="label">Trades</span><span class="value" id="strat-std-trades">-</span></div>
           <div class="stat-row"><span class="label">Win Rate</span><span class="value" id="strat-std-wr">-</span></div>
           <div class="stat-row"><span class="label">Avg P&L (net)</span><span class="value" id="strat-std-pnl">-</span></div>
           <div class="stat-row"><span class="label">Exits</span><span class="value" id="strat-std-exits" style="font-size:0.7rem">-</span></div>
         </div>
-        <div class="stat-card" style="border-left:3px solid #f44336">
-          <div class="stat-header"><span class="icon">🔴</span><h3>NEO (v4.41)</h3></div>
+        <div class="stat-card" style="border-left:3px solid #a855f7">
+          <div class="stat-header"><span class="icon">🟣</span><h3>NEO (v4.61)</h3></div>
           <div class="stat-row"><span class="label">Trades</span><span class="value" id="strat-neo-trades">-</span></div>
           <div class="stat-row"><span class="label">Win Rate</span><span class="value" id="strat-neo-wr">-</span></div>
           <div class="stat-row"><span class="label">Avg P&L (net)</span><span class="value" id="strat-neo-pnl">-</span></div>
           <div class="stat-row"><span class="label">Exits</span><span class="value" id="strat-neo-exits" style="font-size:0.7rem">-</span></div>
         </div>
         <div class="stat-card" style="border-left:3px solid #9c27b0">
-          <div class="stat-header"><span class="icon">🟣</span><h3>CARTEL (v1.1)</h3></div>
-          <div class="stat-row"><span class="label">Trades</span><span class="value" id="strat-cartel-trades">-</span></div>
-          <div class="stat-row"><span class="label">Win Rate</span><span class="value" id="strat-cartel-wr">-</span></div>
-          <div class="stat-row"><span class="label">Avg P&L (net)</span><span class="value" id="strat-cartel-pnl">-</span></div>
-          <div class="stat-row"><span class="label">Exits</span><span class="value" id="strat-cartel-exits" style="font-size:0.7rem">-</span></div>
+          <div class="stat-header"><span class="icon">🟣</span><h3>SWARM (v1.1)</h3></div>
+          <div class="stat-row"><span class="label">Trades</span><span class="value" id="strat-swarm-trades">-</span></div>
+          <div class="stat-row"><span class="label">Win Rate</span><span class="value" id="strat-swarm-wr">-</span></div>
+          <div class="stat-row"><span class="label">Avg P&L (net)</span><span class="value" id="strat-swarm-pnl">-</span></div>
+          <div class="stat-row"><span class="label">Exits</span><span class="value" id="strat-swarm-exits" style="font-size:0.7rem">-</span></div>
         </div>
       </div>
 
       <!-- v9.0 Changes -->
       <div class="stat-card" style="margin-bottom:1rem">
-        <div class="stat-header"><span class="icon">🔧</span><h3>v10.14.4 Config</h3></div>
+        <div class="stat-header"><span class="icon">🔧</span><h3>v10.18 Config</h3></div>
         <div style="padding:0 12px;font-size:0.78rem;color:#c9d1d9;line-height:1.7">
-<b style="color:#ff9800">Entry:</b> b≥70 • ratio 2.0-3.0x • d&lt;25 • maxVol $5k • window ≤110s • momentum 3/4t 5%+<br>
-<b style="color:#d29922">Exit:</b> HS -20% • FLAT trail 20% (≥50% peak) • PUMP3 &lt;50% • Max 10min<br>
-<b style="color:#f44336">NEO v4.41:</b> ratio 1.0-2.0x • b≥20 • Q3-Q4 only • trail 25% • STALE_EXIT 150/300/600s • PUMP3 profit protect<br>
-<b style="color:#a855f7">CARTEL v1.1:</b> GW≥5 • ratio ≥1.5x • b≥40 • HS -20% • trail 20%@+25%<br>
-<b style="color:#2196f3">Helius:</b> PumpPortal primary • WalletWatcher WSS (ELITE) • BuyerScanner disabled
+<b style="color:#ff9800">Entry:</b> b≥80 • ratio 2.2-3.0x • d&lt;21 • avgBuy&lt;$50 • window ≤110s<br>
+<b style="color:#d29922">Exit:</b> HS -20% • trail 20%@+15% • NO PUMP3 • Max 600s<br>
+<b style="color:#f44336">NEO v4.61:</b> ratio 1.3-2.0x • b≥20 • Q3-Q4 only • trail 25%@+25% • STALE_EXIT 180s • HS -20%<br>
+<b style="color:#a855f7">SWARM v1.1:</b> b≥80 • avgBuy&lt;$25 • ratio 2.0-3.5x • T=20-90s • trail 20%@+40% • Max 600s<br>
+<b style="color:#2196f3">Helius:</b> Primary detection • PumpPortal backup • WalletStats 30min refresh
 </div>
       <script>
       // Inline v9 loader — fires immediately, doesn't depend on app.js

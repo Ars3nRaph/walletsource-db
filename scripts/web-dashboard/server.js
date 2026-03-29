@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * WalletSource v10.14 — Dashboard API Server
+ * WalletSource v10.18 — Dashboard API Server
  * Exposes real-time metrics via REST API
  */
 
@@ -204,6 +204,16 @@ app.get('/api/stats', async (req, res) => {
     `);
     stats.neo = neoStats.rows[0];
 
+    // SWARM stats
+    const swarmStats = await pool.query(`
+      SELECT
+        count(*) FILTER (WHERE action='SELL') as trades,
+        round(100.0 * count(*) FILTER (WHERE action='SELL' AND pnl_pct > 0) / NULLIF(count(*) FILTER (WHERE action='SELL'), 0), 1) as wr,
+        round(avg(pnl_pct) FILTER (WHERE action='SELL'), 1) as avg_pnl
+      FROM paper_trades WHERE buy_strategy = 'SWARM'
+    `);
+    stats.swarm = swarmStats.rows[0];
+
     // CARTEL wallet stats (from wallet_stats table — real P&L based)
     try {
       const walletStats = await pool.query(`
@@ -376,7 +386,7 @@ app.get('/api/system-health', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`
 ╔══════════════════════════════════════════════════════════════╗
-║  WalletSource v10.14 — Dashboard API Server              ║
+║  WalletSource v10.18 — Dashboard API Server              ║
 ╚══════════════════════════════════════════════════════════════╝
 
 📡 API Server:  http://localhost:${PORT}

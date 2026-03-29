@@ -125,13 +125,12 @@ function updateDashboard(stats) {
     }
   }
   if (stats.cartelGroups) {
-    setText('cartel-good-wallets', formatNumber(stats.cartelGroups.good_wallets));
-    setText('cartel-good-count', formatNumber(stats.cartelGroups.good_count));
+    // CARTEL désactivé — cartelGroups non affiché
     setText('cartel-watched', formatNumber(stats.cartelGroups.good_wallets)); // WalletWatcher tracks all ELITE
   }
 
   // Strategy performance cards
-  for (const strat of ['std', 'neo', 'cartel']) {
+  for (const strat of ['std', 'neo', 'swarm']) {
     const d = stats[strat + 'Stats'] || stats[strat] || {};
     setText('strat-' + strat + '-trades', d.trades || '0');
     const wrEl = document.getElementById('strat-' + strat + '-wr');
