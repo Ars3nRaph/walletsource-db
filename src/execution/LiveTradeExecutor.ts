@@ -161,6 +161,9 @@ export class LiveTradeExecutor {
   private openPositions = new Map<string, OpenLivePosition>();
 
   // ═══ OPTIMIZATIONS: cache blockhash + ATA existence ═══
+  // Dedup: prevent same token being bought/sold twice in rapid succession
+  private recentSignals = new Map<string, number>();
+
   private blockhashCache: { blockhash: string; fetchedAt: number } = { blockhash: '', fetchedAt: 0 };
   private ataExistsCache = new Set<string>();
 
@@ -240,6 +243,20 @@ export class LiveTradeExecutor {
 
   async executeSignal(signal: TradeSignal, tokenMint: string, currentMC: number): Promise<TradeResult | null> {
     if (!this.config.enabled || this.killed) return null;
+
+    // Dedup: skip if same token+action in last 5s
+    const dedupKey = `${signal.action}:${tokenMint}`;
+    const lastSeen = this.recentSignals.get(dedupKey);
+    if (lastSeen && Date.now() - lastSeen < 5000) {
+      logger.info({ token: tokenMint.slice(0,8), action: signal.action }, '🔄 DEDUP — skipping duplicate signal');
+      return null;
+    }
+    this.recentSignals.set(dedupKey, Date.now());
+    // Cleanup old entries
+    if (this.recentSignals.size > 100) {
+      const cutoff = Date.now() - 10000;
+      for (const [k, t] of this.recentSignals) { if (t < cutoff) this.recentSignals.delete(k); }
+    }
 
     if (this.config.dryRun) {
       logger.info({ token: tokenMint.slice(0, 8), action: signal.action }, '🏜️ DRY RUN — skipped');
