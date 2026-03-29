@@ -1372,6 +1372,8 @@ async function generateCSV(year, month) {
       : `live_trades_${year}-${String(month).padStart(2,'0')}.csv`;
     await mkdir(LOGS_DIR, { recursive: true });
     await writeFile(path.join(LOGS_DIR, fname), currentRows.join('\n'), 'utf-8');
+    // Protect CSV: append-only
+    try { cp.execSync('chattr +a ' + path.join(LOGS_DIR, fname)); } catch(e) {}
     files.push(fname);
   }
   
