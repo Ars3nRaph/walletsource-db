@@ -1869,7 +1869,7 @@ export class TradeExecutor {
     }
 
     // Phase 2 (T+30-90s): EVALUATE — standard entry (fallback if early entry didn't trigger)
-    const MIN_BUYERS = 75; // v10.14.4: raised from 70 — reduce frequency, filter borderline tokens
+    const MIN_BUYERS = 80; // v10.17: raised 75→80 — buyers 80-90 show +24.4% avg vs +13.5% at 70-80 (WR 66% vs 58%, HS 30% vs 34%)
     const MIN_VOL = 1000;
 
     // Minimum MC ratio 2.0x for standard entry
