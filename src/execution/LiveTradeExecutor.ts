@@ -485,6 +485,10 @@ export class LiveTradeExecutor {
   }
 
   private async buildSellTx(mint: PublicKey, tokenAmount: bigint): Promise<VersionedTransaction> {
+    // Convert raw token amount (with decimals) to UI amount
+    // pump.fun tokens have 6 decimals
+    const uiAmount = Number(tokenAmount) / 1e6;
+    
     const response = await fetch('https://pumpportal.fun/api/trade-local', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -492,7 +496,7 @@ export class LiveTradeExecutor {
         publicKey: this.keypair.publicKey.toBase58(),
         action: 'sell',
         mint: mint.toBase58(),
-        amount: tokenAmount.toString(),
+        amount: uiAmount,
         denominatedInSol: 'false',
         slippage: Math.floor(this.config.slippageBps / 100),
         priorityFee: this.config.computeUnitPrice / 1e6,
@@ -709,17 +713,16 @@ export class LiveTradeExecutor {
         INSERT INTO live_trades_v2 
           (token_address, side, sol_intended, sol_out_actual, pnl_sol, pnl_pct, tx_signature,
            reason, jito_bundle, jito_tip_sol, latency_ms,
-           sol_actual, tokens_amount, fee_sol, jito_tip_sol,
+           sol_actual, tokens_amount, fee_sol,
            slippage_sol, slippage_pct, tx_sig_buy, wallet_address, parsed_ok)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
         [
           params.mint, params.side, params.solIn, params.solOut,
           params.pnl ?? null, params.pnlPct ?? null, params.tx,
-          params.reason, true, this.config.jitoTipBuyLamports, null,
+          params.reason, true, params.jitoTipSol ?? (this.config.jitoTipBuyLamports / 1e9), null,
           Math.abs(params.side === 'BUY' ? (params.solIn + (params.slippageSol ?? 0)) : params.solOut),
           params.tokensAmount ? params.tokensAmount.toString() : null,
           params.feeSol ?? null,
-          params.jitoTipSol ?? null,
           params.slippageSol ?? null,
           params.slippagePct ?? null,
           params.txSigBuy ?? null,
