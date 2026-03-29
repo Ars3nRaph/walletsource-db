@@ -1260,12 +1260,12 @@ export class TradeExecutor {
       return this.sell(100, 1.0, 'RIDE', `${hsLabel} HARD_STOP ${pnlPct.toFixed(1)}% | peak +${peakPnl.toFixed(0)}% (threshold ${hsThreshold}%) | MC ${currentMC.toFixed(0)}`, signals);
     }
 
-    // ELITE-MIMIC: 120s max hold (ELITE avg hold = 41s win / 33s loss)
-    if (isSwarm && holdSec > 300) { // SWARM: max 300s hold
+    // SWARM: max hold 600s (v1.1: 300→600s — let rockets run)
+    if (isSwarm && holdSec > 600) {
       this.openPositions.delete(tokenAddress);
-      this.closedTokens.set(tokenAddress, { exitType: 'ELITE_MAX_HOLD', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+      this.closedTokens.set(tokenAddress, { exitType: 'MAX_HOLD', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
       this.consecutiveHardStops = 0;
-      return this.sell(100, 0.9, 'RIDE', `👑 ELITE_MAX_HOLD 120s — pnl=${pnlPct.toFixed(1)}% | MC ${currentMC.toFixed(0)}`, signals);
+      return this.sell(100, 0.9, 'RIDE', `🐝 SWARM_MAX_HOLD 600s — pnl=${pnlPct.toFixed(1)}% | MC ${currentMC.toFixed(0)}`, signals);
     }
 
     // 2. MAX HOLD: 5 minutes → force exit
