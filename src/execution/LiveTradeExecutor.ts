@@ -466,7 +466,7 @@ export class LiveTradeExecutor {
         amount: solAmount,
         denominatedInSol: 'true',
         slippage: Math.floor(this.config.slippageBps / 100),
-        priorityFee: this.config.computeUnitPrice / 1e6, // microLamports to SOL
+        priorityFee: 0.00005, // SOL — PumpPortal expects SOL directly
         pool: 'pump',
       }),
     });
@@ -499,7 +499,7 @@ export class LiveTradeExecutor {
         amount: uiAmount,
         denominatedInSol: 'false',
         slippage: Math.floor(this.config.slippageBps / 100),
-        priorityFee: this.config.computeUnitPrice / 1e6,
+        priorityFee: 0.00005, // SOL
         pool: 'pump',
       }),
     });
