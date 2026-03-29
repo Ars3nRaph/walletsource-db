@@ -1240,3 +1240,210 @@ app.post('/api/config/save', async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// ═══ LOGS LIVE — Legal/Tax CSV exports ═══
+
+import { createReadStream } from 'fs';
+import { readdir, writeFile, stat, mkdir } from 'fs/promises';
+
+const LOGS_DIR = path.join(__dirname, 'logs-live');
+
+// Generate CSV for a given month
+async function generateCSV(year, month) {
+  const start = `${year}-${String(month).padStart(2,'0')}-01`;
+  const endMonth = month === 12 ? 1 : month + 1;
+  const endYear = month === 12 ? year + 1 : year;
+  const end = `${endYear}-${String(endMonth).padStart(2,'0')}-01`;
+  
+  const { rows } = await pool.query(`
+    SELECT 
+      id,
+      executed_at AT TIME ZONE 'UTC' AS date_utc,
+      confirmed_at AT TIME ZONE 'UTC' AS confirmed_utc,
+      side,
+      token_address,
+      buy_strategy,
+      strategy_version,
+      exit_type,
+      reason,
+      sol_intended,
+      sol_actual,
+      sol_out_actual,
+      tokens_amount,
+      fee_sol,
+      jito_tip_sol,
+      slippage_sol,
+      slippage_pct,
+      pnl_sol,
+      pnl_pct,
+      pnl_gross_sol,
+      mc_usd,
+      ratio,
+      buyers,
+      quality_score,
+      tx_signature,
+      tx_sig_buy,
+      wallet_address,
+      jito_bundle,
+      latency_ms,
+      parsed_ok
+    FROM live_trades_v2
+    WHERE executed_at >= $1 AND executed_at < $2
+    ORDER BY executed_at ASC
+  `, [start, end]);
+  
+  if (rows.length === 0) return null;
+  
+  // CSV header
+  const headers = [
+    'ID','Date_UTC','Confirmed_UTC','Side','Token','Strategy','Version',
+    'Exit_Type','SOL_Intended','SOL_Actual','SOL_Out','Tokens',
+    'Fee_SOL','Jito_Tip_SOL','Slippage_SOL','Slippage_PCT',
+    'PnL_SOL','PnL_PCT','PnL_Gross_SOL','MC_USD','Ratio','Buyers',
+    'Quality','TX_Signature','TX_Sig_Buy','Wallet','Jito_Bundle',
+    'Latency_MS','Parsed_OK','Reason'
+  ];
+  
+  const csvRows = [headers.join(',')];
+  
+  // Check if we need to split (>5000 rows per file)
+  const SPLIT = 5000;
+  let fileIndex = 1;
+  let currentRows = [headers.join(',')];
+  const files = [];
+  
+  for (const r of rows) {
+    const escapeCsv = (v) => {
+      if (v === null || v === undefined) return '';
+      const s = String(v);
+      if (s.includes(',') || s.includes('"') || s.includes('\n')) return '"' + s.replace(/"/g, '""') + '"';
+      return s;
+    };
+    
+    const line = [
+      r.id,
+      r.date_utc ? new Date(r.date_utc).toISOString() : '',
+      r.confirmed_utc ? new Date(r.confirmed_utc).toISOString() : '',
+      r.side,
+      r.token_address,
+      r.buy_strategy,
+      r.strategy_version,
+      r.exit_type || '',
+      r.sol_intended,
+      r.sol_actual,
+      r.sol_out_actual || '',
+      r.tokens_amount || '',
+      r.fee_sol,
+      r.jito_tip_sol,
+      r.slippage_sol || '',
+      r.slippage_pct || '',
+      r.pnl_sol || '',
+      r.pnl_pct || '',
+      r.pnl_gross_sol || '',
+      r.mc_usd || '',
+      r.ratio || '',
+      r.buyers || '',
+      r.quality_score ?? '',
+      r.tx_signature || '',
+      r.tx_sig_buy || '',
+      r.wallet_address || '',
+      r.jito_bundle ?? '',
+      r.latency_ms || '',
+      r.parsed_ok ?? '',
+      escapeCsv(r.reason || '')
+    ].map(v => escapeCsv(v)).join(',');
+    
+    currentRows.push(line);
+    
+    if (currentRows.length > SPLIT) {
+      const fname = `live_trades_${year}-${String(month).padStart(2,'0')}_part${fileIndex}.csv`;
+      await mkdir(LOGS_DIR, { recursive: true });
+      await writeFile(path.join(LOGS_DIR, fname), currentRows.join('\n'), 'utf-8');
+      files.push(fname);
+      fileIndex++;
+      currentRows = [headers.join(',')];
+    }
+  }
+  
+  // Write remaining
+  if (currentRows.length > 1) {
+    const fname = fileIndex > 1 
+      ? `live_trades_${year}-${String(month).padStart(2,'0')}_part${fileIndex}.csv`
+      : `live_trades_${year}-${String(month).padStart(2,'0')}.csv`;
+    await mkdir(LOGS_DIR, { recursive: true });
+    await writeFile(path.join(LOGS_DIR, fname), currentRows.join('\n'), 'utf-8');
+    files.push(fname);
+  }
+  
+  return { files, totalRows: rows.length };
+}
+
+// GET /api/logs-live — list available CSVs + stats
+app.get('/api/logs-live', async (req, res) => {
+  try {
+    // Get months with data
+    const { rows: months } = await pool.query(`
+      SELECT 
+        EXTRACT(YEAR FROM executed_at)::int AS year,
+        EXTRACT(MONTH FROM executed_at)::int AS month,
+        COUNT(*) AS trades,
+        COUNT(*) FILTER (WHERE side='BUY') AS buys,
+        COUNT(*) FILTER (WHERE side='SELL') AS sells,
+        COALESCE(SUM(pnl_sol) FILTER (WHERE side='SELL'), 0)::numeric(10,6) AS total_pnl_sol,
+        COALESCE(SUM(fee_sol), 0)::numeric(10,6) AS total_fees,
+        COALESCE(SUM(jito_tip_sol), 0)::numeric(10,6) AS total_jito,
+        MIN(executed_at) AS first_trade,
+        MAX(executed_at) AS last_trade
+      FROM live_trades_v2
+      WHERE executed_at IS NOT NULL
+      GROUP BY year, month
+      ORDER BY year DESC, month DESC
+    `);
+    
+    // List existing CSV files
+    let existingFiles = [];
+    try {
+      const dir = await readdir(LOGS_DIR);
+      for (const f of dir) {
+        if (!f.endsWith('.csv')) continue;
+        const s = await stat(path.join(LOGS_DIR, f));
+        existingFiles.push({ name: f, size: s.size, modified: s.mtime });
+      }
+    } catch(e) { /* dir doesn't exist yet */ }
+    
+    res.json({ success: true, months: months.map(m => ({
+      year: m.year, month: m.month,
+      trades: parseInt(m.trades), buys: parseInt(m.buys), sells: parseInt(m.sells),
+      total_pnl_sol: parseFloat(m.total_pnl_sol), total_fees: parseFloat(m.total_fees),
+      total_jito: parseFloat(m.total_jito),
+      first_trade: m.first_trade, last_trade: m.last_trade
+    })), files: existingFiles });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/logs-live/generate — generate CSV for a month
+app.post('/api/logs-live/generate', async (req, res) => {
+  try {
+    const { year, month } = req.body;
+    if (!year || !month) return res.status(400).json({ success: false, error: 'year and month required' });
+    const result = await generateCSV(year, month);
+    if (!result) return res.json({ success: true, message: 'No trades for this month', files: [] });
+    res.json({ success: true, ...result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/logs-live/download/:filename — download CSV
+app.get('/api/logs-live/download/:filename', (req, res) => {
+  const fname = req.params.filename.replace(/[^a-zA-Z0-9._-]/g, '');
+  const fpath = path.join(LOGS_DIR, fname);
+  res.download(fpath, fname, (err) => {
+    if (err) res.status(404).json({ success: false, error: 'File not found' });
+  });
+});
+
+// GET /logs-live — serve the page
+app.get('/logs-live', (req, res) => res.sendFile(path.join(__dirname, 'logs-live.html')));
