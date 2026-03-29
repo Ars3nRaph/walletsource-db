@@ -618,15 +618,22 @@ export class LiveTradeExecutor {
     return null;
   }
 
-  private async sendRaw(tx: VersionedTransaction, t0: number, _side: string): Promise<TradeResult> {
+  private async sendRaw(tx: VersionedTransaction, t0: number, side: string): Promise<TradeResult> {
     try {
+      logger.info({ side }, '📡 sendRaw: sending TX...');
       const sig = await this.connection.sendRawTransaction(tx.serialize(), {
         skipPreflight: true, maxRetries: this.config.maxRetries,
       });
+      logger.info({ sig: sig.slice(0, 20), side, ms: Date.now() - t0 }, '📡 sendRaw: TX sent, confirming...');
       const conf = await this.connection.confirmTransaction(sig, 'confirmed');
-      if (conf.value.err) return { success: false, txSignature: sig, error: JSON.stringify(conf.value.err), latencyMs: Date.now() - t0, jitoBundle: false };
+      if (conf.value.err) {
+        logger.warn({ sig: sig.slice(0, 20), error: JSON.stringify(conf.value.err), side }, '📡 sendRaw: TX confirmed but FAILED');
+        return { success: false, txSignature: sig, error: JSON.stringify(conf.value.err), latencyMs: Date.now() - t0, jitoBundle: false };
+      }
+      logger.info({ sig: sig.slice(0, 20), side, ms: Date.now() - t0 }, '✅ sendRaw: TX CONFIRMED');
       return { success: true, txSignature: sig, latencyMs: Date.now() - t0, jitoBundle: false };
     } catch (err: any) {
+      logger.error({ error: err.message, side, ms: Date.now() - t0 }, '❌ sendRaw: EXCEPTION');
       return { success: false, error: err.message, latencyMs: Date.now() - t0, jitoBundle: false };
     }
   }
