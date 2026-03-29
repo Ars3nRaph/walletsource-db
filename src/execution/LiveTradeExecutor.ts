@@ -46,6 +46,50 @@ const JITO_ENDPOINTS = [
   'https://tokyo.mainnet.block-engine.jito.wtf/api/v1/bundles',
 ];
 
+// ━━━ DYNAMIC JITO TIP ━━━
+const JITO_TIP_API = 'https://bundles.jito.wtf/api/v1/bundles/tip_floor';
+const SOL = 1_000_000_000; // lamports per SOL
+
+interface JitoTipCache {
+  p50: number; p75: number; p95: number; p99: number;
+  fetchedAt: number;
+}
+let jitoTipCache: JitoTipCache | null = null;
+
+async function fetchJitoTips(): Promise<JitoTipCache> {
+  // Cache 30s — évite de spammer l'API
+  if (jitoTipCache && Date.now() - jitoTipCache.fetchedAt < 30_000) return jitoTipCache;
+  try {
+    const res = await fetch(JITO_TIP_API, { signal: AbortSignal.timeout(3000) });
+    const [data] = await res.json() as any[];
+    jitoTipCache = {
+      p50: Math.round((data.landed_tips_50th_percentile ?? 0.000002) * SOL),
+      p75: Math.round((data.landed_tips_75th_percentile ?? 0.000005) * SOL),
+      p95: Math.round((data.landed_tips_95th_percentile ?? 0.00005)  * SOL),
+      p99: Math.round((data.landed_tips_99th_percentile ?? 0.0005)   * SOL),
+      fetchedAt: Date.now(),
+    };
+  } catch {
+    // Fallback sur les valeurs statiques si l'API échoue
+    jitoTipCache = jitoTipCache ?? { p50: 2000, p75: 5000, p95: 50000, p99: 500000, fetchedAt: Date.now() };
+  }
+  return jitoTipCache!;
+}
+
+// Retourne le tip en lamports selon le mode
+async function getDynamicTip(mode: 'buy' | 'sell' | 'urgent'): Promise<number> {
+  const tips = await fetchJitoTips();
+  const MIN_BUY  = 5_000;    // 0.000005 SOL floor
+  const MIN_SELL = 10_000;   // 0.00001 SOL floor (exits critiques)
+  switch (mode) {
+    case 'buy':    return Math.max(tips.p75, MIN_BUY);   // 75e percentile — bon rapport vitesse/coût
+    case 'sell':   return Math.max(tips.p95, MIN_SELL);  // 95e percentile — priorité maximale à la sortie
+    case 'urgent': return Math.max(tips.p99, MIN_SELL);  // 99e percentile — stop loss / liquidation urgente
+  }
+}
+
+
+
 // ━━━ Types ━━━
 interface LiveTradeConfig {
   privateKey: string;
@@ -239,7 +283,11 @@ export class LiveTradeExecutor {
 
       const mintPk = new PublicKey(tokenMint);
       const tx = await this.buildBuyTx(mintPk, positionSol);
-      const result = await this.send(tx, this.config.jitoTipBuyLamports, 'BUY');
+      // Tip dynamique : 75e percentile ou config statique selon env
+      const buyTipLamports = process.env.JITO_DYNAMIC_TIP !== 'false'
+        ? await getDynamicTip('buy')
+        : this.config.jitoTipBuyLamports;
+      const result = await this.send(tx, buyTipLamports, 'BUY');
 
       if (result.success && result.txSignature) {
         const ata = await getAssociatedTokenAddress(mintPk, this.keypair.publicKey);
@@ -301,9 +349,18 @@ export class LiveTradeExecutor {
     try {
       logger.info({ token: tokenMint.slice(0, 8), reason: signal.reason?.slice(0, 50) }, '🔴 LIVE SELL');
 
+      // Tip dynamique selon urgence: HARD_STOP → urgent (p99), sinon sell (p95)
+      const isUrgent = (signal.reason ?? '').includes('HARD_STOP') || (signal.reason ?? '').includes('STOP_LOSS');
+      const sellTipMode = isUrgent ? 'urgent' : 'sell';
+      const sellTipLamports = process.env.JITO_DYNAMIC_TIP !== 'false'
+        ? await getDynamicTip(sellTipMode)
+        : this.config.jitoTipSellLamports;
+
+      logger.info({ tip: sellTipLamports, mode: sellTipMode, isUrgent }, '⚡ Jito dynamic tip');
+
       const mintPk = new PublicKey(tokenMint);
       const tx = await this.buildSellTx(mintPk, pos.tokenAmount);
-      const result = await this.send(tx, this.config.jitoTipSellLamports, 'SELL');
+      const result = await this.send(tx, sellTipLamports, 'SELL');
 
       if (result.success && result.txSignature) {
         // Parse on-chain — lire le vrai SOL reçu
