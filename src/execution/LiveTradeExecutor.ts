@@ -15,6 +15,7 @@ import {
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
+const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 import bs58 from 'bs58';
 import { logger } from '../utils/logger.js';
 import type { Pool } from 'pg';
@@ -26,6 +27,7 @@ const PUMP_FUN_FEE_RECIPIENT = new PublicKey('CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbCJ
 const PUMP_FUN_GLOBAL = new PublicKey('4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf');
 const PUMP_FUN_EVENT_AUTHORITY = new PublicKey('Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1');
 const RENT_PROGRAM = new PublicKey('SysvarRent111111111111111111111111111111111');
+const PUMP_FUN_VOLUME_ACC = new PublicKey('Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y');
 
 const JITO_TIP_ACCOUNTS = [
   'Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY',
@@ -325,7 +327,7 @@ export class LiveTradeExecutor {
       const result = await this.send(tx, buyTipLamports, 'BUY');
 
       if (result.success && result.txSignature) {
-        const ata = await getAssociatedTokenAddress(mintPk, this.keypair.publicKey);
+        const ata = await getAssociatedTokenAddress(mintPk, this.keypair.publicKey, false, TOKEN_2022_PROGRAM_ID);
         this.openPositions.set(tokenMint, {
           tokenMint, tokenAccount: ata.toBase58(),
           entryTxSig: result.txSignature, entryPrice: 0,
@@ -450,107 +452,64 @@ export class LiveTradeExecutor {
 
   // ━━━ PUMP.FUN TX BUILDERS ━━━
 
+  // ━━━ PumpPortal trade-local API ━━━
+  // Builds TX server-side with correct accounts (Token-2022, volume accumulator, etc.)
+  
   private async buildBuyTx(mint: PublicKey, solAmount: number): Promise<VersionedTransaction> {
-    const buyer = this.keypair.publicKey;
-    const lamports = Math.floor(solAmount * LAMPORTS_PER_SOL);
-    const maxSolLamports = lamports + Math.floor(lamports * this.config.slippageBps / 10000);
-
-    const [bondingCurve] = PublicKey.findProgramAddressSync(
-      [Buffer.from('bonding-curve'), mint.toBuffer()], PUMP_FUN_PROGRAM_ID
-    );
-    const bondingCurveAta = await getAssociatedTokenAddress(mint, bondingCurve, true);
-    const buyerAta = await getAssociatedTokenAddress(mint, buyer);
-
-    // pump.fun buy discriminator
-    const disc = Buffer.from([102, 6, 61, 18, 1, 218, 235, 234]);
-    const amtBuf = Buffer.alloc(8); amtBuf.writeBigUInt64LE(0n); // let program calc
-    const maxBuf = Buffer.alloc(8); maxBuf.writeBigUInt64LE(BigInt(maxSolLamports));
-    const data = Buffer.concat([disc, amtBuf, maxBuf]);
-
-    const buyIx = new TransactionInstruction({
-      programId: PUMP_FUN_PROGRAM_ID,
-      keys: [
-        { pubkey: PUMP_FUN_GLOBAL,           isSigner: false, isWritable: false },
-        { pubkey: PUMP_FUN_FEE_RECIPIENT,    isSigner: false, isWritable: true },
-        { pubkey: mint,                       isSigner: false, isWritable: false },
-        { pubkey: bondingCurve,               isSigner: false, isWritable: true },
-        { pubkey: bondingCurveAta,            isSigner: false, isWritable: true },
-        { pubkey: buyerAta,                   isSigner: false, isWritable: true },
-        { pubkey: buyer,                      isSigner: true,  isWritable: true },
-        { pubkey: SystemProgram.programId,    isSigner: false, isWritable: false },
-        { pubkey: TOKEN_PROGRAM_ID,           isSigner: false, isWritable: false },
-        { pubkey: RENT_PROGRAM,               isSigner: false, isWritable: false },
-        { pubkey: PUMP_FUN_EVENT_AUTHORITY,   isSigner: false, isWritable: false },
-        { pubkey: PUMP_FUN_PROGRAM_ID,        isSigner: false, isWritable: false },
-      ],
-      data,
+    const response = await fetch('https://pumpportal.fun/api/trade-local', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publicKey: this.keypair.publicKey.toBase58(),
+        action: 'buy',
+        mint: mint.toBase58(),
+        amount: solAmount,
+        denominatedInSol: 'true',
+        slippage: Math.floor(this.config.slippageBps / 100),
+        priorityFee: this.config.computeUnitPrice / 1e6, // microLamports to SOL
+        pool: 'pump',
+      }),
     });
-
-    const ixs: TransactionInstruction[] = [
-      ComputeBudgetProgram.setComputeUnitLimit({ units: this.config.computeUnitLimit }),
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: this.config.computeUnitPrice }),
-    ];
-
-    // Create ATA if needed
-    try {
-      if (!(await this.connection.getAccountInfo(buyerAta))) {
-        ixs.push(createAssociatedTokenAccountInstruction(buyer, buyerAta, buyer, mint));
-      }
-    } catch {
-      ixs.push(createAssociatedTokenAccountInstruction(buyer, buyerAta, buyer, mint));
+    
+    if (response.status !== 200) {
+      const errText = await response.text();
+      throw new Error(`PumpPortal buildBuyTx failed (${response.status}): ${errText}`);
     }
-
-    ixs.push(buyIx);
-    if (this.config.useJitoBundle) ixs.push(this.jitoTipIx(this.config.jitoTipBuyLamports));
-
-    return this.buildV0Tx(ixs);
+    
+    const data = await response.arrayBuffer();
+    const tx = VersionedTransaction.deserialize(new Uint8Array(data));
+    
+    // Add Jito tip if using bundles
+    // PumpPortal TX is pre-built, we just sign it
+    return tx;
   }
 
   private async buildSellTx(mint: PublicKey, tokenAmount: bigint): Promise<VersionedTransaction> {
-    const seller = this.keypair.publicKey;
-
-    const [bondingCurve] = PublicKey.findProgramAddressSync(
-      [Buffer.from('bonding-curve'), mint.toBuffer()], PUMP_FUN_PROGRAM_ID
-    );
-    const bondingCurveAta = await getAssociatedTokenAddress(mint, bondingCurve, true);
-    const sellerAta = await getAssociatedTokenAddress(mint, seller);
-
-    // pump.fun sell discriminator
-    const disc = Buffer.from([51, 230, 133, 164, 1, 127, 131, 173]);
-    const amtBuf = Buffer.alloc(8); amtBuf.writeBigUInt64LE(tokenAmount);
-    const minBuf = Buffer.alloc(8); minBuf.writeBigUInt64LE(0n); // accept any — speed > slippage for exits
-    const data = Buffer.concat([disc, amtBuf, minBuf]);
-
-    const sellIx = new TransactionInstruction({
-      programId: PUMP_FUN_PROGRAM_ID,
-      keys: [
-        { pubkey: PUMP_FUN_GLOBAL,           isSigner: false, isWritable: false },
-        { pubkey: PUMP_FUN_FEE_RECIPIENT,    isSigner: false, isWritable: true },
-        { pubkey: mint,                       isSigner: false, isWritable: false },
-        { pubkey: bondingCurve,               isSigner: false, isWritable: true },
-        { pubkey: bondingCurveAta,            isSigner: false, isWritable: true },
-        { pubkey: sellerAta,                  isSigner: false, isWritable: true },
-        { pubkey: seller,                     isSigner: true,  isWritable: true },
-        { pubkey: SystemProgram.programId,    isSigner: false, isWritable: false },
-        { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-        { pubkey: TOKEN_PROGRAM_ID,           isSigner: false, isWritable: false },
-        { pubkey: PUMP_FUN_EVENT_AUTHORITY,   isSigner: false, isWritable: false },
-        { pubkey: PUMP_FUN_PROGRAM_ID,        isSigner: false, isWritable: false },
-      ],
-      data,
+    const response = await fetch('https://pumpportal.fun/api/trade-local', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        publicKey: this.keypair.publicKey.toBase58(),
+        action: 'sell',
+        mint: mint.toBase58(),
+        amount: tokenAmount.toString(),
+        denominatedInSol: 'false',
+        slippage: Math.floor(this.config.slippageBps / 100),
+        priorityFee: this.config.computeUnitPrice / 1e6,
+        pool: 'pump',
+      }),
     });
-
-    const ixs: TransactionInstruction[] = [
-      ComputeBudgetProgram.setComputeUnitLimit({ units: this.config.computeUnitLimit }),
-      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: this.config.computeUnitPrice }),
-      sellIx,
-    ];
-    if (this.config.useJitoBundle) ixs.push(this.jitoTipIx(this.config.jitoTipSellLamports));
-
-    return this.buildV0Tx(ixs);
+    
+    if (response.status !== 200) {
+      const errText = await response.text();
+      throw new Error(`PumpPortal buildSellTx failed (${response.status}): ${errText}`);
+    }
+    
+    const data = await response.arrayBuffer();
+    const tx = VersionedTransaction.deserialize(new Uint8Array(data));
+    return tx;
   }
 
-  // ━━━ JITO ━━━
 
   private jitoTipIx(lamports: number): TransactionInstruction {
     const tip = JITO_TIP_ACCOUNTS[this.jitoEndpointIdx % JITO_TIP_ACCOUNTS.length];
