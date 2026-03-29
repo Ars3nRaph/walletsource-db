@@ -159,6 +159,21 @@ export class LiveTradeExecutor {
   public config: LiveTradeConfig;
   private pool: Pool;
   private openPositions = new Map<string, OpenLivePosition>();
+
+  // ═══ OPTIMIZATIONS: cache blockhash + ATA existence ═══
+  private blockhashCache: { blockhash: string; fetchedAt: number } = { blockhash: '', fetchedAt: 0 };
+  private ataExistsCache = new Set<string>();
+
+  private async getCachedBlockhash(): Promise<string> {
+    const now = Date.now();
+    if (now - this.blockhashCache.fetchedAt < 30_000 && this.blockhashCache.blockhash) {
+      return this.blockhashCache.blockhash;
+    }
+    const blockhash = await this.getCachedBlockhash();
+    this.blockhashCache = { blockhash, fetchedAt: now };
+    return blockhash;
+  }
+
   private dailyStats: DailyStats;
   private killed = false;
   private jitoEndpointIdx = 0;
@@ -196,7 +211,10 @@ export class LiveTradeExecutor {
     if (this.config.privateKey) {
       try {
         this.keypair = Keypair.fromSecretKey(bs58.decode(this.config.privateKey));
-        logger.info({
+            // Pre-warm blockhash cache
+    this.getCachedBlockhash().catch(() => {});
+
+    logger.info({
           wallet: this.keypair.publicKey.toBase58().slice(0, 8) + '…',
           enabled: this.config.enabled,
           dryRun: this.config.dryRun,
@@ -599,7 +617,7 @@ export class LiveTradeExecutor {
   // ━━━ HELPERS ━━━
 
   private async buildV0Tx(ixs: TransactionInstruction[]): Promise<VersionedTransaction> {
-    const { blockhash } = await this.connection.getLatestBlockhash('confirmed');
+    const blockhash = await this.getCachedBlockhash();
     const msg = new TransactionMessage({ payerKey: this.keypair.publicKey, recentBlockhash: blockhash, instructions: ixs }).compileToV0Message();
     return new VersionedTransaction(msg);
   }
