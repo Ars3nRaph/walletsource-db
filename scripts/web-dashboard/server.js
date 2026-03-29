@@ -383,6 +383,11 @@ app.get('/api/system-health', async (req, res) => {
 });
 
 // Start server
+// Auto-fix: reclassify any SWARM trades still tagged as STD at startup
+pool.query(`UPDATE paper_trades SET buy_strategy='SWARM', strategy_version='SWARM v1.1' WHERE buy_strategy='STD' AND reason ILIKE '%SWARM%'`)
+  .then(r => { if (r.rowCount > 0) console.log('[startup] Fixed ' + r.rowCount + ' SWARM trades tagged as STD'); })
+  .catch(() => {});
+
 app.listen(PORT, () => {
   console.log(`
 ╔══════════════════════════════════════════════════════════════╗
