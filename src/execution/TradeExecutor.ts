@@ -599,33 +599,23 @@ export class TradeExecutor {
       const rtIsNeo = rtPos.neoStrategy === true;
       const rtIsCartel = rtPos.cartelStrategy === true;
       const rtIsSwarm = rtPos.swarmStrategy === true;
-      const rtTrailTrigger = rtIsSwarm ? 40 : (rtIsNeo || rtIsCartel) ? 25 : 15; // SWARM: trail from +40%, NEO/CARTEL: 25%, STD: 15% (v10.15: was 50%, backtest +8.4pp on PUMP3 exits)
+      const rtTrailTrigger = rtIsSwarm ? 30 : (rtIsNeo || rtIsCartel) ? 15 : 15; // v10.19: SWARM 40→30%, NEO 25→15%, STD 15% (unchanged)
       if (rtPeakPnl >= rtTrailTrigger) {
         if (rtIsSwarm) {
-          rtDropLimit = 0.20; // SWARM: 20% trail drop
+          // SWARM v1.2: dynamic trail 18%→13%@50%→8%@200% (backtest +0.98 SOL)
+          rtDropLimit = rtPeakPnl >= 200 ? 0.08 : rtPeakPnl >= 50 ? 0.13 : 0.18;
         } else if (rtIsCartel) {
           rtDropLimit = 0.20; // CARTEL: 20% trail
         } else if (rtIsNeo) {
-          // NEO v4.32: tiered RT trail — match secondary trail logic, give rockets room to breathe
-          // Data: NEO only 16 100%+ trails vs STD 35. Root cause: flat 15% kills rockets at 50-100% peak.
-          // STD uses 20% at 50%+ → lets tokens dip and recover → 2x more rockets captured.
-          const rtHealthy = rtSellerRatio >= 0 && rtSellerRatio <= 0.20;
-          const rtDump = rtSellerRatio > 0.40;
-          if (rtPeakPnl >= 100) {
-            rtDropLimit = rtHealthy ? 0.27 : rtDump ? 0.18 : 0.22; // v4.32: match secondary 100%+ tier
-          } else if (rtPeakPnl >= 50) {
-            rtDropLimit = rtHealthy ? 0.22 : rtDump ? 0.15 : 0.20; // v4.32: 15%→20% default at 50-100% (was flat 15%)
-          } else if (rtPeakPnl >= 30) {
-            rtDropLimit = rtHealthy ? 0.18 : rtDump ? 0.10 : 0.14; // v4.32: 15%→14% default at 30-50% (less tight, more room)
-          } else {
-            rtDropLimit = rtHealthy ? 0.14 : rtDump ? 0.08 : 0.12; // v4.32: 25-30% zone
-          }
+          // NEO v4.62: simplified trail 25%→15%@125% (backtest +1.61 SOL, HS 29→22%)
+          // Activation lowered to 15% (from 25%) — catches more exits before HS
+          rtDropLimit = rtPeakPnl >= 125 ? 0.15 : 0.25; // v4.62: tight at rockets, wide below
         } else if (rtSellerRatio >= 0 && rtSellerRatio <= 0.20) {
-          rtDropLimit = 0.25; // healthy → wide trail
+          rtDropLimit = 0.27; // v10.19: healthy → wide trail (was 0.25)
         } else if (rtSellerRatio > 0.40) {
-          rtDropLimit = 0.15; // pressure → tight trail
+          rtDropLimit = 0.17; // v10.19: pressure → tight trail (was 0.15)
         } else {
-          rtDropLimit = 0.20; // standard
+          rtDropLimit = 0.22; // v10.19: standard 22% (was 20%, backtest +1.19 SOL)
         }
       }
       // Below 50% peak: rtDropLimit stays 0 = no trailing stop
@@ -1143,42 +1133,24 @@ export class TradeExecutor {
     const isNeo = pos.neoStrategy === true;
     const isCartel = pos.cartelStrategy === true;
     const isSwarm = pos.swarmStrategy === true;
-    const trailTrigger = isSwarm ? 40 : (isNeo || isCartel) ? 25 : 15; // SWARM: trail from +40% // NEO/CARTEL: 25%, STD: 15% (v10.15: was 50%, backtest +8.4pp)
+    const trailTrigger = isSwarm ? 30 : (isNeo || isCartel) ? 15 : 15; // v10.19: SWARM 40→30%, NEO 25→15%, STD 15% (unchanged)
     let dropLimit = 0; // 0 = no trail, rely on hard stop
     if (peakPnl >= trailTrigger) {
       if (isSwarm) {
-        dropLimit = 0.20; // SWARM: 20% trail drop
+        // SWARM v1.2: dynamic trail 18%→13%@50%→8%@200%
+        dropLimit = peakPnl >= 200 ? 0.08 : peakPnl >= 50 ? 0.13 : 0.18;
       } else
       if (isCartel) {
         dropLimit = 0.20; // CARTEL: 20% trail (more room for big moves)
       } else if (isNeo) {
-        // NEO v4.25: adaptive trail — tight at small peaks, wider for rockets
-        // DB: trail exits 100%+: 7 @+180% | 50-100%: 10 @+66% | 30-50%: 22 @+41% | <30%: 41 @+18%
-        // Goal: let 50%+ peaks breathe (18-22% trail) → capture larger moves, match CARTEL
-        // NEO v4.27: tiered adaptive trail
-        // Trigger lowered 30→25% to save 25-30% peakers from HS
-        // 50-100% tier tightened 18→16% (better capture, math: +2% x43 trades)
-        // NEO v4.30: seller-growth-aware tiered trail
-        // Data: sellerGrowthRatio ≤20% post-entry → 94.1% WR → let these tokens breathe (wider trail)
-        // sellerGrowthRatio >40% → dump pressure → protect gains (tighter trail)
-        // v4.31: extend seller-growth-aware trail to 25-50% zone — healthy tokens get more room to dip+recover
-        const healthyToken = sellerGrowthRatio >= 0 && sellerGrowthRatio <= 0.20;
-        const dumpPressure = sellerGrowthRatio > 0.40;
-        if (peakPnl >= 100) {
-          dropLimit = healthyToken ? 0.27 : dumpPressure ? 0.18 : 0.22; // v4.30: healthy→27%, dump→18%, default→22%
-        } else if (peakPnl >= 50) {
-          dropLimit = healthyToken ? 0.18 : dumpPressure ? 0.12 : 0.15; // v4.49: slight tighten — healthy→18%, dump→12%, default→15% (was 22/15/18)
-        } else if (peakPnl >= 30) {
-          dropLimit = healthyToken ? 0.12 : dumpPressure ? 0.07 : 0.10; // v4.49: TIGHT — healthy→12%, dump→7%, default→10% (was 20/10/16) — exit ~+18-27% gross
-        } else {
-          dropLimit = healthyToken ? 0.08 : dumpPressure ? 0.05 : 0.06; // v4.49: TIGHT — healthy→8%, dump→5%, default→6% (was 16/8/12) — exit ~+15-18% gross vs +5% gross at old 16% trail
-        }
+        // NEO v4.62: simplified trail 25%→15%@125% (backtest +1.61 SOL, HS 29→22%)
+        dropLimit = peakPnl >= 125 ? 0.15 : 0.25;
       } else if (sellerGrowthRatio >= 0 && sellerGrowthRatio <= 0.20) {
-        dropLimit = 0.25; // ≤20% seller ratio → healthy token, let it run (wider trail)
+        dropLimit = 0.27; // v10.19: healthy → wide trail (was 0.25)
       } else if (sellerGrowthRatio > 0.40) {
-        dropLimit = 0.15; // >40% seller ratio → dump pressure, protect gains (tight trail)
+        dropLimit = 0.17; // v10.19: pressure → tight trail (was 0.15)
       } else {
-        dropLimit = 0.20; // 20-40% or not enough data → standard FLAT 20%
+        dropLimit = 0.22; // v10.19: standard 22% (was 20%, backtest +1.19 SOL)
       }
     }
     // Below 50%: no trailing stop — let it run or hit hard stop
@@ -1284,7 +1256,7 @@ export class TradeExecutor {
       this.openPositions.delete(tokenAddress);
       this.closedTokens.set(tokenAddress, { exitType: 'STALE_EXIT', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
       this.consecutiveHardStops++;
-      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.61 STALE_ULTRAEARLY ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — instant gap rug`, signals);
+      return this.sell(100, 1.0, 'RIDE', `🧊 NEO v4.62 STALE_ULTRAEARLY ${pnlPct.toFixed(1)}% | hold ${holdSec.toFixed(0)}s peak +${peakPnl.toFixed(1)}% — instant gap rug`, signals);
     }
 
         // NEO v4.54: STALE_MICRO (30-50s) — token never moved up, already -10%+ = slow gap rug, exit early
@@ -1606,7 +1578,7 @@ export class TradeExecutor {
         return {
           action: 'BUY', confidence: 0.82, percentage: 100, playbook_strategy: 'RIDE',
           wallet_risk_score: 0.3, position_sol: swarmPos,
-          reason: `🐝 SWARM v1.0 BUY — ${uniqueBuyerCount}b avg=$${swarmAvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | sb=${swarmSbRatio.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${swarmPos}SOL`
+          reason: `🐝 SWARM v1.2 BUY — ${uniqueBuyerCount}b avg=$${swarmAvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | sb=${swarmSbRatio.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${swarmPos}SOL`
         };
       }
     }
@@ -1767,7 +1739,7 @@ export class TradeExecutor {
           wallet_risk_score: wRisk,
           position_sol: neoPos,
           quality_score: neoQ,
-          reason: `🧠 NEO v4.61 BUY Q${neoQ} — ${neoBuyers}b ${neoSellers}s sr=${neoSellRatio.toFixed(2)} vel=${neoVelocity} | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)} pos=${neoPos}SOL`
+          reason: `🧠 NEO v4.62 BUY Q${neoQ} — ${neoBuyers}b ${neoSellers}s sr=${neoSellRatio.toFixed(2)} vel=${neoVelocity} | ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | topH=${(neoTopH*100).toFixed(0)}% dumps=${neoDumps} avgBuy=$${neoAvgBuy.toFixed(0)} pos=${neoPos}SOL`
         };
       }
     }
@@ -2182,10 +2154,10 @@ export class TradeExecutor {
       // v10.13: If token peaked above trail trigger but never trailed (WS gap),
       // simulate trail exit instead of closing at current (crashed) MC
       const peakPnl = (pos.highestMC - pos.entryMC) / pos.entryMC * 100;
-      const trailTrigger = pos.neoStrategy ? 25 : (pos.cartelStrategy ? 30 : 15); // STD v10.15: 50→15
+      const trailTrigger = pos.neoStrategy ? 15 : pos.swarmStrategy ? 30 : (pos.cartelStrategy ? 30 : 15); // v10.19: NEO 25→15, SWARM 40→30
       if (peakPnl > trailTrigger && !lastKnownMC) {
         // Token should have trailed — estimate exit at peak - default trail drop
-        const trailDrop = pos.neoStrategy ? 0.15 : 0.20;
+        const trailDrop = pos.neoStrategy ? (peakPnl >= 125 ? 0.15 : 0.25) : pos.swarmStrategy ? (peakPnl >= 200 ? 0.08 : peakPnl >= 50 ? 0.13 : 0.18) : 0.22; // v10.19: dynamic trail
         const simulatedExitMC = pos.highestMC * (1 - trailDrop);
         logger.warn({ token: tokenAddress.slice(0,8), peakPnl: peakPnl.toFixed(0), simulatedMC: simulatedExitMC.toFixed(0) },
           '⚠️ TRACKING_END with missed trail — simulating trail exit');

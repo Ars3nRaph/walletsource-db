@@ -775,7 +775,7 @@ function renderPage() {
       const totalF=t.fees_sol+t.slippage_sol;
       const pnlPct=t.pnl_pct!==null?(t.pnl_pct>=0?'+':'')+t.pnl_pct.toFixed(1)+'%':'—';
       const pnlSol=t.pnl_sol!==null?(t.pnl_sol>=0?'+':'')+t.pnl_sol.toFixed(4):'—';
-      const verShort=(t.strategy_version||'').replace('STD ','').replace('NEO ','').replace('CARTEL ','').replace('SWARM ','').replace('ELITE ','');
+      const verShort=(t.strategy_version||'').replace('STD ','').replace('NEO ','').replace('CARTEL ','').replace('ELITE ','');
       return`<tr class="${stratCls}">
         <td>${i+1}</td>
         <td><span class="strat-badge ${strat}">${stratLabel}</span></td>

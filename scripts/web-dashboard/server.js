@@ -48,7 +48,11 @@ const pool = new pg.Pool({
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static(__dirname, { etag: false, maxAge: 0 }));
+app.use(express.static(__dirname, { etag: false, maxAge: 0, setHeaders: (res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+}}));
 
 // ━━━ API Endpoints ━━━
 
