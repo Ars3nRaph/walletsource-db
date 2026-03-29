@@ -1873,11 +1873,11 @@ export class TradeExecutor {
     const MIN_VOL = 1000;
 
     // Minimum MC ratio 2.0x for standard entry
-    if (mcRatio < 2.0) { // v10.10: reverted to 2.0 (backtest: baseline wins)
+    if (mcRatio < 2.2) { // v10.17: 2.0→2.2 (backtest: ratio 2.0 avg +8.3% vs ratio 2.2+ avg +25%+)
       if (elapsedSec > 60) {
-        return this.none(`💀 v10: ratio ${mcRatio.toFixed(2)}x < 2.0x after ${elapsedSec.toFixed(0)}s — no momentum`, 'RIDE');
+        return this.none(`💀 v10: ratio ${mcRatio.toFixed(2)}x < 2.2x after ${elapsedSec.toFixed(0)}s — no momentum`, 'RIDE');
       }
-      return this.none(`⏳ v10: ratio ${mcRatio.toFixed(2)}x < 2.0x — waiting for momentum`, 'RIDE');
+      return this.none(`⏳ v10: ratio ${mcRatio.toFixed(2)}x < 2.2x — waiting for momentum`, 'RIDE');
     }
 
     // Max MC ratio 2.6x
@@ -1932,16 +1932,15 @@ export class TradeExecutor {
     // v10.10g: ENTRY FILTER — backtest 1711t: b>=80 + d<30 = wallet 13.43 (+34%)
     // v10.11: Tightened dumps gate 30→21 (paper: dumps>20 = 131t WR 35% avg -3.5% vs dumps 13-20 = 29t WR 66% avg +6.6%)
     const totalDumps = state?.totalDumpSells || 0;
-    if (totalDumps >= 25) {
-      return this.none(`🚫 v10.14.4: ${totalDumps} dumps >= 25 — distribution, skip`, 'RIDE');
+    if (totalDumps >= 21) {
+      return this.none(`🚫 v10.17: ${totalDumps} dumps >= 21 — distribution, skip`, 'RIDE');
     }
 
-    // v10.10i: avgBuy filter — high avg buy = whale/insider manipulation, not organic demand
-//    // Data: avgBuy<=25 → 16 trades, WR 68.8%, +408% total, 0 wins lost
-//    const avgBuySize = state?.avgBuySize || 0;
-//    if (avgBuySize > 30) {
-//      return this.none(`🚫 v10.10i: avgBuy $${avgBuySize.toFixed(0)} > $30 — whale activity, skip`, 'RIDE');
-//    }
+    // v10.17: avgBuy filter — avg_buy > $50 = bots/whales, WR 51%, HS 42% (vs $20-30: WR 65%, HS 29%)
+    const stdAvgBuySize = state?.avgBuySize || 0;
+    if (stdAvgBuySize > 50) {
+      return this.none(`🚫 v10.17: avgBuy $${stdAvgBuySize.toFixed(0)} > $50 — whale activity, skip`, 'RIDE');
+    }
 
     // v10.9: MOMENTUM CONFIRMATION — price must be rising in last 3 ticks
     const mcs = state?.recentMCs || [];

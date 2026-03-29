@@ -338,7 +338,7 @@ export class PaperTradeExecutor extends TradeExecutor {
                     const vm = reason.match(/NEO (v4\.\d+)/); if (vm) return 'NEO ' + vm[1];
                     const cm = reason.match(/CARTEL (v[\d.]+)/); if (cm) return 'CARTEL ' + cm[1];
                     if (reason.includes('CARTEL')) return 'CARTEL v1.2';
-                    if (buyStrategy === 'STD') return 'STD v10.17'; // CARTEL v2.3 = DISABLED
+                    if (buyStrategy === 'STD') return 'STD v10.18'; // CARTEL v2.3 = DISABLED
                     return buyStrategy; })()]
         );
       } else if (signal.action === 'SELL') {
