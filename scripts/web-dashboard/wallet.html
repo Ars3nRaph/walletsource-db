@@ -58,6 +58,50 @@
     .strat-card:hover { transform:translateY(-2px); box-shadow:0 4px 12px rgba(0,0,0,0.3); }
     .strat-card.deselected { opacity:0.35; filter:grayscale(0.6); }
 
+    /* ═══ Live Controls ═══ */
+    .live-master-control { display:flex; align-items:center; gap:16px; background:linear-gradient(135deg,#1a1f2e,#0d1117); border:2px solid #30363d; border-radius:12px; padding:16px 20px; margin-bottom:20px; }
+    .live-master-control.live-on { border-color:#3fb950; box-shadow:0 0 20px rgba(63,185,80,0.15); }
+    .live-master-control.live-off { border-color:#f85149; }
+    .live-master-control .live-label { font-size:18px; font-weight:700; color:#e6edf3; }
+    .live-master-control .live-sub { font-size:12px; color:#8b949e; margin-top:2px; }
+    
+    .toggle-switch { position:relative; width:52px; height:28px; flex-shrink:0; }
+    .toggle-switch input { opacity:0; width:0; height:0; }
+    .toggle-switch .slider { position:absolute; cursor:pointer; top:0; left:0; right:0; bottom:0; background:#21262d; border:1px solid #30363d; border-radius:28px; transition:.3s; }
+    .toggle-switch .slider:before { position:absolute; content:""; height:22px; width:22px; left:2px; bottom:2px; background:#8b949e; border-radius:50%; transition:.3s; }
+    .toggle-switch input:checked + .slider { background:#238636; border-color:#3fb950; }
+    .toggle-switch input:checked + .slider:before { transform:translateX(24px); background:#fff; }
+    .toggle-switch.sm { width:40px; height:22px; }
+    .toggle-switch.sm .slider:before { height:16px; width:16px; left:2px; bottom:2px; }
+    .toggle-switch.sm input:checked + .slider:before { transform:translateX(18px); }
+    
+    .strat-controls { display:flex; align-items:center; gap:8px; margin-top:10px; justify-content:center; }
+    .strat-controls .btn-params { background:#21262d; border:1px solid #30363d; border-radius:6px; padding:4px 10px; color:#8b949e; font-size:11px; cursor:pointer; transition:all .15s; }
+    .strat-controls .btn-params:hover { border-color:#58a6ff; color:#58a6ff; }
+    
+    /* Modal */
+    .modal-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:1000; justify-content:center; align-items:center; }
+    .modal-overlay.show { display:flex; }
+    .modal { background:#0d1117; border:1px solid #30363d; border-radius:16px; padding:24px; width:90%; max-width:520px; max-height:80vh; overflow-y:auto; }
+    .modal h2 { color:#e6edf3; font-size:18px; margin:0 0 16px; display:flex; align-items:center; gap:8px; }
+    .modal .param-row { display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid #161b22; }
+    .modal .param-row:last-child { border-bottom:none; }
+    .modal .param-name { flex:1; color:#c9d1d9; font-size:13px; }
+    .modal .param-input { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:6px 10px; color:#e6edf3; font-size:13px; width:80px; text-align:right; }
+    .modal .param-input:focus { border-color:#58a6ff; outline:none; }
+    .modal .param-unit { color:#484f58; font-size:11px; width:30px; }
+    .modal-actions { display:flex; gap:10px; margin-top:20px; justify-content:flex-end; }
+    .modal-actions button { padding:8px 20px; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; transition:all .15s; }
+    .btn-save { background:#238636; border:1px solid #2ea043; color:#fff; }
+    .btn-save:hover { background:#2ea043; }
+    .btn-reset { background:transparent; border:1px solid #f8514955; color:#f85149; }
+    .btn-reset:hover { background:rgba(248,81,73,0.1); }
+    .btn-cancel { background:#21262d; border:1px solid #30363d; color:#8b949e; }
+    .btn-cancel:hover { border-color:#484f58; color:#c9d1d9; }
+    .status-toast { position:fixed; bottom:20px; right:20px; background:#238636; color:#fff; padding:12px 20px; border-radius:10px; font-size:14px; font-weight:600; z-index:2000; display:none; box-shadow:0 4px 12px rgba(0,0,0,0.4); }
+    .status-toast.error { background:#da3633; }
+
+
     /* Filter bar */
     .filter-bar { background:#161b22; border:1px solid #21262d; border-radius:12px; padding:16px; margin-bottom:16px; }
     .filter-bar h3 { color:#8b949e; font-size:12px; text-transform:uppercase; letter-spacing:1px; margin:0 0 12px; display:flex; align-items:center; gap:8px; }
@@ -187,7 +231,7 @@
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;margin-bottom:24px" id="strat-cards">
       <div class="strat-card" data-strat="std" onclick="toggleStrat('std')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #f0883e;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#58a6ff">🚀 STANDARD (v10.16)</span>
+          <span style="font-size:16px;font-weight:700;color:#58a6ff">🚀 STANDARD (v10.19)</span>
           <span class="strat-badge std">STD</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center">
@@ -199,13 +243,14 @@
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="std-sol">—</div></div>
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="std-hs">—</div></div>
         </div>
+        <div class="strat-controls"><button class="btn-params" onclick="event.stopPropagation();openParams('STD')">⚙️ Paramètres</button></div>
         <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="std-params">
           b≥75 • ratio 2.0-3.0x • d&lt;25 • HS -20% • Trail 20%@+15% • No PUMP3 • No SELL_DOM • 0.30-0.50 SOL
         </div>
       </div>
       <div class="strat-card" data-strat="neo" onclick="toggleStrat('neo')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #da3633;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#da3633">🧠 NEO (v4.61)</span>
+          <span style="font-size:16px;font-weight:700;color:#da3633">🧠 NEO (v4.62)</span>
           <span class="strat-badge neo">NEO</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center">
@@ -217,6 +262,7 @@
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="neo-sol">—</div></div>
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="neo-hs">—</div></div>
         </div>
+        <div class="strat-controls"><button class="btn-params" onclick="event.stopPropagation();openParams('NEO')">⚙️ Paramètres</button></div>
         <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="neo-params">
           Loading NEO config...
         </div>
@@ -225,7 +271,7 @@
 
       <div class="strat-card" data-strat="swarm" onclick="toggleStrat('swarm')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #f1c40f;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#f1c40f">🐝 SWARM (v1.0)</span>
+          <span style="font-size:16px;font-weight:700;color:#f1c40f">🐝 SWARM (v1.2)</span>
           <span class="strat-badge" style="background:rgba(241,196,15,0.15);color:#f1c40f;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">SWARM</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;text-align:center">
@@ -235,7 +281,8 @@
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="swarm-sol">—</div></div>
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="swarm-hs">—</div></div>
         </div>
-        <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center">
+                <div class="strat-controls"><button class="btn-params" onclick="event.stopPropagation();openParams('SWARM')">⚙️ Paramètres</button></div>
+<div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center">
           ≥80 buyers • avg_buy&lt;$25 • ratio 2.0-3.5x • T=20-90s • sb&lt;0.4 • mc&lt;$12K • HS -20% • Trail 20%@+40% • 0.35 SOL • Max 2 slots
         </div>
       </div>
@@ -1104,5 +1151,217 @@ function setupChartTools() {
 
 loadWallet();setInterval(loadWallet,10000);
 </script>
+
+    <!-- Parameter Modal -->
+    <div class="modal-overlay" id="param-modal" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h2 id="modal-title">⚙️ Paramètres</h2>
+        <div id="modal-params"></div>
+        <div class="modal-actions">
+          <button class="btn-cancel" onclick="closeModal()">Annuler</button>
+          <button class="btn-reset" onclick="resetParams()">↩ Valeurs d'origine</button>
+          <button class="btn-save" onclick="saveParams()">💾 Sauvegarder & Restart</button>
+        </div>
+      </div>
+    </div>
+    <div class="status-toast" id="toast"></div>
+
+    <script>
+    // ═══ Live Control State ═══
+    let currentConfig = null;
+    let currentModalStrat = null;
+    let originalParams = {};
+
+    async function loadConfig() {
+      try {
+        const r = await fetch('/api/config', { headers: { 'Authorization': 'Basic ' + btoa('raph:Saluts123') }});
+        currentConfig = await r.json();
+        if (!currentConfig.success) return;
+        
+        // Update live master switch
+        const isLive = !currentConfig.live.DRY_RUN;
+        document.getElementById('live-toggle').checked = isLive;
+        const master = document.getElementById('live-master');
+        master.className = 'live-master-control ' + (isLive ? 'live-on' : 'live-off');
+        document.getElementById('live-status-text').textContent = isLive 
+          ? '✅ Actif — Wallet ' + currentConfig.live.TRADING_WALLET.slice(0,8) + '…'
+          : '⏸️ Mode Paper — Aucune transaction réelle';
+        
+        // Update strategy toggles
+        ['STD','NEO','SWARM'].forEach(s => {
+          const el = document.getElementById(s.toLowerCase() + '-toggle');
+          if (el) el.checked = currentConfig.strategies[s].slots > 0;
+        });
+      } catch(e) { console.error('loadConfig error:', e); }
+    }
+
+    async function toggleLive(enabled) {
+      if (enabled && !confirm('⚠️ ACTIVER LE LIVE TRADING ?\nLes transactions réelles seront exécutées avec du vrai SOL.')) {
+        document.getElementById('live-toggle').checked = false;
+        return;
+      }
+      showToast('⏳ ' + (enabled ? 'Activation' : 'Désactivation') + ' du live trading...');
+      try {
+        const r = await fetch('/api/live-toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + btoa('raph:Saluts123') },
+          body: JSON.stringify({ enabled })
+        });
+        const data = await r.json();
+        if (data.success) {
+          showToast(data.message, false);
+          setTimeout(() => loadConfig(), 2000);
+        } else {
+          showToast('❌ ' + data.error, true);
+          document.getElementById('live-toggle').checked = !enabled;
+        }
+      } catch(e) {
+        showToast('❌ Erreur: ' + e.message, true);
+        document.getElementById('live-toggle').checked = !enabled;
+      }
+    }
+
+    async function toggleStrategy(strat, enabled) {
+      showToast('⏳ ' + (enabled ? 'Activation' : 'Désactivation') + ' de ' + strat + '...');
+      try {
+        const r = await fetch('/api/strategy-toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + btoa('raph:Saluts123') },
+          body: JSON.stringify({ strategy: strat, enabled })
+        });
+        const data = await r.json();
+        if (data.success) {
+          showToast('✅ ' + strat + (enabled ? ' activée' : ' désactivée') + ' (' + data.slots + ' slots)');
+          setTimeout(() => loadConfig(), 2000);
+        } else {
+          showToast('❌ ' + data.error, true);
+        }
+      } catch(e) { showToast('❌ ' + e.message, true); }
+    }
+
+    // ═══ Parameter Modal ═══
+    const PARAM_DEFS = {
+      STD: [
+        { key: 'slots', label: 'Slots max', unit: '', type: 'number' },
+        { key: 'min_buyers', label: 'Buyers minimum', unit: '', type: 'number' },
+        { key: 'min_ratio', label: 'Ratio minimum', unit: 'x', type: 'number', step: 0.1 },
+        { key: 'max_ratio', label: 'Ratio maximum', unit: 'x', type: 'number', step: 0.1 },
+        { key: 'max_dumps', label: 'Dumps maximum', unit: '', type: 'number' },
+        { key: 'max_avg_buy', label: 'Avg buy max', unit: '$', type: 'number' },
+        { key: 'trail_pct', label: 'Trail stop', unit: '%', type: 'number' },
+        { key: 'trail_activate', label: 'Trail activation', unit: '%', type: 'number' },
+        { key: 'hard_stop', label: 'Hard stop', unit: '%', type: 'number' },
+        { key: 'max_hold_sec', label: 'Max hold', unit: 's', type: 'number' },
+        { key: 'window_sec', label: 'Window max', unit: 's', type: 'number' },
+      ],
+      NEO: [
+        { key: 'slots', label: 'Slots max', unit: '', type: 'number' },
+        { key: 'trail_base', label: 'Trail base', unit: '%', type: 'number' },
+        { key: 'trail_tight', label: 'Trail tight', unit: '%', type: 'number' },
+        { key: 'trail_tight_at', label: 'Trail tight à partir de', unit: '%', type: 'number' },
+        { key: 'trail_activate', label: 'Trail activation', unit: '%', type: 'number' },
+        { key: 'hard_stop', label: 'Hard stop', unit: '%', type: 'number' },
+        { key: 'max_hold_sec', label: 'Max hold', unit: 's', type: 'number' },
+        { key: 'min_ratio', label: 'Ratio minimum', unit: 'x', type: 'number', step: 0.1 },
+        { key: 'max_ratio', label: 'Ratio maximum', unit: 'x', type: 'number', step: 0.1 },
+        { key: 'min_buyers', label: 'Buyers minimum', unit: '', type: 'number' },
+        { key: 'q_min', label: 'Quality score min', unit: '', type: 'number' },
+      ],
+      SWARM: [
+        { key: 'slots', label: 'Slots max', unit: '', type: 'number' },
+        { key: 'min_buyers', label: 'Buyers minimum', unit: '', type: 'number' },
+        { key: 'max_avg_buy', label: 'Avg buy max', unit: '$', type: 'number' },
+        { key: 'min_ratio', label: 'Ratio minimum', unit: 'x', type: 'number', step: 0.1 },
+        { key: 'max_ratio', label: 'Ratio maximum', unit: 'x', type: 'number', step: 0.1 },
+        { key: 'trail_base', label: 'Trail base', unit: '%', type: 'number' },
+        { key: 'trail_mid', label: 'Trail mid', unit: '%', type: 'number' },
+        { key: 'trail_mid_at', label: 'Trail mid à partir de', unit: '%', type: 'number' },
+        { key: 'trail_tight', label: 'Trail tight', unit: '%', type: 'number' },
+        { key: 'trail_tight_at', label: 'Trail tight à partir de', unit: '%', type: 'number' },
+        { key: 'trail_activate', label: 'Trail activation', unit: '%', type: 'number' },
+        { key: 'hard_stop', label: 'Hard stop', unit: '%', type: 'number' },
+        { key: 'max_hold_sec', label: 'Max hold', unit: 's', type: 'number' },
+        { key: 'max_hold_exempt_pnl', label: 'Max hold exempt si P&L >', unit: '%', type: 'number' },
+      ],
+    };
+
+    function openParams(strat) {
+      currentModalStrat = strat;
+      const defs = PARAM_DEFS[strat];
+      const config = currentConfig?.strategies?.[strat] || {};
+      originalParams = { ...config };
+      
+      const colors = { STD: '#f0883e', NEO: '#da3633', SWARM: '#f1c40f' };
+      const icons = { STD: '🚀', NEO: '🧠', SWARM: '🐝' };
+      document.getElementById('modal-title').innerHTML = icons[strat] + ' Paramètres ' + strat;
+      document.getElementById('modal-title').style.color = colors[strat];
+      
+      let html = '';
+      defs.forEach(d => {
+        const val = config[d.key] ?? '';
+        html += '<div class="param-row">' +
+          '<span class="param-name">' + d.label + '</span>' +
+          '<input class="param-input" id="p-' + d.key + '" type="number" value="' + val + '"' + (d.step ? ' step="' + d.step + '"' : '') + '>' +
+          '<span class="param-unit">' + d.unit + '</span>' +
+          '</div>';
+      });
+      document.getElementById('modal-params').innerHTML = html;
+      document.getElementById('param-modal').classList.add('show');
+    }
+
+    function closeModal() {
+      document.getElementById('param-modal').classList.remove('show');
+      currentModalStrat = null;
+    }
+
+    function resetParams() {
+      if (!currentModalStrat) return;
+      const defs = PARAM_DEFS[currentModalStrat];
+      defs.forEach(d => {
+        const el = document.getElementById('p-' + d.key);
+        if (el) el.value = originalParams[d.key] ?? '';
+      });
+      showToast('↩ Valeurs remises à l\'original');
+    }
+
+    async function saveParams() {
+      if (!currentModalStrat) return;
+      const defs = PARAM_DEFS[currentModalStrat];
+      const params = defs.map(d => ({
+        strategy: currentModalStrat,
+        key: d.key,
+        value: parseFloat(document.getElementById('p-' + d.key).value)
+      })).filter(p => !isNaN(p.value));
+      
+      showToast('⏳ Sauvegarde et redémarrage...');
+      try {
+        const r = await fetch('/api/config/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + btoa('raph:Saluts123') },
+          body: JSON.stringify({ params })
+        });
+        const data = await r.json();
+        if (data.success) {
+          showToast('✅ ' + data.message);
+          closeModal();
+          setTimeout(() => loadConfig(), 2000);
+        } else {
+          showToast('❌ ' + data.error, true);
+        }
+      } catch(e) { showToast('❌ ' + e.message, true); }
+    }
+
+    function showToast(msg, isError) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.className = 'status-toast' + (isError ? ' error' : '');
+      t.style.display = 'block';
+      setTimeout(() => t.style.display = 'none', 4000);
+    }
+
+    // Load config on startup
+    loadConfig();
+    </script>
+
 </body>
 </html>

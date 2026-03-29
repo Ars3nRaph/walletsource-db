@@ -1035,3 +1035,208 @@ app.get('/api/live-wallet', async (req, res) => {
 });
 
 app.get('/wallet2', (req, res) => res.sendFile(path.join(__dirname, 'wallet2.html')));
+
+// ═══ LIVE CONTROL APIs ═══
+
+// GET /api/config — read all strategy params from .env + TradeExecutor constants
+app.get('/api/config', async (req, res) => {
+  try {
+    const fsSync = await import('fs');
+    const envPath = path.join(__dirname, '../../.env');
+    const envContent = fsSync.readFileSync(envPath, 'utf-8');
+    const env = {};
+    envContent.split('\n').forEach(line => {
+      const m = line.match(/^([A-Z_]+)=(.*)$/);
+      if (m) env[m[1]] = m[2];
+    });
+    
+    // Read TradeExecutor.ts for hardcoded params
+    const tsPath = path.join(__dirname, '../../src/execution/TradeExecutor.ts');
+    const ts = fsSync.readFileSync(tsPath, 'utf-8');
+    
+    const extract = (pattern, fallback) => {
+      const m = ts.match(pattern);
+      return m ? m[1] : fallback;
+    };
+    
+    res.json({
+      success: true,
+      live: {
+        DRY_RUN: env.DRY_RUN === 'true',
+        LIVE_TRADING: env.LIVE_TRADING === 'true',
+        TRADING_WALLET: env.TRADING_WALLET_ADDRESS || '',
+        MAX_POSITION_SOL: parseFloat(env.MAX_POSITION_SOL || '0.5'),
+        MAX_DAILY_LOSS_SOL: parseFloat(env.MAX_DAILY_LOSS_SOL || '3.0'),
+        SLIPPAGE_BPS: parseInt(env.SLIPPAGE_BPS || '1500'),
+      },
+      strategies: {
+        STD: {
+          enabled: true, // always on unless slots = 0
+          slots: parseInt(extract(/MAX_STD\s*=\s*(\d+)/, '3')),
+          min_buyers: parseInt(extract(/MIN_BUYERS\s*=\s*(\d+)/, '80')),
+          min_ratio: parseFloat(extract(/mcRatio\s*<\s*([\d.]+)\).*v10\.1[78]/, '2.2')),
+          max_ratio: parseFloat(extract(/mcRatio\s*>\s*([\d.]+)\)/, '3.0')),
+          max_dumps: parseInt(extract(/totalDumps\s*>=\s*(\d+)/, '21')),
+          max_avg_buy: parseInt(extract(/avgBuyUsd\s*>\s*(\d+)/, '50')),
+          trail_pct: 22,
+          trail_activate: 15,
+          hard_stop: -20,
+          max_hold_sec: 600,
+          window_sec: 110,
+        },
+        NEO: {
+          enabled: true,
+          slots: parseInt(extract(/MAX_NEO\s*=\s*(\d+)/, '1')),
+          trail_base: 25,
+          trail_tight: 15,
+          trail_tight_at: 125,
+          trail_activate: 15,
+          hard_stop: -20,
+          max_hold_sec: 870,
+          min_ratio: 1.3,
+          max_ratio: 2.0,
+          min_buyers: 20,
+          q_min: 3,
+        },
+        SWARM: {
+          enabled: true,
+          slots: parseInt(extract(/MAX_SWARM\s*=\s*(\d+)/, '2')),
+          min_buyers: 80,
+          max_avg_buy: 25,
+          min_ratio: 2.0,
+          max_ratio: 3.5,
+          trail_base: 18,
+          trail_mid: 13,
+          trail_mid_at: 50,
+          trail_tight: 8,
+          trail_tight_at: 200,
+          trail_activate: 30,
+          hard_stop: -20,
+          max_hold_sec: 600,
+          max_hold_exempt_pnl: 50,
+        },
+        CARTEL: {
+          enabled: false,
+          slots: 0,
+        }
+      }
+    });
+  } catch (err) {
+    console.error('config error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/live-toggle — toggle DRY_RUN in .env
+app.post('/api/live-toggle', async (req, res) => {
+  try {
+    const fsSync = await import('fs');
+    const cp = await import('child_process');
+    const envPath = path.join(__dirname, '../../.env');
+    let content = fsSync.readFileSync(envPath, 'utf-8');
+    const { enabled } = req.body;
+    
+    if (typeof enabled !== 'boolean') return res.status(400).json({ success: false, error: 'enabled must be boolean' });
+    
+    content = content.replace(/^DRY_RUN=.*$/m, `DRY_RUN=${enabled ? 'false' : 'true'}`);
+    fsSync.writeFileSync(envPath, content);
+    
+    // Safe restart
+    cp.execSync('bash scripts/safe-restart.sh --force', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
+    
+    res.json({ success: true, DRY_RUN: !enabled, message: enabled ? 'LIVE TRADING ENABLED' : 'LIVE TRADING DISABLED (paper only)' });
+  } catch (err) {
+    console.error('live-toggle error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/strategy-toggle — enable/disable a strategy by setting slots to 0
+app.post('/api/strategy-toggle', async (req, res) => {
+  try {
+    const fsSync = await import('fs');
+    const cp = await import('child_process');
+    const { strategy, enabled } = req.body;
+    
+    if (!['STD', 'NEO', 'SWARM', 'CARTEL'].includes(strategy)) {
+      return res.status(400).json({ success: false, error: 'Invalid strategy' });
+    }
+    
+    const tsPath = path.join(__dirname, '../../src/execution/TradeExecutor.ts');
+    let ts = fsSync.readFileSync(tsPath, 'utf-8');
+    
+    const defaults = { STD: 3, NEO: 1, SWARM: 2, CARTEL: 0 };
+    const varName = `MAX_${strategy}`;
+    const newVal = enabled ? defaults[strategy] : 0;
+    
+    // Replace MAX_XXX = N
+    const re = new RegExp(`(const\\s+${varName}\\s*=\\s*)\\d+`);
+    ts = ts.replace(re, `$1${newVal}`);
+    fsSync.writeFileSync(tsPath, ts);
+    
+    // Compile + restart
+    cp.execSync('npx tsc', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
+    cp.execSync('bash scripts/safe-restart.sh --force', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
+    
+    res.json({ success: true, strategy, enabled, slots: newVal });
+  } catch (err) {
+    console.error('strategy-toggle error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/config/save — save params to TradeExecutor.ts + .env, compile, safe-restart
+app.post('/api/config/save', async (req, res) => {
+  try {
+    const fsSync = await import('fs');
+    const cp = await import('child_process');
+    const { params } = req.body; // { strategy: 'STD', key: 'min_buyers', value: 80 }
+    
+    if (!params || !Array.isArray(params)) {
+      return res.status(400).json({ success: false, error: 'params must be an array' });
+    }
+    
+    const tsPath = path.join(__dirname, '../../src/execution/TradeExecutor.ts');
+    const envPath = path.join(__dirname, '../../.env');
+    let ts = fsSync.readFileSync(tsPath, 'utf-8');
+    let env = fsSync.readFileSync(envPath, 'utf-8');
+    let changed = false;
+    
+    // Map of param keys to their regex patterns in the source
+    const paramMap = {
+      'STD.min_buyers':    { pattern: /(const\s+MIN_BUYERS\s*=\s*)\d+/, file: 'ts' },
+      'STD.slots':         { pattern: /(const\s+MAX_STD\s*=\s*)\d+/, file: 'ts' },
+      'STD.max_dumps':     { pattern: /(totalDumps\s*>=\s*)\d+/, file: 'ts' },
+      'NEO.slots':         { pattern: /(const\s+MAX_NEO\s*=\s*)\d+/, file: 'ts' },
+      'SWARM.slots':       { pattern: /(const\s+MAX_SWARM\s*=\s*)\d+/, file: 'ts' },
+      'live.MAX_POSITION_SOL':   { pattern: /^(MAX_POSITION_SOL=).*$/m, file: 'env' },
+      'live.MAX_DAILY_LOSS_SOL': { pattern: /^(MAX_DAILY_LOSS_SOL=).*$/m, file: 'env' },
+      'live.SLIPPAGE_BPS':       { pattern: /^(SLIPPAGE_BPS=).*$/m, file: 'env' },
+    };
+    
+    for (const p of params) {
+      const key = `${p.strategy || 'live'}.${p.key}`;
+      const mapping = paramMap[key];
+      if (mapping) {
+        if (mapping.file === 'ts') {
+          ts = ts.replace(mapping.pattern, `$1${p.value}`);
+        } else {
+          env = env.replace(mapping.pattern, `$1${p.value}`);
+        }
+        changed = true;
+      }
+    }
+    
+    if (changed) {
+      fsSync.writeFileSync(tsPath, ts);
+      fsSync.writeFileSync(envPath, env);
+      cp.execSync('npx tsc', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
+      cp.execSync('bash scripts/safe-restart.sh --force', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
+    }
+    
+    res.json({ success: true, message: changed ? 'Config saved + bot restarted' : 'No changes' });
+  } catch (err) {
+    console.error('config/save error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
