@@ -644,11 +644,16 @@ export class TradeExecutor {
         this.consecutiveHardStops = 0; // CB reset on non-HS exit
       }
       
-      // 1b. ELITE max hold 120s (RT)
-      if (!rtShouldSell && rtIsSwarm && rtHoldSec > 600) { // SWARM: max 600s hold (v1.1: 300→600s)
-        rtReason = `⚡ RT-ELITE_MAX_HOLD 600s — pnl=${rtPnl.toFixed(1)}% | MC ${mcUsd.toFixed(0)}`;
-        rtShouldSell = true;
-        this.consecutiveHardStops = 0;
+      // 1b. SWARM max hold 600s (RT) — exempt if actively rising (v1.2: let rockets run)
+      if (!rtShouldSell && rtIsSwarm && rtHoldSec > 600) {
+        const rtStillRising = rtPnl > 50 && rtDropFromPeak < 0.05; // >+50% P&L AND within 5% of peak
+        if (rtStillRising) {
+          // Token actively pumping — skip MAX_HOLD, trail will handle exit
+        } else {
+          rtReason = `⚡ RT-SWARM_MAX_HOLD 600s — pnl=${rtPnl.toFixed(1)}% | MC ${mcUsd.toFixed(0)}`;
+          rtShouldSell = true;
+          this.consecutiveHardStops = 0;
+        }
       }
 
       // 2. Hard stop (NEO: -20% v4.59 was -25%, others: -20%)
@@ -1232,12 +1237,16 @@ export class TradeExecutor {
       return this.sell(100, 1.0, 'RIDE', `${hsLabel} HARD_STOP ${pnlPct.toFixed(1)}% | peak +${peakPnl.toFixed(0)}% (threshold ${hsThreshold}%) | MC ${currentMC.toFixed(0)}`, signals);
     }
 
-    // SWARM: max hold 600s (v1.1: 300→600s — let rockets run)
+    // SWARM: max hold 600s (v1.2: exempt if actively rising — let rockets run)
     if (isSwarm && holdSec > 600) {
-      this.openPositions.delete(tokenAddress);
-      this.closedTokens.set(tokenAddress, { exitType: 'MAX_HOLD', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
-      this.consecutiveHardStops = 0;
-      return this.sell(100, 0.9, 'RIDE', `🐝 SWARM_MAX_HOLD 600s — pnl=${pnlPct.toFixed(1)}% | MC ${currentMC.toFixed(0)}`, signals);
+      const stillRising = pnlPct > 50 && dropFromPeak < 0.05; // >+50% P&L AND within 5% of peak
+      if (!stillRising) {
+        this.openPositions.delete(tokenAddress);
+        this.closedTokens.set(tokenAddress, { exitType: 'MAX_HOLD', exitMC: currentMC, exitTime: Date.now(), entryMC: pos.entryMC, peakMC: pos.highestMC, reentryCount: (this.closedTokens.get(tokenAddress)?.reentryCount || 0) });
+        this.consecutiveHardStops = 0;
+        return this.sell(100, 0.9, 'RIDE', `🐝 SWARM_MAX_HOLD 600s — pnl=${pnlPct.toFixed(1)}% | MC ${currentMC.toFixed(0)}`, signals);
+      }
+      // Still rising: skip MAX_HOLD, trail will handle exit
     }
 
     // 2. MAX HOLD: 5 minutes → force exit
