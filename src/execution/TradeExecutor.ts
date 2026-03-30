@@ -89,7 +89,9 @@ interface OpenPosition {
   postEntryChecked?: boolean;  // true once 60s check done
   addOnBought?: boolean;       // true if add-on position placed on STRONG
   swarmStrategy?: boolean;     // SWARM: organic retail crowd signal
-  tierSold50?: boolean;          // tier exit: 20% already sold at +50%
+  // ═══ 5-TIER EXIT SYSTEM: 20% at each level, trail remainder ═══
+  tiersSold?: number;            // bitmask: tiers already sold (0=none, 1=T1, 3=T1+T2, 7=T1+T2+T3, 15=all4)
+  tiersRemainingPct?: number;    // fraction still held (1.0 → 0.8 → 0.6 → 0.4 → 0.2)
   eliteWallets?: Set<string>;  // which ELITE wallets triggered this entry
 
 }
@@ -593,10 +595,20 @@ export class TradeExecutor {
       const rtPeakPnl = ((rtPos.highestMC - rtPos.entryMC) / rtPos.entryMC) * 100;
       const rtDropFromPeak = rtPos.highestMC > 0 ? (rtPos.highestMC - mcUsd) / rtPos.highestMC : 0;
       
-      // ═══ TIER EXIT: sell 20% at +50% (lock in profit, keep 80% for rockets) ═══
-      if (!rtPos.tierSold50 && rtPnl >= 50) {
-        rtPos.tierSold50 = true;
-        this.onTierExit(tokenAddress, 0.20, `P&L +${rtPnl.toFixed(0)}% hit +50% tier`, mcUsd);
+      // ═══ 5-TIER EXIT: sell 20% at +30%, +60%, +100%, +200%, trail remainder ═══
+      const tierLevels = [30, 60, 100, 200];
+      const tiersSold = rtPos.tiersSold || 0;
+      let remaining = rtPos.tiersRemainingPct ?? 1.0;
+      
+      for (let i = 0; i < tierLevels.length; i++) {
+        const tierBit = 1 << i;
+        if (!(tiersSold & tierBit) && rtPnl >= tierLevels[i] && remaining > 0.25) {
+          rtPos.tiersSold = (rtPos.tiersSold || 0) | tierBit;
+          const pctToSell = 0.20 / remaining; // sell 20% of ORIGINAL position = X% of current
+          remaining -= 0.20;
+          rtPos.tiersRemainingPct = remaining;
+          this.onTierExit(tokenAddress, pctToSell, `P&L +${rtPnl.toFixed(0)}% hit +${tierLevels[i]}% tier (${Math.round(remaining*100)}% left)`, mcUsd);
+        }
       }
       
       // Compute drop limit — FLAT 20% for all peaks ≥50% (backtest: wallet 108 vs 79 with old tiers)
@@ -613,22 +625,47 @@ export class TradeExecutor {
       const rtIsNeo = rtPos.neoStrategy === true;
       const rtIsCartel = rtPos.cartelStrategy === true;
       const rtIsSwarm = rtPos.swarmStrategy === true;
-      const rtTrailTrigger = rtIsSwarm ? 30 : (rtIsNeo || rtIsCartel) ? 15 : 15; // v10.19: SWARM 40→30%, NEO 25→15%, STD 15% (unchanged)
+      // Trail activation: lower threshold if tiers already sold (protect remaining)
+      const rtTiersSold = rtPos.tiersSold || 0;
+      let rtTrailTrigger = rtIsSwarm ? 30 : (rtIsNeo || rtIsCartel) ? 15 : 15;
+      if (rtTiersSold >= 1) rtTrailTrigger = Math.min(rtTrailTrigger, 15); // activate trail earlier after first tier
       if (rtPeakPnl >= rtTrailTrigger) {
         if (rtIsSwarm) {
-          // SWARM v1.2: dynamic trail 18%→13%@50%→8%@200% (backtest +0.98 SOL)
-          rtDropLimit = rtPeakPnl >= 200 ? 0.08 : rtPeakPnl >= 50 ? 0.13 : 0.18;
+          // SWARM v1.2: dynamic trail — tighter after tier exits lock in profit
+          const swTiers = rtPos.tiersSold || 0;
+          if (swTiers >= 15) {        // all 4 tiers sold (20% left) → very tight
+            rtDropLimit = 0.06;
+          } else if (swTiers >= 7) {  // 3 tiers sold (40% left) → tight  
+            rtDropLimit = 0.08;
+          } else if (swTiers >= 3) {  // 2 tiers sold (60% left) → medium
+            rtDropLimit = 0.10;
+          } else if (swTiers >= 1) {  // 1 tier sold (80% left) → moderate
+            rtDropLimit = 0.13;
+          } else {
+            // No tiers sold yet — original dynamic trail
+            rtDropLimit = rtPeakPnl >= 200 ? 0.08 : rtPeakPnl >= 50 ? 0.13 : 0.18;
+          }
         } else if (rtIsCartel) {
           rtDropLimit = 0.20; // CARTEL: 20% trail
         } else if (rtIsNeo) {
-          // NEO v4.63: 3-tier trail — low-peak <40% uses 15% (no negative capture), mid 40-124% uses 25%, rockets 125%+ use 15%
-          rtDropLimit = rtPeakPnl >= 125 || rtPeakPnl < 40 ? 0.15 : 0.25; // v4.63: low-peak safe zone (breakeven at 17.6% vs 33.3%)
+          const neoTiers = rtPos.tiersSold || 0;
+          if (neoTiers >= 7) {        // 3+ tiers sold → tight
+            rtDropLimit = 0.08;
+          } else if (neoTiers >= 1) { // 1+ tiers sold → moderate
+            rtDropLimit = 0.12;
+          } else {
+            rtDropLimit = rtPeakPnl >= 125 || rtPeakPnl < 40 ? 0.15 : 0.25;
+          }
         } else if (rtSellerRatio >= 0 && rtSellerRatio <= 0.20) {
           rtDropLimit = 0.27; // v10.19: healthy → wide trail (was 0.25)
         } else if (rtSellerRatio > 0.40) {
           rtDropLimit = 0.17; // v10.19: pressure → tight trail (was 0.15)
         } else {
-          rtDropLimit = 0.22; // v10.19: standard 22% (was 20%, backtest +1.19 SOL)
+          // STD: tighten trail after tier exits
+          const stdTiers = rtPos.tiersSold || 0;
+          if (stdTiers >= 7) rtDropLimit = 0.10;       // 3+ tiers → tight
+          else if (stdTiers >= 1) rtDropLimit = 0.15;   // 1+ tiers → moderate
+          else rtDropLimit = 0.22;                       // no tiers → standard
         }
       }
       // Below 50% peak: rtDropLimit stays 0 = no trailing stop

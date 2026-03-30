@@ -127,8 +127,8 @@ interface OpenLivePosition {
   walletAddress: string;
   buyReason: string;
   realEntrySol: number;
-  tierSold50: boolean;        // tier exit: 20% sold at +50%
-  remainingPct: number;       // fraction still held (1.0 → 0.8 after tier)
+  tiersSold: number;          // bitmask: tiers sold (0=none, 1=T1@30%, 3=T1+T2, 7=T1+T2+T3, 15=all)
+  remainingPct: number;       // fraction still held (1.0 → 0.8 → 0.6 → 0.4 → 0.2)
 }
 
 interface TradeResult {
@@ -338,7 +338,7 @@ export class LiveTradeExecutor {
             entryMC: 0,
             entrySol: parseFloat(r.sol_actual || r.sol_intended || '0'),
             tokenAmount: 0n, // unknown — SELL will use max fallback
-            tierSold50: false,
+            tiersSold: 0,
             remainingPct: 1.0,
             entryTime: new Date(r.executed_at),
             walletAddress: this.keypair.publicKey.toBase58(),
@@ -411,7 +411,7 @@ export class LiveTradeExecutor {
           tokenAmount: result.tokensReceived ?? 0n,
           entryTime: new Date(), walletAddress: '',
           buyReason: signal.reason ?? "", realEntrySol: 0,
-          tierSold50: false, remainingPct: 1.0,
+          tiersSold: 0, remainingPct: 1.0,
         });
         this.dailyStats.trades++;
         this.dailyStats.totalTipSol += this.config.jitoTipBuyLamports / LAMPORTS_PER_SOL;
@@ -868,8 +868,7 @@ export class LiveTradeExecutor {
       if (result.success) {
         // Update position: reduce token amount, mark tier as sold
         pos.tokenAmount -= sellAmount;
-        pos.remainingPct -= pctToSell;
-        pos.tierSold50 = true;
+        pos.remainingPct = Math.max(0, pos.remainingPct - pctToSell);
         
         // Invalidate pre-signed cache (amount changed)
         this.preSellCache.delete(tokenMint);
