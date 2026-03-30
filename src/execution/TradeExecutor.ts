@@ -1599,7 +1599,7 @@ export class TradeExecutor {
     const MAX_NEO = 0; // DISABLED — replaced by SWARM v3
     const MAX_CARTEL = 1; // v10.14.4: reduced for ELITE
     const MAX_SWARM = 2; // SWARM v1.0: organic retail crowd (buyers≥80, avg_buy<$25, ratio 2.0-3.5x)
-    const MAX_STD = 3; // v10.14.4
+    const MAX_STD = 0; // DISABLED — replaced by SWARM ULTRA
     const isNeoEntry = mcRatio < 2.0 && elapsedSec <= 75;
     if (isNeoEntry && neoCount >= MAX_NEO) {
       return this.none(`🚫 NEO pool full (${neoCount}/${MAX_NEO}) — skip`, 'RIDE');
@@ -1700,6 +1700,55 @@ export class TradeExecutor {
       }
     }
 
+
+
+    // ══════════════════════════════════════════════════════════════
+    // SWARM ULTRA (v7) — Highest efficiency variant (replaces STD slots)
+    // Backtest: +62.3% avg, 69.4% WR, 30.6% HS, 24.5% rocket rate
+    // Filters: SWARM base + Window≥45s + MC≠6-7K + sell_pressure<0.3
+    // Uses STD's 3 slots (separate from SWARM v1.2 and v3)
+    // ══════════════════════════════════════════════════════════════
+    const ultraCount = Array.from(this.openPositions.values()).filter(p => (p as any).ultraStrategy).length;
+    const MAX_ULTRA = 3;
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 45 && elapsedSec <= 90) {
+      const ultSbRatio = buyCount > 0 ? sellCount / buyCount : 0;
+      const ultAvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
+      const ultSellVol = state?.sellVol || 0;
+      const ultSellPressure = buyVol > 0 ? ultSellVol / buyVol : 1;
+      if (
+        uniqueBuyerCount >= 80 &&
+        ultAvgBuy < 25 &&
+        mcRatio >= 2.0 && mcRatio <= 3.5 &&
+        currentMC < 12000 &&
+        !(currentMC >= 6000 && currentMC < 7000) &&  // skip 6-7K dead zone
+        ultSellPressure < 0.3 &&                      // KEY: low sell pressure = organic momentum
+        ultSbRatio < 0.4
+      ) {
+        if (ultraCount >= MAX_ULTRA) {
+          // Fall through to other strategies
+        } else if (this.openPositions.size >= 7) {
+          // Fall through
+        } else {
+          const ultPos = 0.35;
+          this.lastBuyTimestamp = Date.now();
+          this.openPositions.set(tokenAddress, {
+            entryMC: currentMC, entryTime: new Date(), highestMC: currentMC, lowestMCAfterEntry: currentMC,
+            tradeCount: 0, walletAddress, peakTime: Date.now(), hadSignificantPump: false,
+            entryBuyVol: buyVol, entryBuyCount: buyCount, entryBuyerCount: uniqueBuyerCount,
+            entrySellersCount: sellCount, staleTicks: 0, ceilingHigh: currentMC,
+            pumpPeaks: [], pumpState: 'PUMP' as const, cycleHigh: currentMC, dipLow: currentMC,
+            tickMCs: [currentMC], confirmationDone: true, swarmStrategy: true,
+          });
+          (this.openPositions.get(tokenAddress) as any).ultraStrategy = true;
+          logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: ultAvgBuy.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0), sp: ultSellPressure.toFixed(2) }, '⚡ ULTRA BUY');
+          return {
+            action: 'BUY', confidence: 0.90, percentage: 100, playbook_strategy: 'RIDE',
+            wallet_risk_score: 0.2, position_sol: ultPos,
+            reason: `⚡ ULTRA v7 BUY — ${uniqueBuyerCount}b avg=$${ultAvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | sp=${ultSellPressure.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${ultPos}SOL`
+          };
+        }
+      }
+    }
 
 
     // ══════════════════════════════════════════════════════════════

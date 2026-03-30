@@ -87,7 +87,7 @@ export class PaperTradeExecutor extends TradeExecutor {
            VALUES ($1, 'SHUTDOWN', 'RIDE', NOW(), $2, $3, 'SHUTDOWN', $4, $5)`,
           [tok, lastMC, pnl,
            'SHUTDOWN: ' + openCount + ' positions saved. Entry MC=' + pos.entryMC.toFixed(0) + ' Peak=' + pos.highestMC.toFixed(0) + ' Last=' + lastMC.toFixed(0),
-           (pos as any).swarm3Strategy ? 'SWARM3' : pos.swarmStrategy ? 'SWARM' : pos.neoStrategy ? 'NEO' : pos.cartelStrategy ? 'CARTEL' : 'STD']
+           (pos as any).ultraStrategy ? 'ULTRA' : (pos as any).ultraStrategy ? 'ULTRA' : (pos as any).swarm3Strategy ? 'SWARM3' : pos.swarmStrategy ? 'SWARM' : pos.neoStrategy ? 'NEO' : pos.cartelStrategy ? 'CARTEL' : 'STD']
         );
         
         logger.info({
@@ -95,7 +95,7 @@ export class PaperTradeExecutor extends TradeExecutor {
           entryMC: pos.entryMC.toFixed(0),
           lastMC: lastMC.toFixed(0),
           pnl: pnl.toFixed(1) + '%',
-          strategy: (pos as any).swarm3Strategy ? 'SWARM3' : pos.swarmStrategy ? 'SWARM' : pos.neoStrategy ? 'NEO' : pos.cartelStrategy ? 'CARTEL' : 'STD'
+          strategy: (pos as any).ultraStrategy ? 'ULTRA' : (pos as any).ultraStrategy ? 'ULTRA' : (pos as any).swarm3Strategy ? 'SWARM3' : pos.swarmStrategy ? 'SWARM' : pos.neoStrategy ? 'NEO' : pos.cartelStrategy ? 'CARTEL' : 'STD'
         }, '💾 Position state saved to DB');
       } catch (err: any) {
         logger.error({ token: tok.slice(0, 8), error: err?.message }, 'Failed to save position on shutdown');
@@ -401,7 +401,7 @@ export class PaperTradeExecutor extends TradeExecutor {
            reason, buyStrategy,
            // v10.14.3: Extract strategy version from reason
            (() => { if (reason.includes('ELITE')) return 'ELITE v1.0';
-                    if (reason.includes('SWARM v3')) return 'SWARM v3'; if (reason.includes('SWARM')) return 'SWARM v1.2';
+                    if (reason.includes('ULTRA v7')) return 'ULTRA v7'; if (reason.includes('SWARM v3')) return 'SWARM v3'; if (reason.includes('SWARM')) return 'SWARM v1.2';
                     const vm = reason.match(/NEO (v4\.\d+)/); if (vm) return 'NEO ' + vm[1];
                     const cm = reason.match(/CARTEL (v[\d.]+)/); if (cm) return 'CARTEL ' + cm[1];
                     if (reason.includes('CARTEL')) return 'CARTEL v1.2';
