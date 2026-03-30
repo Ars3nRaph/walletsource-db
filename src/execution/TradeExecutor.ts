@@ -89,6 +89,7 @@ interface OpenPosition {
   postEntryChecked?: boolean;  // true once 60s check done
   addOnBought?: boolean;       // true if add-on position placed on STRONG
   swarmStrategy?: boolean;     // SWARM: organic retail crowd signal
+  tierSold50?: boolean;          // tier exit: 20% already sold at +50%
   eliteWallets?: Set<string>;  // which ELITE wallets triggered this entry
 
 }
@@ -174,6 +175,12 @@ export class TradeExecutor {
     strategy: WalletStrategy | null;
   }>();
   private evaluating = new Set<string>();
+
+  // ═══ TIER EXIT HOOK ═══
+  // Override in PaperTradeExecutor to forward tier exits to LiveTradeExecutor
+  protected onTierExit(tokenAddress: string, pctToSell: number, reason: string, currentMC: number): void {
+    // no-op in base class
+  }
   private closedTokens = new Map<string, { exitType: string; exitMC: number; exitTime: number; entryMC: number; peakMC: number; reentryCount: number }>();
   // v10.10k Circuit Breaker: pause after 3 consecutive hard stops
   private consecutiveHardStops = 0;
@@ -585,6 +592,12 @@ export class TradeExecutor {
       const rtHoldSec = (Date.now() - rtPos.entryTime.getTime()) / 1000;
       const rtPeakPnl = ((rtPos.highestMC - rtPos.entryMC) / rtPos.entryMC) * 100;
       const rtDropFromPeak = rtPos.highestMC > 0 ? (rtPos.highestMC - mcUsd) / rtPos.highestMC : 0;
+      
+      // ═══ TIER EXIT: sell 20% at +50% (lock in profit, keep 80% for rockets) ═══
+      if (!rtPos.tierSold50 && rtPnl >= 50) {
+        rtPos.tierSold50 = true;
+        this.onTierExit(tokenAddress, 0.20, `P&L +${rtPnl.toFixed(0)}% hit +50% tier`, mcUsd);
+      }
       
       // Compute drop limit — FLAT 20% for all peaks ≥50% (backtest: wallet 108 vs 79 with old tiers)
       // Peak <50%: NO TRAIL (let it run to 50%+ or hit hard stop)

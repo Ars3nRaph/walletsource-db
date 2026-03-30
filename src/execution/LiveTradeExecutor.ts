@@ -127,6 +127,8 @@ interface OpenLivePosition {
   walletAddress: string;
   buyReason: string;
   realEntrySol: number;
+  tierSold50: boolean;        // tier exit: 20% sold at +50%
+  remainingPct: number;       // fraction still held (1.0 → 0.8 after tier)
 }
 
 interface TradeResult {
@@ -163,6 +165,11 @@ export class LiveTradeExecutor {
   public config: LiveTradeConfig;
   private pool: Pool;
   private openPositions = new Map<string, OpenLivePosition>();
+  
+  // ═══ PRE-SIGNED SELL TX CACHE ═══
+  // Refreshed every 10s for profitable positions — cuts sell latency by ~300ms
+  private preSellCache = new Map<string, { tx: VersionedTransaction; builtAt: number; amount: bigint }>();
+  private preSellInterval: ReturnType<typeof setInterval> | null = null;
 
   // ═══ OPTIMIZATIONS: cache blockhash + ATA existence ═══
   // Dedup: prevent same token being bought/sold twice in rapid succession
@@ -232,6 +239,9 @@ export class LiveTradeExecutor {
 
         // Check for deposits/withdrawals every 2 minutes
         setInterval(() => this.detectDepositsWithdrawals().catch(() => {}), 120_000);
+        
+        // Pre-sign sell TXs every 10s for profitable positions (cuts sell latency ~300ms)
+        this.preSellInterval = setInterval(() => this.refreshPreSignedSells().catch(() => {}), 10_000);
       } catch {
         logger.error('Invalid TRADING_PRIVATE_KEY — live trading disabled');
         this.keypair = Keypair.generate();
@@ -328,6 +338,8 @@ export class LiveTradeExecutor {
             entryMC: 0,
             entrySol: parseFloat(r.sol_actual || r.sol_intended || '0'),
             tokenAmount: 0n, // unknown — SELL will use max fallback
+            tierSold50: false,
+            remainingPct: 1.0,
             entryTime: new Date(r.executed_at),
             walletAddress: this.keypair.publicKey.toBase58(),
             buyReason: r.reason || '',
@@ -399,6 +411,7 @@ export class LiveTradeExecutor {
           tokenAmount: result.tokensReceived ?? 0n,
           entryTime: new Date(), walletAddress: '',
           buyReason: signal.reason ?? "", realEntrySol: 0,
+          tierSold50: false, remainingPct: 1.0,
         });
         this.dailyStats.trades++;
         this.dailyStats.totalTipSol += this.config.jitoTipBuyLamports / LAMPORTS_PER_SOL;
@@ -465,8 +478,32 @@ export class LiveTradeExecutor {
       logger.info({ tip: sellTipLamports, mode: sellTipMode, isUrgent }, '⚡ Jito dynamic tip');
 
       const mintPk = new PublicKey(tokenMint);
-      const tx = await this.buildSellTx(mintPk, pos.tokenAmount);
-      const result = await this.send(tx, sellTipLamports, 'SELL');
+      
+      // ═══ USE PRE-SIGNED CACHE if available and fresh ═══
+      const cached = this.preSellCache.get(tokenMint);
+      let result: TradeResult;
+      
+      if (cached && (Date.now() - cached.builtAt) < 25_000 && cached.amount === pos.tokenAmount) {
+        // Cache hit! TX already built + signed — just send (saves ~300ms)
+        logger.info({ token: tokenMint.slice(0, 8), age: Math.round((Date.now() - cached.builtAt) / 1000) + 's' }, '⚡ Using pre-signed sell TX');
+        this.preSellCache.delete(tokenMint);
+        
+        // Race: sendRaw + Jito
+        if (this.config.useJitoBundle) {
+          const rawPromise = this.sendRaw(cached.tx, Date.now(), 'SELL');
+          const jitoPromise = this.sendJito(cached.tx, sellTipLamports, Date.now(), 'SELL').catch(() => null);
+          result = await Promise.race([
+            rawPromise,
+            jitoPromise.then((r: any) => r && r.success ? r : new Promise(() => {})),
+          ]) as TradeResult;
+        } else {
+          result = await this.sendRaw(cached.tx, Date.now(), 'SELL');
+        }
+      } else {
+        // Cache miss — build fresh (normal path)
+        const tx = await this.buildSellTx(mintPk, pos.tokenAmount);
+        result = await this.send(tx, sellTipLamports, 'SELL');
+      }
 
       if (result.success && result.txSignature) {
         // Parse on-chain — lire le vrai SOL reçu
@@ -761,6 +798,124 @@ export class LiveTradeExecutor {
     } catch (err: any) {
       logger.error({ error: err.message, side, ms: Date.now() - t0 }, '❌ sendRaw: EXCEPTION');
       return { success: false, error: err.message, latencyMs: Date.now() - t0, jitoBundle: false };
+    }
+  }
+
+
+  // ━━━ PRE-SIGNED SELL TX CACHE ━━━
+  // Builds sell TXs in advance for profitable positions so we can send instantly on trail trigger
+  // PumpPortal trade-local only BUILDS the TX (returns bytes) — no on-chain submission
+  // Safe to call frequently: ~0.1 req/s per position vs 25 req/s limit
+  
+  private async refreshPreSignedSells(): Promise<void> {
+    if (!this.config.enabled || this.config.dryRun) return;
+    
+    for (const [mint, pos] of this.openPositions) {
+      if (pos.tokenAmount <= 0n) continue;
+      
+      // Only pre-build for positions likely to trail (skip brand new ones)
+      const holdSec = (Date.now() - pos.entryTime.getTime()) / 1000;
+      if (holdSec < 5) continue; // too new
+      
+      // Check if existing cache is still fresh (< 20s = safe, blockhash valid ~45s)
+      const cached = this.preSellCache.get(mint);
+      if (cached && (Date.now() - cached.builtAt) < 20_000) continue;
+      
+      try {
+        const mintPk = new PublicKey(mint);
+        // Build sell for REMAINING tokens (after any tier exit)
+        const sellAmount = pos.tokenAmount;
+        const tx = await this.buildSellTx(mintPk, sellAmount);
+        // Pre-sign so we only need to send on trigger
+        tx.sign([this.keypair]);
+        
+        this.preSellCache.set(mint, { tx, builtAt: Date.now(), amount: sellAmount });
+        logger.debug({ token: mint.slice(0, 8), age: cached ? Math.round((Date.now() - cached.builtAt) / 1000) + 's' : 'new' }, '🔄 Pre-signed sell TX refreshed');
+      } catch (e: any) {
+        // Non-critical — will build on-demand if cache miss
+        logger.debug({ token: mint.slice(0, 8), error: e.message?.slice(0, 60) }, '⚠️ Pre-sign refresh failed (non-critical)');
+        this.preSellCache.delete(mint); // stale cache is worse than no cache
+      }
+    }
+    
+    // Cleanup: remove cache entries for positions that no longer exist
+    for (const mint of this.preSellCache.keys()) {
+      if (!this.openPositions.has(mint)) this.preSellCache.delete(mint);
+    }
+  }
+
+  // ━━━ PARTIAL TIER EXIT ━━━
+  // Sells a fraction of position at market. Updates position.tokenAmount.
+  // Called from paper executor when P&L hits tier threshold.
+  
+  async executePartialSell(tokenMint: string, pctToSell: number, reason: string, currentMC?: number): Promise<TradeResult | null> {
+    const pos = this.openPositions.get(tokenMint);
+    if (!pos || pos.tokenAmount <= 0n) return null;
+    if (pctToSell <= 0 || pctToSell >= 1) return null;
+    
+    const t0 = Date.now();
+    const sellAmount = BigInt(Math.floor(Number(pos.tokenAmount) * pctToSell));
+    if (sellAmount <= 0n) return null;
+    
+    try {
+      logger.info({ token: tokenMint, pct: Math.round(pctToSell * 100), reason: reason.slice(0, 60) }, '🔶 LIVE PARTIAL SELL');
+      
+      const mintPk = new PublicKey(tokenMint);
+      const tx = await this.buildSellTx(mintPk, sellAmount);
+      const tipLamports = await getDynamicTip('sell');
+      const result = await this.send(tx, tipLamports, 'SELL');
+      
+      if (result.success) {
+        // Update position: reduce token amount, mark tier as sold
+        pos.tokenAmount -= sellAmount;
+        pos.remainingPct -= pctToSell;
+        pos.tierSold50 = true;
+        
+        // Invalidate pre-signed cache (amount changed)
+        this.preSellCache.delete(tokenMint);
+        
+        logger.info({ 
+          token: tokenMint.slice(0, 8), 
+          sold: Math.round(pctToSell * 100) + '%',
+          remaining: Math.round(pos.remainingPct * 100) + '%',
+          ms: result.latencyMs 
+        }, '✅ PARTIAL SELL OK');
+        
+        // Log to DB in background
+        const txSig = result.txSignature!;
+        setImmediate(async () => {
+          try {
+            const onChain = await this.parseOnChainTx(txSig, this.keypair.publicKey.toBase58());
+            const solReceived = onChain.parsedOk ? Math.abs(onChain.solDelta) : 0;
+            
+            await this.dbLogFull({
+              side: 'SELL', mint: tokenMint, solIn: pos.entrySol * pctToSell, solOut: solReceived,
+              tx: txSig, reason: `🔶 TIER EXIT ${Math.round(pctToSell*100)}% — ${reason}`,
+              pnl: solReceived - (pos.realEntrySol * pctToSell),
+              pnlPct: pos.realEntrySol > 0 ? ((solReceived / (pos.realEntrySol * pctToSell)) - 1) * 100 : 0,
+              tokensAmount: sellAmount,
+              feeSol: onChain.feeSol,
+              jitoTipSol: tipLamports / 1e9,
+              slippageSol: 0, slippagePct: 0,
+              txSigBuy: pos.entryTxSig,
+              parsedOk: onChain.parsedOk,
+              buyReason: pos.buyReason,
+              latencyMs: result.latencyMs,
+              mcUsd: currentMC,
+              ...(await (async () => { const p = await this.getSolPrices(); return { solPriceChf: p.chf, solPriceUsd: p.usd }; })()),
+            });
+            
+            const balAfter = await this.getBalance();
+            await this.pool.query('UPDATE live_trades_v2 SET balance_after = $1 WHERE tx_signature = $2', [balAfter, txSig]);
+          } catch (e: any) {
+            logger.error({ error: e.message }, '⚠️ Partial sell DB log failed');
+          }
+        });
+      }
+      return result;
+    } catch (e: any) {
+      logger.error({ token: tokenMint.slice(0, 8), error: e.message }, '❌ Partial sell failed');
+      return { success: false, error: e.message, latencyMs: Date.now() - t0 };
     }
   }
 
