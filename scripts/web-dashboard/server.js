@@ -1074,34 +1074,51 @@ app.get('/api/live-wallet', async (req, res) => {
     // Use RPC balance as authoritative
     const finalBal = walletBalance ?? 0;
 
-    // ── Recompute balance_after as running total (ordered by close time) ──
-    // Walk BACKWARD from current RPC balance, subtract each closed trade's P&L
-    // This handles overlapping positions correctly (trade A open while B closes)
-    const closedTrades = tradeLog
-      .filter(t => t.pnl_sol !== null && t.sell_timestamp)
-      .sort((a, b) => new Date(b.sell_timestamp) - new Date(a.sell_timestamp)); // newest first
+    // ── Recompute balance_after as running total (ordered by event time) ──
+    // Walk BACKWARD from current RPC balance
+    // Include closed trades (by sell_timestamp) AND deposits/withdrawals (by timestamp)
+    const balanceEvents = [];
+    
+    // Closed trades: use sell_timestamp as event time, delta = pnl_sol
+    for (const t of tradeLog) {
+      if (t.pnl_sol !== null && t.sell_timestamp) {
+        balanceEvents.push({ ref: t, time: new Date(t.sell_timestamp), delta: t.pnl_sol });
+      }
+    }
+    
+    // DEPOSIT/WITHDRAW: use timestamp as event time, delta = +/- position_sol
+    for (const t of tradeLog) {
+      if (t.action === 'DEPOSIT') {
+        balanceEvents.push({ ref: t, time: new Date(t.timestamp), delta: t.position_sol || 0 });
+      } else if (t.action === 'WITHDRAW') {
+        balanceEvents.push({ ref: t, time: new Date(t.timestamp), delta: -(t.position_sol || 0) });
+      }
+    }
+    
+    // Sort newest first (walk backward)
+    balanceEvents.sort((a, b) => b.time - a.time);
     
     let runBal = finalBal;
-    // Also account for open positions (their buy cost is "locked" in tokens)
-    const openTrades = tradeLog.filter(t => t.action === 'OPEN' && t.buy_strategy !== 'DEPOSIT' && t.buy_strategy !== 'WITHDRAW');
+    // Account for open positions (tokens not yet converted to SOL)
+    const openTrades = tradeLog.filter(t => t.action === 'OPEN' && t.action !== 'DEPOSIT' && t.action !== 'WITHDRAW');
     for (const ot of openTrades) {
-      runBal += ot.position_sol || 0; // add back locked SOL
+      runBal += ot.position_sol || 0;
     }
     
-    for (const t of closedTrades) {
-      t.balance_after = parseFloat(runBal.toFixed(6));
-      t.balance_before = parseFloat((runBal - (t.pnl_sol || 0)).toFixed(6));
-      t.wallet_impact_pct = t.balance_before > 0 
-        ? parseFloat(((t.pnl_sol / t.balance_before) * 100).toFixed(2))
-        : null;
-      runBal -= (t.pnl_sol || 0); // go back in time
+    for (const evt of balanceEvents) {
+      evt.ref.balance_after = parseFloat(runBal.toFixed(6));
+      evt.ref.balance_before = parseFloat((runBal - evt.delta).toFixed(6));
+      if (evt.ref.action !== 'DEPOSIT' && evt.ref.action !== 'WITHDRAW') {
+        evt.ref.wallet_impact_pct = evt.ref.balance_before > 0
+          ? parseFloat(((evt.delta / evt.ref.balance_before) * 100).toFixed(2))
+          : null;
+      }
+      runBal -= evt.delta; // go back in time
     }
-    // runBal is now the initial balance (before any trade)
     const initialBalance = parseFloat(runBal.toFixed(6));
     
-    // Open trades: show current balance minus other open costs
     for (const ot of openTrades) {
-      ot.balance_after = null; // still open, no final balance
+      ot.balance_after = null;
     }
     const drag = finalBal > initialBalance
       ? parseFloat(((totalFees+totalSlip)/(totalFees+totalSlip+finalBal-initialBalance)*100).toFixed(1)) : 0;
