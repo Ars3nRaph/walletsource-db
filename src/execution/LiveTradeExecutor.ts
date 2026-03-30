@@ -401,6 +401,7 @@ export class LiveTradeExecutor {
               feeSol: onChainBuy.feeSol, jitoTipSol, slippageSol,
               slippagePct: positionSol > 0 ? (slippageSol / positionSol * 100) : 0,
               parsedOk: onChainBuy.parsedOk,
+              latencyMs: result.latencyMs,
             });
             logger.info({ token: tokenMint, realSol: realSolSpent.toFixed(6), tokens: onChainBuy.tokenDelta.toString().slice(0, 10) }, '📊 BUY on-chain parsed (background)');
           } catch (e: any) { logger.warn({ error: e.message }, 'BUY background parse failed'); }
@@ -476,6 +477,7 @@ export class LiveTradeExecutor {
               txSigBuy: entryTxSig,
               parsedOk: onChainSell.parsedOk,
               buyReason,
+              latencyMs: result.latencyMs,
             });
 
             logger.info({
@@ -490,9 +492,13 @@ export class LiveTradeExecutor {
       return result;
     } catch (err: any) {
       logger.error({ error: err.message, token: tokenMint }, '❌ SELL FAIL — RETRY');
-      // Sell failures are critical — retry once
-      try { return await this.executeSell(tokenMint, signal); }
-      catch { return { success: false, error: err.message, latencyMs: Date.now() - t0 }; }
+      // Sell failures are critical — retry once (but NOT recursively to avoid PumpPortal ban)
+      if (!(signal as any)._retried) {
+        (signal as any)._retried = true;
+        try { return await this.executeSell(tokenMint, signal); }
+        catch { /* fall through */ }
+      }
+      return { success: false, error: err.message, latencyMs: Date.now() - t0 };
     }
   }
 
@@ -770,7 +776,7 @@ export class LiveTradeExecutor {
     tx: string; reason: string; pnl?: number; pnlPct?: number;
     tokensAmount?: bigint; feeSol?: number; jitoTipSol?: number;
     slippageSol?: number; slippagePct?: number;
-    txSigBuy?: string; parsedOk?: boolean; exitType?: string; pnlGross?: number; buyReason?: string;
+    txSigBuy?: string; parsedOk?: boolean; exitType?: string; pnlGross?: number; buyReason?: string; latencyMs?: number;
   }) {
     try {
       await this.pool.query(`
@@ -779,8 +785,8 @@ export class LiveTradeExecutor {
            reason, jito_bundle, jito_tip_sol, latency_ms,
            sol_actual, tokens_amount, fee_sol,
            slippage_sol, slippage_pct, tx_sig_buy, wallet_address, parsed_ok,
-           buy_strategy, strategy_version, exit_type, mc_usd, buyers, ratio, quality_score)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
+           buy_strategy, strategy_version, exit_type, mc_usd, buyers, ratio, quality_score, latency_ms)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
         [
           params.mint, params.side, params.solIn, params.solOut,
           params.pnl ?? null, params.pnlPct ?? null, params.tx,
@@ -802,6 +808,7 @@ export class LiveTradeExecutor {
           (() => { const m = (params.buyReason || params.reason).match(/(\d+)b\s/); return m ? parseInt(m[1]) : null; })(),  // buyers
           (() => { const m = (params.buyReason || params.reason).match(/(\d+\.\d+)x/); return m ? parseFloat(m[1]) : null; })(),  // ratio
           (() => { const m = (params.buyReason || params.reason).match(/Q(\d)/); return m ? parseInt(m[1]) : null; })(),  // quality_score
+          params.latencyMs ?? null,
         ]
       );
     } catch (e: any) {
