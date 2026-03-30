@@ -561,38 +561,84 @@ export class LiveTradeExecutor {
 
   private async buildSellTx(mint: PublicKey, tokenAmount: bigint): Promise<VersionedTransaction> {
     const buildT0 = Date.now();
-    // Convert raw token amount (with decimals) to UI amount
-    // pump.fun tokens have 6 decimals
     const uiAmount = Number(tokenAmount) / 1e6;
-    
-    // If tokenAmount is 0 (BUY parse not finished), sell max by using a huge amount
-    // PumpPortal will sell whatever we hold
     const sellAmount = uiAmount > 0 ? uiAmount : 999_999_999_999;
     
-    const response = await fetch('https://pumpportal.fun/api/trade-local', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: AbortSignal.timeout(5000),
-      body: JSON.stringify({
-        publicKey: this.keypair.publicKey.toBase58(),
-        action: 'sell',
-        mint: mint.toBase58(),
-        amount: sellAmount,
-        denominatedInSol: 'false',
-        slippage: Math.floor(this.config.slippageBps / 100),
-        priorityFee: 0.00005, // SOL
-        pool: 'pump',
-      }),
-    });
-    
-    if (response.status !== 200) {
+    // 1. Try PumpPortal first (pump.fun bonding curve)
+    try {
+      const response = await fetch('https://pumpportal.fun/api/trade-local', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(5000),
+        body: JSON.stringify({
+          publicKey: this.keypair.publicKey.toBase58(),
+          action: 'sell',
+          mint: mint.toBase58(),
+          amount: sellAmount,
+          denominatedInSol: 'false',
+          slippage: Math.floor(this.config.slippageBps / 100),
+          priorityFee: 0.00005,
+          pool: 'pump',
+        }),
+      });
+      
+      if (response.status === 200) {
+        const data = await response.arrayBuffer();
+        logger.info({ mint: mint.toBase58().slice(0, 12), ms: Date.now() - buildT0, via: 'PumpPortal' }, '🔨 SELL TX built');
+        return VersionedTransaction.deserialize(new Uint8Array(data));
+      }
+      
       const errText = await response.text();
-      throw new Error(`PumpPortal buildSellTx failed (${response.status}): ${errText}`);
+      // Check if bonding curve complete (migrated to Raydium)
+      if (errText.includes('BondingCurveComplete') || errText.includes('6005') || response.status === 400) {
+        logger.info({ mint: mint.toBase58().slice(0, 12) }, '🔄 Token migrated to Raydium — using Jupiter');
+      } else {
+        logger.warn({ status: response.status, error: errText.slice(0, 100) }, '⚠️ PumpPortal SELL failed — trying Jupiter');
+      }
+    } catch (e: any) {
+      logger.warn({ error: e.message }, '⚠️ PumpPortal SELL error — trying Jupiter');
     }
     
-    const data = await response.arrayBuffer();
-    const tx = VersionedTransaction.deserialize(new Uint8Array(data));
-    return tx;
+    // 2. Fallback: Jupiter (Raydium / any DEX)
+    return this.buildJupiterSellTx(mint, tokenAmount);
+  }
+
+  private async buildJupiterSellTx(mint: PublicKey, tokenAmount: bigint): Promise<VersionedTransaction> {
+    const rawAmount = tokenAmount > 0n ? tokenAmount.toString() : '999999999999';
+    
+    // Get quote
+    const quoteRes = await fetch(
+      `https://lite-api.jup.ag/swap/v1/quote?inputMint=${mint.toBase58()}&outputMint=So11111111111111111111111111111111111111112&amount=${rawAmount}&slippageBps=${this.config.slippageBps}`,
+      { signal: AbortSignal.timeout(5000) }
+    );
+    if (!quoteRes.ok) throw new Error(`Jupiter quote failed: ${quoteRes.status}`);
+    const quote = await quoteRes.json() as any;
+    
+    const outSol = parseInt(quote.outAmount) / 1e9;
+    logger.info({ mint: mint.toBase58().slice(0, 12), outSol: outSol.toFixed(6), impact: quote.priceImpactPct }, '🪐 Jupiter quote');
+    
+    // Get swap TX
+    const swapRes = await fetch('https://lite-api.jup.ag/swap/v1/swap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(10000),
+      body: JSON.stringify({
+        quoteResponse: quote,
+        userPublicKey: this.keypair.publicKey.toBase58(),
+        wrapAndUnwrapSol: true,
+        dynamicComputeUnitLimit: true,
+        dynamicSlippage: true,
+        prioritizationFeeLamports: { jitoTipLamports: 50000 },
+      }),
+    });
+    if (!swapRes.ok) throw new Error(`Jupiter swap failed: ${swapRes.status}`);
+    
+    const swapData = await swapRes.json() as any;
+    if (swapData.error) throw new Error(`Jupiter swap error: ${swapData.error}`);
+    
+    const txBuf = Buffer.from(swapData.swapTransaction, 'base64');
+    logger.info({ mint: mint.toBase58().slice(0, 12), via: 'Jupiter' }, '🔨 SELL TX built (Jupiter)');
+    return VersionedTransaction.deserialize(new Uint8Array(txBuf));
   }
 
 
