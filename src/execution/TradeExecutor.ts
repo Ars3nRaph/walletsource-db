@@ -93,6 +93,7 @@ interface OpenPosition {
   // ═══ 5-TIER EXIT SYSTEM: 20% at each level, trail remainder ═══
   tiersSold?: number;            // bitmask: tiers already sold (0=none, 1=T1, 3=T1+T2, 7=T1+T2+T3, 15=all4)
   tiersRemainingPct?: number;    // fraction still held (1.0 → 0.8 → 0.6 → 0.4 → 0.2)
+  tierExitPnls?: number[];       // P&L% at each tier exit, for blended calculation
   eliteWallets?: Set<string>;  // which ELITE wallets triggered this entry
 
 }
@@ -181,6 +182,26 @@ export class TradeExecutor {
 
   // ═══ TIER EXIT HOOK ═══
   // Override in PaperTradeExecutor to forward tier exits to LiveTradeExecutor
+
+  /** Compute blended P&L accounting for tier exits */
+  protected getBlendedPnl(pos: OpenPosition, finalPnlPct: number): number {
+    const tierExits = pos.tierExitPnls || [];
+    const tierSellPct = getRuntimeConfig()?.tiers?.sell_pct || 0.20;
+    
+    if (tierExits.length === 0) return finalPnlPct;
+    
+    // blended = sum(tierPnl * tierSellPct) + finalPnl * remaining
+    let blended = 0;
+    let allocated = 0;
+    for (const tierPnl of tierExits) {
+      blended += tierPnl * tierSellPct;
+      allocated += tierSellPct;
+    }
+    const remaining = Math.max(0, 1.0 - allocated);
+    blended += finalPnlPct * remaining;
+    return blended;
+  }
+
   protected onTierExit(tokenAddress: string, pctToSell: number, reason: string, currentMC: number): void {
     // no-op in base class
   }
@@ -611,6 +632,9 @@ export class TradeExecutor {
           const pctToSell = tierSellPct / remaining; // sell 20% of ORIGINAL position = X% of current
           remaining -= tierSellPct;
           rtPos.tiersRemainingPct = remaining;
+          // Store tier P&L for blended calculation
+          if (!rtPos.tierExitPnls) rtPos.tierExitPnls = [];
+          rtPos.tierExitPnls.push(rtPnl);
           this.onTierExit(tokenAddress, pctToSell, `P&L +${rtPnl.toFixed(0)}% hit +${tierLevels[i]}% tier (${Math.round(remaining*100)}% left)`, mcUsd);
         }
       }
@@ -762,12 +786,24 @@ export class TradeExecutor {
       }
       
       if (rtShouldSell) {
+        // Compute blended P&L accounting for tier exits (paper matches live)
+        const blendedPnl = this.getBlendedPnl(rtPos, rtPnl);
+        const tierCount = rtPos.tierExitPnls?.length || 0;
+        if (tierCount > 0) {
+          // Replace P&L in reason with blended value for paper DB accuracy
+          rtReason = rtReason.replace(/P&L\s+[+-]?[\d.]+%/, `P&L ${blendedPnl >= 0 ? '+' : ''}${blendedPnl.toFixed(1)}%`);
+          rtReason = rtReason.replace(/captured\s+~?[\d.]+%/, `captured ~${blendedPnl.toFixed(1)}%`);
+          rtReason += ` | 🔶${tierCount}T blended (raw ${rtPnl.toFixed(1)}%)`;
+        }
+        
         logger.info({ 
           token: tokenAddress.slice(0, 8), 
           mc: mcUsd.toFixed(0), 
           peak: rtPos.highestMC.toFixed(0),
           pnl: rtPnl.toFixed(1),
-          reason: rtReason.slice(0, 80)
+          blendedPnl: blendedPnl.toFixed(1),
+          tiers: tierCount,
+          reason: rtReason.slice(0, 100)
         }, '⚡ REAL-TIME EXIT triggered');
         
         // DIRECT SELL — don't go through async maybeEvaluateLive
