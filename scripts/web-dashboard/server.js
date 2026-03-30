@@ -925,10 +925,10 @@ app.get('/api/live-wallet', async (req, res) => {
 
     // 2. Récupérer les BUY depuis live_trades_v2
     const { rows: buys } = await pool.query(`
-      SELECT token_address, sol_intended, sol_actual,
+      SELECT id, side, token_address, sol_intended, sol_actual,
              fee_sol, jito_tip_sol, slippage_sol, slippage_pct,
              tx_signature, reason, buy_strategy, strategy_version,
-             quality_score, buyers, ratio, mc_usd, latency_ms, executed_at, wallet_address, parsed_ok
+             quality_score, buyers, ratio, mc_usd, latency_ms, executed_at, wallet_address, parsed_ok, balance_after
       FROM live_trades_v2 WHERE side IN ('BUY','DEPOSIT','WITHDRAW') ORDER BY executed_at
     `);
 
@@ -1083,7 +1083,7 @@ app.get('/api/live-wallet', async (req, res) => {
     
     let runBal = finalBal;
     // Also account for open positions (their buy cost is "locked" in tokens)
-    const openTrades = tradeLog.filter(t => t.action === 'OPEN');
+    const openTrades = tradeLog.filter(t => t.action === 'OPEN' && t.buy_strategy !== 'DEPOSIT' && t.buy_strategy !== 'WITHDRAW');
     for (const ot of openTrades) {
       runBal += ot.position_sol || 0; // add back locked SOL
     }
