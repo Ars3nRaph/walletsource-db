@@ -743,7 +743,9 @@ app.get('/api/paper-trades/:token/chart', async (req, res) => {
 app.get('/api/wallet-sim', async (req, res) => {
   try {
     const INITIAL_SOL = 10;
-    const BUY_SLIP = 0.025, SELL_SLIP = 0.035, PUMP_FEE = 0.01;
+    // Realistic fees from live trade data (30 Mar 2026)
+    // Buy slip: 6.5% avg (entry cost higher than MC). Sell slip: 5% normal, 15% HS (rug gaps)
+    const BUY_SLIP = 0.065, SELL_SLIP_NORMAL = 0.05, SELL_SLIP_HS = 0.15, PUMP_FEE = 0.01;
     const JITO_BUY = 0.0001, JITO_SELL = 0.00045, BASE_FEE = 0.000005;
 
     const { rows: buys } = await pool.query(
@@ -804,7 +806,9 @@ app.get('/api/wallet-sim', async (req, res) => {
 
       if (sell && sellMC && buyMC > 0) {
         const gross = effBuy * (sellMC / buyMC);
-        sSlip = gross * SELL_SLIP; sPump = gross * PUMP_FEE; sJito = JITO_SELL + BASE_FEE;
+        const isHS = (sell.exit_type || sell.reason || '').includes('HARD_STOP');
+        const sellSlip = isHS ? SELL_SLIP_HS : SELL_SLIP_NORMAL;
+        sSlip = gross * sellSlip; sPump = gross * PUMP_FEE; sJito = JITO_SELL + BASE_FEE;
         const net = gross - sSlip - sPump - sJito;
         balance += net;
         pnlSOL = net - pos - bJito;
@@ -860,7 +864,7 @@ app.get('/api/wallet-sim', async (req, res) => {
       success: true,
       config: {
         initial_sol: INITIAL_SOL, sol_price_usd: await getSolPrice(),
-        slippage_buy_bps: BUY_SLIP * 10000, slippage_sell_bps: SELL_SLIP * 10000,
+        slippage_buy_bps: BUY_SLIP * 10000, slippage_sell_bps: SELL_SLIP_NORMAL * 10000, slippage_sell_hs_bps: SELL_SLIP_HS * 10000,
         pump_fee_bps: PUMP_FEE * 10000, priority_fee_sol: JITO_BUY, jito_tip_buy_sol: JITO_BUY, jito_tip_sell_sol: JITO_SELL, max_mc_pct: 10
       },
       summary: {
