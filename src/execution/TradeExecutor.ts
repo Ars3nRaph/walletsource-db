@@ -689,9 +689,9 @@ export class TradeExecutor {
       // 1. Tiered trailing stop — with inter-tier floor protection
       if (rtDropLimit > 0 && rtDropFromPeak > rtDropLimit) {
         // ═══ INTER-TIER FLOOR: don't trail-sell if still above last tier level ═══
-        // After selling at +30%, only trail if P&L drops below +25% (protect tier gains)
+        // After selling at +30%, only trail if P&L drops below +40% (+10% above tier level)
         // This lets the token breathe between tiers instead of cutting at every correction
-        const tierFloors = [0, 25, 55, 90, 180]; // floor P&L% after 0/1/2/3/4 tiers sold
+        const tierFloors = [0, 40, 70, 110, 210]; // floor P&L% after 0/1/2/3/4 tiers sold (+10% above each tier)
         const tiersCount = ((rtPos.tiersSold || 0) & 1) + (((rtPos.tiersSold || 0) >> 1) & 1) + (((rtPos.tiersSold || 0) >> 2) & 1) + (((rtPos.tiersSold || 0) >> 3) & 1); // popcount
         const tierFloor = tierFloors[tiersCount] || 0;
         
