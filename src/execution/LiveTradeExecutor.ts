@@ -276,7 +276,33 @@ export class LiveTradeExecutor {
       return null;
     }
 
-    if (signal.action === 'BUY')  return this.executeBuy(tokenMint, signal, currentMC);
+    // ━━━ PER-STRATEGY LIVE GUARD (defense in depth) ━━━
+    if (signal.action === 'BUY') {
+      const reason = signal.reason || '';
+      const isSwarm = reason.includes('SWARM');
+      const isNeo = reason.includes('NEO');
+      const isCartel = reason.includes('CARTEL');
+      const isStd = !isSwarm && !isNeo && !isCartel;
+      
+      if (isStd && process.env.LIVE_STD !== 'true') {
+        logger.info({ token: tokenMint }, '🚫 LIVE BUY blocked — STD disabled');
+        return null;
+      }
+      if (isNeo && process.env.LIVE_NEO !== 'true') {
+        logger.info({ token: tokenMint }, '🚫 LIVE BUY blocked — NEO disabled');
+        return null;
+      }
+      if (isSwarm && process.env.LIVE_SWARM !== 'true') {
+        logger.info({ token: tokenMint }, '🚫 LIVE BUY blocked — SWARM disabled');
+        return null;
+      }
+      if (isCartel) {
+        logger.info({ token: tokenMint }, '🚫 LIVE BUY blocked — CARTEL disabled');
+        return null;
+      }
+      
+      return this.executeBuy(tokenMint, signal, currentMC);
+    }
     if (signal.action === 'SELL') return this.executeSell(tokenMint, signal, currentMC);
     return null;
   }
