@@ -1603,7 +1603,7 @@ async function generateCSV(year, month) {
       latency_ms,
       parsed_ok,
       balance_after,
-      sol_price_eur,
+      sol_price_chf,
       sol_price_usd
     FROM live_trades_v2
     WHERE executed_at >= $1 AND executed_at < $2
@@ -1620,8 +1620,8 @@ async function generateCSV(year, month) {
     'PnL_SOL','PnL_PCT','PnL_Gross_SOL','MC_USD','Ratio','Buyers',
     'Quality','TX_Signature','TX_Sig_Buy','Wallet','Jito_Bundle',
     'Latency_MS','Parsed_OK','Balance_After_SOL',
-    'SOL_Price_EUR','SOL_Price_USD',
-    'Acquisition_EUR','Cession_EUR','PnL_EUR','Fees_EUR','Portfolio_Value_EUR',
+    'SOL_Price_CHF','SOL_Price_USD',
+    'Acquisition_CHF','Cession_CHF','PnL_CHF','Fees_CHF','Portfolio_Value_CHF',
     'Reason'
   ];
   
@@ -1672,14 +1672,14 @@ async function generateCSV(year, month) {
       r.latency_ms || '',
       r.parsed_ok ?? '',
       r.balance_after || '',
-      r.sol_price_eur || '',
+      r.sol_price_chf || '',
       r.sol_price_usd || '',
       // Fiscal EUR calculations
-      r.side === 'BUY' && r.sol_actual && r.sol_price_eur ? (parseFloat(r.sol_actual) * parseFloat(r.sol_price_eur)).toFixed(2) : '',
-      r.side === 'SELL' && r.sol_out_actual && r.sol_price_eur ? (parseFloat(r.sol_out_actual) * parseFloat(r.sol_price_eur)).toFixed(2) : '',
-      r.pnl_sol && r.sol_price_eur ? (parseFloat(r.pnl_sol) * parseFloat(r.sol_price_eur)).toFixed(2) : '',
-      (parseFloat(r.fee_sol || 0) + parseFloat(r.jito_tip_sol || 0)) * (parseFloat(r.sol_price_eur) || 0) ? ((parseFloat(r.fee_sol || 0) + parseFloat(r.jito_tip_sol || 0)) * parseFloat(r.sol_price_eur)).toFixed(4) : '',
-      r.balance_after && r.sol_price_eur ? (parseFloat(r.balance_after) * parseFloat(r.sol_price_eur)).toFixed(2) : '',
+      r.side === 'BUY' && r.sol_actual && r.sol_price_chf ? (parseFloat(r.sol_actual) * parseFloat(r.sol_price_chf)).toFixed(2) : '',
+      r.side === 'SELL' && r.sol_out_actual && r.sol_price_chf ? (parseFloat(r.sol_out_actual) * parseFloat(r.sol_price_chf)).toFixed(2) : '',
+      r.pnl_sol && r.sol_price_chf ? (parseFloat(r.pnl_sol) * parseFloat(r.sol_price_chf)).toFixed(2) : '',
+      (parseFloat(r.fee_sol || 0) + parseFloat(r.jito_tip_sol || 0)) * (parseFloat(r.sol_price_chf) || 0) ? ((parseFloat(r.fee_sol || 0) + parseFloat(r.jito_tip_sol || 0)) * parseFloat(r.sol_price_chf)).toFixed(4) : '',
+      r.balance_after && r.sol_price_chf ? (parseFloat(r.balance_after) * parseFloat(r.sol_price_chf)).toFixed(2) : '',
       escapeCsv(r.reason || '')
     ].map(v => escapeCsv(v)).join(',');
     
