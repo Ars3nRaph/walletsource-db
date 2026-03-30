@@ -94,6 +94,9 @@ interface OpenPosition {
   tiersSold?: number;            // bitmask: tiers already sold (0=none, 1=T1, 3=T1+T2, 7=T1+T2+T3, 15=all4)
   tiersRemainingPct?: number;    // fraction still held (1.0 → 0.8 → 0.6 → 0.4 → 0.2)
   tierExitPnls?: number[];       // P&L% at each tier exit, for blended calculation
+  pendingSellAt?: number;         // timestamp when sell signal fired (delayed execution)
+  pendingSellReason?: string;     // reason at signal time
+  pendingSellPnl?: number;        // P&L% at signal time
   eliteWallets?: Set<string>;  // which ELITE wallets triggered this entry
 
 }
@@ -612,12 +615,58 @@ export class TradeExecutor {
     // ══════════════════════════════════════════════════════════════
     const rtPos = this.openPositions.get(tokenAddress);
     if (rtPos && mcUsd > 0) {
-      // Simulate real sell slippage for paper accuracy (pump.fun: ~3.5% slippage + 1% fee + price drift)
-      const PAPER_SELL_SLIPPAGE = (getRuntimeConfig()?.general?.paper_sell_slippage_pct || 8) / 100; // 8% default
-      const slippedMC = mcUsd * (1 - PAPER_SELL_SLIPPAGE); // MC we'd actually sell at
-      const rtPnl = ((slippedMC - rtPos.entryMC) / rtPos.entryMC) * 100;
+      // ═══ DELAYED EXECUTION: simulate 3s TX latency for realistic paper P&L ═══
+      const TX_LATENCY_MS = (getRuntimeConfig()?.general?.paper_tx_latency_ms || 3000);
+      
+      // If pending sell, check if latency elapsed
+      if (rtPos.pendingSellAt) {
+        const elapsed = Date.now() - rtPos.pendingSellAt;
+        if (elapsed < TX_LATENCY_MS) {
+          return; // Still waiting — price continues to move
+        }
+        // Latency elapsed: sell NOW at current (delayed) MC
+        const delayedPnl = ((mcUsd - rtPos.entryMC) / rtPos.entryMC) * 100;
+        const originalPnl = rtPos.pendingSellPnl || 0;
+        let reason = rtPos.pendingSellReason || '';
+        // Update P&L in reason with delayed price
+        reason = reason.replace(/P&L\s+[+-]?[\d.]+%/, `P&L ${delayedPnl >= 0 ? '+' : ''}${delayedPnl.toFixed(1)}%`);
+        reason = reason.replace(/captured\s+~?[\d.]+%/, `captured ~${delayedPnl.toFixed(1)}%`);
+        reason += ` | ⏱️${(elapsed/1000).toFixed(1)}s delay (signal was ${originalPnl >= 0 ? '+' : ''}${originalPnl.toFixed(1)}%)`;
+        
+        // Compute blended P&L with tiers
+        const blendedPnl = this.getBlendedPnl(rtPos, delayedPnl);
+        const tierCount = rtPos.tierExitPnls?.length || 0;
+        if (tierCount > 0) {
+          reason = reason.replace(/P&L\s+[+-]?[\d.]+%/, `P&L ${blendedPnl >= 0 ? '+' : ''}${blendedPnl.toFixed(1)}%`);
+          reason = reason.replace(/captured\s+~?[\d.]+%/, `captured ~${blendedPnl.toFixed(1)}%`);
+          reason += ` | 🔶${tierCount}T`;
+        }
+        
+        logger.info({ 
+          token: tokenAddress.slice(0, 8), 
+          signalPnl: originalPnl.toFixed(1),
+          delayedPnl: delayedPnl.toFixed(1),
+          blendedPnl: blendedPnl.toFixed(1),
+          delayMs: elapsed,
+        }, '⏱️ DELAYED SELL executed after TX latency simulation');
+        
+        const rtSellResult = this.sell(100, 1.0, 'RIDE', reason, this.emptySignals());
+        this.openPositions.delete(tokenAddress);
+        const rtExitType = reason.includes('HARD_STOP') ? 'HARD_STOP' : reason.includes('RUGGER') ? 'RUGGER_TARGET' : 'TRAIL';
+        this.closedTokens.set(tokenAddress, { 
+          exitType: rtExitType, exitMC: mcUsd, exitTime: Date.now(), 
+          entryMC: rtPos.entryMC, peakMC: rtPos.highestMC, 
+          reentryCount: rtExitType === 'TRAIL' ? 0 : 99 
+        });
+        this.ruggerPositions.delete(tokenAddress);
+        this.onSweepClose(tokenAddress, rtSellResult, mcUsd);
+        this.onLiveSignal(rtSellResult, tokenAddress, mcUsd);
+        return;
+      }
+      
+      const rtPnl = ((mcUsd - rtPos.entryMC) / rtPos.entryMC) * 100;
       const rtHoldSec = (Date.now() - rtPos.entryTime.getTime()) / 1000;
-      const rtPeakPnl = ((rtPos.highestMC * (1 - PAPER_SELL_SLIPPAGE) - rtPos.entryMC) / rtPos.entryMC) * 100;
+      const rtPeakPnl = ((rtPos.highestMC - rtPos.entryMC) / rtPos.entryMC) * 100;
       const rtDropFromPeak = rtPos.highestMC > 0 ? (rtPos.highestMC - mcUsd) / rtPos.highestMC : 0;
       
       // ═══ 5-TIER EXIT: sell 20% at +30%, +60%, +100%, +200%, trail remainder ═══
@@ -736,8 +785,7 @@ export class TradeExecutor {
           // Still above floor — suppress trail, let it ride to next tier
           // (but log for debugging)
         } else {
-          const capturedMC = rtPos.highestMC * (1 - rtDropLimit) * (1 - PAPER_SELL_SLIPPAGE);
-          const captured = ((capturedMC - rtPos.entryMC) / rtPos.entryMC * 100).toFixed(1);
+          const captured = ((rtPos.highestMC * (1 - rtDropLimit) - rtPos.entryMC) / rtPos.entryMC * 100).toFixed(1);
           rtReason = `⚡ RT-TRAIL — drop -${(rtDropFromPeak*100).toFixed(0)}%>${(rtDropLimit*100).toFixed(0)}% from peak +${rtPeakPnl.toFixed(0)}% | captured ~${captured}% | sellers ${rtSellerRatio >= 0 ? (rtSellerRatio*100).toFixed(0)+'%' : 'n/a'}`;
           rtShouldSell = true;
           this.consecutiveHardStops = 0;
@@ -790,42 +838,21 @@ export class TradeExecutor {
       }
       
       if (rtShouldSell) {
-        // Compute blended P&L accounting for tier exits (paper matches live)
-        const blendedPnl = this.getBlendedPnl(rtPos, rtPnl);
-        const tierCount = rtPos.tierExitPnls?.length || 0;
-        if (tierCount > 0) {
-          // Replace P&L in reason with blended value for paper DB accuracy
-          rtReason = rtReason.replace(/P&L\s+[+-]?[\d.]+%/, `P&L ${blendedPnl >= 0 ? '+' : ''}${blendedPnl.toFixed(1)}%`);
-          rtReason = rtReason.replace(/captured\s+~?[\d.]+%/, `captured ~${blendedPnl.toFixed(1)}%`);
-          rtReason += ` | 🔶${tierCount}T blended (raw ${rtPnl.toFixed(1)}%)`;
-        }
+        // DON'T sell immediately — queue for delayed execution (TX latency simulation)
+        // Live signal fires IMMEDIATELY (no delay for real trades)
+        this.onLiveSignal(this.sell(100, 1.0, 'RIDE', rtReason, this.emptySignals()), tokenAddress, mcUsd);
+        
+        rtPos.pendingSellAt = Date.now();
+        rtPos.pendingSellReason = rtReason;
+        rtPos.pendingSellPnl = rtPnl;
         
         logger.info({ 
           token: tokenAddress.slice(0, 8), 
           mc: mcUsd.toFixed(0), 
-          peak: rtPos.highestMC.toFixed(0),
           pnl: rtPnl.toFixed(1),
-          blendedPnl: blendedPnl.toFixed(1),
-          tiers: tierCount,
-          reason: rtReason.slice(0, 100)
-        }, '⚡ REAL-TIME EXIT triggered');
-        
-        // DIRECT SELL — don't go through async maybeEvaluateLive
-        const rtSellResult = this.sell(100, 1.0, 'RIDE', rtReason, this.emptySignals());
-        this.openPositions.delete(tokenAddress);
-        const rtExitType = rtReason.includes('HARD_STOP') ? 'HARD_STOP' : rtReason.includes('RUGGER') ? 'RUGGER_TARGET' : 'TRAIL';
-        // v2.2: cartelConsecHS ne se reset PAS sur win (positions concurrentes faussaient le compteur)
-        // Reset automatique quand le circuit breaker expire (30min)
-        this.closedTokens.set(tokenAddress, { 
-          exitType: rtExitType, exitMC: mcUsd, exitTime: Date.now(), 
-          entryMC: rtPos.entryMC, peakMC: rtPos.highestMC, 
-          reentryCount: rtExitType === 'TRAIL' ? 0 : 99 
-        });
-        this.ruggerPositions.delete(tokenAddress);
-        // Log to paper trades
-        this.onSweepClose(tokenAddress, rtSellResult, mcUsd);
-                this.onLiveSignal(rtSellResult, tokenAddress, mcUsd);
-        return; // Done — position closed instantly
+          reason: rtReason.slice(0, 80)
+        }, '⏱️ SELL SIGNAL — waiting TX latency before paper execution');
+        return;
       }
     }
 
@@ -836,8 +863,7 @@ export class TradeExecutor {
     const pos = this.openPositions.get(tokenAddress);
     const entryMC = pos?.entryMC || 0;
     const exitMC = mc || pos?.lowestMCAfterEntry || entryMC;
-    const SWEEP_SLIP = 0.08;
-    const pnl = entryMC > 0 ? ((exitMC * (1 - SWEEP_SLIP) - entryMC) / entryMC * 100).toFixed(1) : '0';
+    const pnl = entryMC > 0 ? ((exitMC - entryMC) / entryMC * 100).toFixed(1) : '0';
     this.openPositions.delete(tokenAddress);
     this.closedTokens.set(tokenAddress, { exitType: 'SWEEP', exitMC: exitMC, exitTime: Date.now(), entryMC, peakMC: pos?.highestMC || 0, reentryCount: 99 });
     // Log sweep to paper-trades via onTrade if available
