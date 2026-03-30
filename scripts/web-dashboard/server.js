@@ -905,7 +905,7 @@ app.get('/api/live-wallet', async (req, res) => {
       SELECT token_address, sol_intended, sol_actual,
              fee_sol, jito_tip_sol, slippage_sol, slippage_pct,
              tx_signature, reason, buy_strategy, strategy_version,
-             quality_score, latency_ms, executed_at, wallet_address, parsed_ok
+             quality_score, buyers, ratio, mc_usd, latency_ms, executed_at, wallet_address, parsed_ok
       FROM live_trades_v2 WHERE side='BUY' ORDER BY executed_at
     `);
 
@@ -915,7 +915,7 @@ app.get('/api/live-wallet', async (req, res) => {
              pnl_sol, pnl_pct, pnl_gross_sol,
              fee_sol, jito_tip_sol, slippage_sol,
              tx_signature, tx_sig_buy, reason, exit_type,
-             latency_ms, executed_at, parsed_ok
+             mc_usd, latency_ms, executed_at, parsed_ok
       FROM live_trades_v2 WHERE side='SELL' ORDER BY executed_at
     `);
 
@@ -992,8 +992,14 @@ app.get('/api/live-wallet', async (req, res) => {
         buy_strategy: buy.buy_strategy || 'LIVE',
         strategy_version: buy.strategy_version || 'LIVE',
         quality_score: buy.quality_score,
-        buy_mc: null, sell_mc: null, mc_change_pct: null,
+        buy_mc: parseFloat(buy.mc_usd) || null,
+        sell_mc: sell ? (parseFloat(sell.mc_usd) || null) : null,
+        mc_change_pct: (parseFloat(buy.mc_usd) && sell && parseFloat(sell.mc_usd)) 
+          ? parseFloat(((parseFloat(sell.mc_usd) - parseFloat(buy.mc_usd)) / parseFloat(buy.mc_usd) * 100).toFixed(1)) 
+          : null,
         confidence: null,
+        buyers: buy.buyers ? parseInt(buy.buyers) : null,
+        ratio: buy.ratio ? parseFloat(buy.ratio) : null,
         buy_reason: buy.reason,
         exit_reason: exitReason,
         exit_type: exitType,
