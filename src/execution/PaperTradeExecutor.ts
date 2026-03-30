@@ -273,14 +273,17 @@ export class PaperTradeExecutor extends TradeExecutor {
     const isCartel = reason.includes('CARTEL') || pos?.cartelStrategy;
     const isStd = !isSwarm && !isNeo && !isCartel;
     
-    const liveStd = process.env.LIVE_STD === 'true';
-    const liveNeo = process.env.LIVE_NEO === 'true';
-    const liveSwarm = process.env.LIVE_SWARM === 'true';
-    
-    if (isStd && !liveStd) return;
-    if (isNeo && !liveNeo) return;
-    if (isSwarm && !liveSwarm) return;
-    if (isCartel) return; // CARTEL always off
+    // Only block BUY signals — SELL must always go through to close open positions
+    if (signal.action === 'BUY') {
+      const liveStd = process.env.LIVE_STD === 'true';
+      const liveNeo = process.env.LIVE_NEO === 'true';
+      const liveSwarm = process.env.LIVE_SWARM === 'true';
+      
+      if (isStd && !liveStd) return;
+      if (isNeo && !liveNeo) return;
+      if (isSwarm && !liveSwarm) return;
+      if (isCartel) return; // CARTEL always off
+    }
     
     this.liveExecutor.executeSignal(signal, tokenAddress, currentMC)
       .then((result: any) => {
