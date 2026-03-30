@@ -944,34 +944,39 @@ export class LiveTradeExecutor {
   }
 
   // ━━━ DEPOSIT/WITHDRAW DETECTION ━━━
+  private _lastDetectorBalance: number | null = null;
+  
   async detectDepositsWithdrawals(): Promise<void> {
     try {
       const wallet = this.keypair.publicKey.toBase58();
       const currentBal = await this.getBalance();
       
-      // Get last known balance from DB
-      const { rows } = await this.pool.query(
-        'SELECT balance_after FROM live_trades_v2 WHERE balance_after IS NOT NULL ORDER BY executed_at DESC LIMIT 1'
-      );
-      const lastBal = rows[0]?.balance_after ? parseFloat(rows[0].balance_after) : null;
+      // Use in-memory last known balance (updates every cycle) to avoid DB stale reference
+      // Initialize from DB on first run
+      if (this._lastDetectorBalance === null) {
+        const { rows } = await this.pool.query(
+          'SELECT balance_after FROM live_trades_v2 WHERE balance_after IS NOT NULL ORDER BY executed_at DESC LIMIT 1'
+        );
+        this._lastDetectorBalance = rows[0]?.balance_after ? parseFloat(rows[0].balance_after) : currentBal;
+      }
       
-      if (lastBal === null) return; // no history yet
+      const diff = currentBal - this._lastDetectorBalance;
       
-      const diff = currentBal - lastBal;
-      // Ignore tiny diffs (< 0.001 SOL) — rounding / rent
-      if (Math.abs(diff) < 0.001) return;
+      // Always update reference — prevents drift between cycles
+      this._lastDetectorBalance = currentBal;
       
-      // Check if there are any recent trades OR open positions that explain the balance change
-      // Use 5min window (detector runs every 2min, trade+parse can take time)
+      // Ignore tiny diffs (< 0.005 SOL) — rounding / rent / dust
+      if (Math.abs(diff) < 0.005) return;
+      
+      // Check if there are any recent trades that explain the balance change
       const { rows: recentTrades } = await this.pool.query(
         "SELECT COUNT(*) as c FROM live_trades_v2 WHERE executed_at > NOW() - INTERVAL '5 minutes' AND side IN ('BUY','SELL')"
       );
       if (parseInt(recentTrades[0].c) > 0) return; // recent trade explains the diff
       
-      // Also check if there are any open live positions (BUY without matching SELL)
-      // Their existence means balance changes are from trading, not manual transfers
+      // Check for open live positions
       const { rows: openPos } = await this.pool.query(
-        "SELECT COUNT(*) as c FROM live_trades_v2 b WHERE b.side = 'BUY' AND NOT EXISTS (SELECT 1 FROM live_trades_v2 s WHERE s.side = 'SELL' AND s.token_address = b.token_address AND s.executed_at > b.executed_at)"
+        "SELECT COUNT(*) as c FROM live_trades_v2 b WHERE b.side = 'BUY' AND b.token_address != 'SOL' AND NOT EXISTS (SELECT 1 FROM live_trades_v2 s WHERE s.side = 'SELL' AND s.token_address = b.token_address AND s.executed_at > b.executed_at)"
       );
       if (parseInt(openPos[0].c) > 0) return; // open positions explain balance diff
       
