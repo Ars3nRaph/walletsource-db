@@ -939,7 +939,11 @@ function renderPage() {
           if(t.action==='OPEN') return '—';
           // RT-TRAIL : afficher le peak réel capturé depuis le reason ou peak_pct
           if(t.exit_type&&t.exit_type.includes('TRAIL')){
-            // Extraire "captured ~X%" depuis le exit_reason
+            // Multi-sell (tier+trail): show real P&L, not extracted "captured"
+            if((t.exit_reason||'').includes('TIER EXIT')) {
+              return t.pnl_pct!==null?(t.pnl_pct>=0?'+':'')+Number(t.pnl_pct).toFixed(1)+'%':'—';
+            }
+            // Single trail: extract "captured ~X%" or peak
             const m = (t.exit_reason||'').match(/captured ~([\d.]+)%/);
             const captured = m ? parseFloat(m[1]) : null;
             const peak = t.peak_pct || null;
