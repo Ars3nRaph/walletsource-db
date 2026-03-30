@@ -1472,6 +1472,9 @@ export class TradeExecutor {
     if (this.openPositions.size >= 7) { // 3 STD + 1 NEO + 1 CARTEL + 2 SWARM = 7 max
       return this.none(`🚫 Max total positions (7) — skip`, 'RIDE');
     }
+    if (!isNeoEntry && stdCount >= MAX_STD) {
+      return this.none(`🚫 STD pool full (${stdCount}/${MAX_STD}) — skip`, 'RIDE');
+    }
 
     const uniqueBuyerCount = state?.uniqueBuyers?.size ?? 0;
     const buyVol = state?.buyVol ?? 0;
