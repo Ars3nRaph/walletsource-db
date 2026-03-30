@@ -1272,6 +1272,75 @@ app.post('/api/market-regime/auto', async (req, res) => {
   res.json({ success: true, autoEnabled: _autoRegimeEnabled, currentRegime: _lastRegime });
 });
 
+// POST /api/send-sol — send SOL from trading wallet
+app.post('/api/send-sol', async (req, res) => {
+  try {
+    const { to, amount } = req.body;
+    if (!to || !amount || amount <= 0) return res.status(400).json({ success: false, error: 'Invalid params' });
+    
+    const cp = await import('child_process');
+    const fs = await import('fs');
+    
+    // Build and execute transfer via a small Node script that uses the existing keypair
+    const script = `
+      import { Connection, Keypair, PublicKey, Transaction, SystemProgram, sendAndConfirmTransaction } from '@solana/web3.js';
+      import bs58 from 'bs58';
+      import dotenv from 'dotenv';
+      dotenv.config();
+      
+      const conn = new Connection(process.env.HELIUS_RPC_URL || 'https://mainnet.helius-rpc.com/?api-key=' + process.env.HELIUS_API_KEY);
+      const kp = Keypair.fromSecretKey(bs58.decode(process.env.TRADING_WALLET_PRIVATE_KEY));
+      const tx = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: kp.publicKey,
+          toPubkey: new PublicKey('${to}'),
+          lamports: Math.round(${amount} * 1e9),
+        })
+      );
+      const sig = await sendAndConfirmTransaction(conn, tx, [kp], { commitment: 'confirmed' });
+      console.log(JSON.stringify({ success: true, tx: sig }));
+    `;
+    
+    const tmpFile = '/tmp/send-sol-' + Date.now() + '.mjs';
+    fs.writeFileSync(tmpFile, script);
+    
+    const result = cp.execSync('node ' + tmpFile, { 
+      cwd: path.join(__dirname, '../..'),
+      timeout: 30000,
+      env: { ...process.env, NODE_PATH: path.join(__dirname, '../../node_modules') }
+    }).toString().trim();
+    
+    fs.unlinkSync(tmpFile);
+    
+    const parsed = JSON.parse(result);
+    if (parsed.success) {
+      // Log the withdrawal in DB
+      const balance = await (async () => {
+        try {
+          const rpcRes = await fetch(process.env.HELIUS_RPC_URL, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [process.env.TRADING_WALLET_ADDRESS] })
+          });
+          const d = await rpcRes.json();
+          return (d?.result?.value ?? 0) / 1e9;
+        } catch { return null; }
+      })();
+      
+      await pool.query(
+        "INSERT INTO live_trades_v2 (token_address, side, sol_actual, reason, wallet_address, balance_after, tx_signature, executed_at, parsed_ok) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), true)",
+        ['SOL', 'WITHDRAW', amount, '📤 WITHDRAW ' + amount.toFixed(4) + ' SOL → ' + to.slice(0, 8) + '...', process.env.TRADING_WALLET_ADDRESS, balance, parsed.tx]
+      );
+      
+      res.json({ success: true, tx: parsed.tx, balance });
+    } else {
+      res.json({ success: false, error: 'TX failed' });
+    }
+  } catch (err) {
+    console.error('send-sol error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // GET /api/config — read all strategy params from .env + TradeExecutor constants
 app.get('/api/config', async (req, res) => {
   try {

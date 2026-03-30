@@ -173,7 +173,31 @@
     </header>
     <div class="config-bar" id="config-bar"></div>
     <div class="wallet-header">
-      <div class="balance-card main"><div class="label">Balance</div><div class="amount" id="bal-sol">—</div><div class="sub" id="bal-usd">—</div></div>
+      <div class="balance-card main"><div class="label">Balance <button onclick="openSendModal()" style="background:none;border:1px solid #30363d;color:#8b949e;border-radius:6px;padding:2px 8px;font-size:10px;cursor:pointer;margin-left:8px;vertical-align:middle" onmouseover="this.style.borderColor='#58a6ff';this.style.color='#58a6ff'" onmouseout="this.style.borderColor='#30363d';this.style.color='#8b949e'">📤 Send</button></div><div class="amount" id="bal-sol">—</div><div class="sub" id="bal-usd">—</div></div>
+
+    <!-- Send SOL Modal -->
+    <div id="send-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:1000;justify-content:center;align-items:center">
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:12px;padding:24px;width:380px;max-width:90vw">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <h3 style="margin:0;color:#e6edf3;font-size:16px">📤 Envoyer SOL</h3>
+          <button onclick="closeSendModal()" style="background:none;border:none;color:#8b949e;font-size:20px;cursor:pointer">&times;</button>
+        </div>
+        <div style="margin-bottom:12px">
+          <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:4px">Destinataire</label>
+          <input id="send-to" type="text" value="AJbHTm5k8JsXn4YYHj4gB5dYNiSsqUeCUmoRV4YDGPtT" readonly style="width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;color:#8b949e;padding:8px;border-radius:6px;font-size:11px;font-family:monospace">
+        </div>
+        <div style="margin-bottom:12px">
+          <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:4px">Montant (SOL)</label>
+          <input id="send-amount" type="number" step="0.01" min="0.01" placeholder="0.10" style="width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:10px;border-radius:6px;font-size:16px">
+          <div style="margin-top:4px;font-size:11px;color:#8b949e">Disponible: <span id="send-available" style="color:#3fb950">—</span> SOL</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button onclick="closeSendModal()" style="flex:1;padding:10px;background:#21262d;border:1px solid #30363d;color:#8b949e;border-radius:8px;cursor:pointer;font-size:13px">Annuler</button>
+          <button id="send-btn" onclick="sendSol()" style="flex:1;padding:10px;background:#da3633;border:none;color:#fff;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">Envoyer</button>
+        </div>
+        <div id="send-status" style="margin-top:12px;font-size:12px;display:none"></div>
+      </div>
+    </div>
       <div class="balance-card"><div class="label">P&L Total</div><div class="amount" id="pnl-sol">—</div><div class="sub" id="pnl-pct">—</div></div>
       <div class="balance-card"><div class="label">Total Fees</div><div class="amount" id="fees-total" style="font-size:22px">—</div><div class="sub" id="fees-drag">—</div></div>
     </div>
@@ -1415,6 +1439,47 @@ loadWallet();setInterval(loadWallet,10000);
 
     // Load config on startup
     loadConfig();
+
+    function openSendModal() {
+      const bal = _lastWalletData?.wallet?.balance_sol;
+      document.getElementById('send-available').textContent = bal ? bal.toFixed(4) : '?';
+      document.getElementById('send-amount').value = '';
+      document.getElementById('send-status').style.display = 'none';
+      document.getElementById('send-btn').disabled = false;
+      const m = document.getElementById('send-modal');
+      m.style.display = 'flex';
+    }
+    function closeSendModal() { document.getElementById('send-modal').style.display = 'none'; }
+    document.getElementById('send-modal').addEventListener('click', function(e) { if (e.target === this) closeSendModal(); });
+
+    async function sendSol() {
+      const amount = parseFloat(document.getElementById('send-amount').value);
+      const to = document.getElementById('send-to').value;
+      const status = document.getElementById('send-status');
+      const btn = document.getElementById('send-btn');
+      if (!amount || amount <= 0) { status.style.display='block'; status.style.color='#f85149'; status.textContent='❌ Montant invalide'; return; }
+      const bal = _lastWalletData?.wallet?.balance_sol || 0;
+      if (amount > bal - 0.005) { status.style.display='block'; status.style.color='#f85149'; status.textContent='❌ Solde insuffisant (garder 0.005 pour fees)'; return; }
+      if (!confirm('Envoyer ' + amount + ' SOL à ' + to.slice(0,8) + '... ?')) return;
+      btn.disabled = true;
+      status.style.display='block'; status.style.color='#f0883e'; status.textContent='⏳ Transaction en cours...';
+      try {
+        const r = await fetch('/api/send-sol', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + btoa('raph:Saluts123') },
+          body: JSON.stringify({ to, amount })
+        });
+        const d = await r.json();
+        if (d.success) {
+          status.style.color='#3fb950';
+          status.innerHTML='✅ Envoyé! <a href="https://solscan.io/tx/'+d.tx+'" target="_blank" style="color:#58a6ff">TX</a>';
+          setTimeout(() => { closeSendModal(); loadWallet(); }, 3000);
+        } else {
+          status.style.color='#f85149'; status.textContent='❌ ' + d.error;
+          btn.disabled = false;
+        }
+      } catch(e) { status.style.color='#f85149'; status.textContent='❌ ' + e.message; btn.disabled = false; }
+    }
     loadRegime();
     setInterval(loadRegime, 60000);
     
