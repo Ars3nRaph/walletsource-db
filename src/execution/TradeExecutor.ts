@@ -6,6 +6,7 @@ import { FunderLookup } from '../api/FunderLookup.js';
 import { RuggerProfiler, RuggerProfile } from './RuggerProfiler.js';
 import { CartelDetector } from './CartelDetector.js';
 import { logger } from '../utils/logger.js';
+import { getRuntimeConfig } from '../utils/runtimeConfig.js';
 import { readFileSync } from 'fs';
 // ━━━ Dynamic Param Loader (AutoTuner) ━━━
 interface TunedParamsCache {
@@ -596,16 +597,19 @@ export class TradeExecutor {
       const rtDropFromPeak = rtPos.highestMC > 0 ? (rtPos.highestMC - mcUsd) / rtPos.highestMC : 0;
       
       // ═══ 5-TIER EXIT: sell 20% at +30%, +60%, +100%, +200%, trail remainder ═══
-      const tierLevels = [30, 60, 100, 200];
+      const _rc = getRuntimeConfig();
+      const tierLevels = _rc?.tiers?.levels || [30, 60, 100, 200];
+      const tierSellPct = _rc?.tiers?.sell_pct || 0.20;
+      const tierFloorOffset = _rc?.tiers?.floor_offset_pct || 10;
       const tiersSold = rtPos.tiersSold || 0;
       let remaining = rtPos.tiersRemainingPct ?? 1.0;
       
       for (let i = 0; i < tierLevels.length; i++) {
         const tierBit = 1 << i;
-        if (!(tiersSold & tierBit) && rtPnl >= tierLevels[i] && remaining > 0.25) {
+        if (!(tiersSold & tierBit) && rtPnl >= tierLevels[i] && remaining > tierSellPct + 0.05) {
           rtPos.tiersSold = (rtPos.tiersSold || 0) | tierBit;
-          const pctToSell = 0.20 / remaining; // sell 20% of ORIGINAL position = X% of current
-          remaining -= 0.20;
+          const pctToSell = tierSellPct / remaining; // sell 20% of ORIGINAL position = X% of current
+          remaining -= tierSellPct;
           rtPos.tiersRemainingPct = remaining;
           this.onTierExit(tokenAddress, pctToSell, `P&L +${rtPnl.toFixed(0)}% hit +${tierLevels[i]}% tier (${Math.round(remaining*100)}% left)`, mcUsd);
         }
@@ -627,7 +631,7 @@ export class TradeExecutor {
       const rtIsSwarm = rtPos.swarmStrategy === true;
       // Trail activation: lower threshold if tiers already sold (protect remaining)
       const rtTiersSold = rtPos.tiersSold || 0;
-      let rtTrailTrigger = rtIsSwarm ? 30 : (rtIsNeo || rtIsCartel) ? 15 : 15;
+      let rtTrailTrigger = rtIsSwarm ? (_rc?.strategies?.SWARM?.trail_activate_pct || 30) : (rtIsNeo || rtIsCartel) ? (_rc?.strategies?.NEO?.trail_activate_pct || 15) : (_rc?.strategies?.STD?.trail_activate_pct || 15);
       if (rtTiersSold >= 1) rtTrailTrigger = Math.min(rtTrailTrigger, 15); // activate trail earlier after first tier
       if (rtPeakPnl >= rtTrailTrigger) {
         if (rtIsSwarm) {
@@ -642,8 +646,14 @@ export class TradeExecutor {
           } else if (swTiers >= 1) {  // 1 tier sold (80% left) → moderate
             rtDropLimit = 0.13;
           } else {
-            // No tiers sold yet — original dynamic trail
-            rtDropLimit = rtPeakPnl >= 200 ? 0.08 : rtPeakPnl >= 50 ? 0.13 : 0.18;
+            // No tiers sold yet — original dynamic trail from runtime config
+            const sw = _rc?.strategies?.SWARM || {};
+            const swBase = (sw.trail_base_pct || 18) / 100;
+            const swMid = (sw.trail_mid_pct || 13) / 100;
+            const swMidAt = sw.trail_mid_at_pct || 50;
+            const swTight = (sw.trail_tight_pct || 8) / 100;
+            const swTightAt = sw.trail_tight_at_pct || 200;
+            rtDropLimit = rtPeakPnl >= swTightAt ? swTight : rtPeakPnl >= swMidAt ? swMid : swBase;
           }
         } else if (rtIsCartel) {
           rtDropLimit = 0.20; // CARTEL: 20% trail
@@ -691,7 +701,7 @@ export class TradeExecutor {
         // ═══ INTER-TIER FLOOR: don't trail-sell if still above last tier level ═══
         // After selling at +30%, only trail if P&L drops below +40% (+10% above tier level)
         // This lets the token breathe between tiers instead of cutting at every correction
-        const tierFloors = [0, 40, 70, 110, 210]; // floor P&L% after 0/1/2/3/4 tiers sold (+10% above each tier)
+        const tierFloors = [0, ...tierLevels.map((l: number) => l + tierFloorOffset)]; // floor = tier level + offset
         const tiersCount = ((rtPos.tiersSold || 0) & 1) + (((rtPos.tiersSold || 0) >> 1) & 1) + (((rtPos.tiersSold || 0) >> 2) & 1) + (((rtPos.tiersSold || 0) >> 3) & 1); // popcount
         const tierFloor = tierFloors[tiersCount] || 0;
         
@@ -719,7 +729,7 @@ export class TradeExecutor {
       }
 
       // 2. Hard stop (NEO: -20% v4.59 was -25%, others: -20%)
-      const rtHsThreshold = rtPos.swarmStrategy ? -20 : rtPos.neoStrategy ? -20 : -20; // SWARM -20%, NEO -20% (v4.59: aligned with STD), STD -20%
+      const rtHsThreshold = _rc?.general?.hard_stop_pct || -20; // SWARM -20%, NEO -20% (v4.59: aligned with STD), STD -20%
       if (!rtShouldSell && rtPnl <= rtHsThreshold) {
         rtReason = `⚡ RT-HARD_STOP — P&L ${rtPnl.toFixed(1)}% (threshold ${rtHsThreshold}%) | MC ${mcUsd.toFixed(0)}`;
         this.consecutiveHardStops++;

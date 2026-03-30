@@ -11,6 +11,7 @@ import { fileURLToPath } from 'url';
 import pg from 'pg';
 import dotenv from 'dotenv';
 import fs from 'fs/promises';
+import { readFileSync, writeFileSync } from 'node:fs';
 
 dotenv.config();
 
@@ -1387,6 +1388,61 @@ app.post('/api/send-sol', async (req, res) => {
   } catch (err) {
     console.error('send-sol error:', err.message);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+
+// ═══ RUNTIME CONFIG API — dynamic params, no restart needed ═══
+const RUNTIME_CONFIG_PATH = path.join(__dirname, '../../runtime-config.json');
+
+app.get('/api/runtime-config', (req, res) => {
+  try {
+    const raw = readFileSync(RUNTIME_CONFIG_PATH, 'utf-8');
+    res.json(JSON.parse(raw));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/runtime-config', (req, res) => {
+  try {
+    const current = JSON.parse(readFileSync(RUNTIME_CONFIG_PATH, 'utf-8'));
+    const patch = req.body;
+    
+    // Deep merge
+    function deepMerge(target, source) {
+      for (const key of Object.keys(source)) {
+        if (source[key] && typeof source[key] === 'object' && !Array.isArray(source[key]) && target[key]) {
+          deepMerge(target[key], source[key]);
+        } else {
+          target[key] = source[key];
+        }
+      }
+    }
+    deepMerge(current, patch);
+    current._updated = new Date().toISOString();
+    current._version = (current._version || 0) + 1;
+    
+    // Also sync key values to .env for restart persistence
+    if (patch.general?.max_position_sol !== undefined) {
+      const envPath = path.join(__dirname, '../../.env');
+      let env = readFileSync(envPath, 'utf-8');
+      env = env.replace(/^MAX_POSITION_SOL=.*$/m, 'MAX_POSITION_SOL=' + patch.general.max_position_sol);
+      writeFileSync(envPath, env);
+    }
+    if (patch.strategies) {
+      const envPath = path.join(__dirname, '../../.env');
+      let env = readFileSync(envPath, 'utf-8');
+      if (patch.strategies.STD?.enabled_live !== undefined) env = env.replace(/^LIVE_STD=.*$/m, 'LIVE_STD=' + patch.strategies.STD.enabled_live);
+      if (patch.strategies.NEO?.enabled_live !== undefined) env = env.replace(/^LIVE_NEO=.*$/m, 'LIVE_NEO=' + patch.strategies.NEO.enabled_live);
+      if (patch.strategies.SWARM?.enabled_live !== undefined) env = env.replace(/^LIVE_SWARM=.*$/m, 'LIVE_SWARM=' + patch.strategies.SWARM.enabled_live);
+      writeFileSync(envPath, env);
+    }
+    
+    writeFileSync(RUNTIME_CONFIG_PATH, JSON.stringify(current, null, 2));
+    res.json({ success: true, version: current._version, message: 'Applied — no restart needed' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 

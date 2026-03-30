@@ -1,0 +1,78 @@
+{
+  "_version": 2,
+  "_updated": "2026-03-30T18:22:38.360Z",
+  "general": {
+    "max_position_sol": 0.35,
+    "max_open_positions": 7,
+    "hard_stop_pct": -20,
+    "fee_reserve_sol": 0.05
+  },
+  "tiers": {
+    "enabled": true,
+    "levels": [
+      30,
+      60,
+      100,
+      200
+    ],
+    "sell_pct": 0.2,
+    "floor_offset_pct": 10
+  },
+  "strategies": {
+    "STD": {
+      "enabled_paper": true,
+      "enabled_live": false,
+      "slots": 3,
+      "min_buyers": 80,
+      "min_ratio": 2.2,
+      "max_ratio": 3,
+      "max_dumps": 21,
+      "max_avg_buy": 50,
+      "window_sec": 110,
+      "max_hold_sec": 600,
+      "trail_activate_pct": 15,
+      "trail_default_pct": 22,
+      "trail_after_1tier_pct": 15,
+      "trail_after_3tier_pct": 10
+    },
+    "NEO": {
+      "enabled_paper": true,
+      "enabled_live": false,
+      "slots": 1,
+      "min_buyers": 20,
+      "min_ratio": 1.3,
+      "max_ratio": 2,
+      "q_min": 3,
+      "max_hold_sec": 900,
+      "trail_activate_pct": 15,
+      "trail_base_pct": 25,
+      "trail_tight_pct": 15,
+      "trail_tight_at_pct": 125,
+      "trail_after_1tier_pct": 12,
+      "trail_after_3tier_pct": 8
+    },
+    "SWARM": {
+      "enabled_paper": true,
+      "enabled_live": true,
+      "slots": 2,
+      "min_buyers": 80,
+      "max_avg_buy": 25,
+      "min_ratio": 2,
+      "max_ratio": 3.5,
+      "window_min_sec": 20,
+      "window_max_sec": 90,
+      "max_hold_sec": 600,
+      "max_hold_exempt_pnl": 50,
+      "trail_activate_pct": 30,
+      "trail_base_pct": 18,
+      "trail_mid_pct": 13,
+      "trail_mid_at_pct": 50,
+      "trail_tight_pct": 8,
+      "trail_tight_at_pct": 200,
+      "trail_after_1tier_pct": 13,
+      "trail_after_2tier_pct": 10,
+      "trail_after_3tier_pct": 8,
+      "trail_after_4tier_pct": 6
+    }
+  }
+}

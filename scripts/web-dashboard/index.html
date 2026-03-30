@@ -19,7 +19,7 @@
         <span id="status-text">Connecting...</span>
       </div>
       <nav style="margin-left:auto"><a href="/graphs" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px 20px;color:#58a6ff;text-decoration:none;font-size:14px;font-weight:600;transition:all .2s" onmouseover="this.style.borderColor='#58a6ff';this.style.background='#1c2128'" onmouseout="this.style.borderColor='#30363d';this.style.background='#21262d'">📊 Graphs</a><a href="/wallet" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px 20px;color:#58a6ff;text-decoration:none;font-size:14px;font-weight:600;transition:all .2s" onmouseover="this.style.borderColor='#58a6ff';this.style.background='#1c2128'" onmouseout="this.style.borderColor='#30363d';this.style.background='#21262d'">💰 Paper</a><a href="/wallet2">🔴 Live</a>
-        <a href="/logs-live">📋 Logs</a><a href="/tuning" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px 20px;color:#58a6ff;text-decoration:none;font-size:14px;font-weight:600;transition:all .2s" onmouseover="this.style.borderColor='#58a6ff';this.style.background='#1c2128'" onmouseout="this.style.borderColor='#30363d';this.style.background='#21262d'">🧬 Tuning</a> <a href="/monkey" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px 20px;color:#ffad1f;text-decoration:none;font-size:14px;font-weight:600;transition:all .2s" onmouseover="this.style.borderColor='#ffad1f'" onmouseout="this.style.borderColor='#30363d'">🐒 Monkey</a></nav>
+        <a href="/logs-live">📋 Logs</a><a href="/tuning" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px 20px;color:#58a6ff;text-decoration:none;font-size:14px;font-weight:600;transition:all .2s" onmouseover="this.style.borderColor='#58a6ff';this.style.background='#1c2128'" onmouseout="this.style.borderColor='#30363d';this.style.background='#21262d'">🧬 Tuning</a> <a href="/monkey" style="background:#21262d;border:1px solid #30363d;border-radius:8px;padding:10px 20px;color:#ffad1f;text-decoration:none;font-size:14px;font-weight:600;transition:all .2s" onmouseover="this.style.borderColor='#ffad1f'" onmouseout="this.style.borderColor='#30363d'">🐒 Monkey</a> <button onclick="openRegime()" style="background:#238636;border:none;border-radius:8px;padding:10px 20px;color:#fff;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s" onmouseover="this.style.background='#2ea043'" onmouseout="this.style.background='#238636'">⚙️ Market Regime</button></nav>
     </header>
 
     <!-- Main Stats Grid -->
@@ -455,5 +455,207 @@
       <div id="chart-info" style="margin-top:12px;display:flex;gap:20px;flex-wrap:wrap;font-size:0.8rem;color:#aaa"></div>
     </div>
   </div>
+
+<!-- ═══ MARKET REGIME MODAL ═══ -->
+<div id="regime-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:2000;overflow-y:auto">
+  <div style="max-width:700px;margin:40px auto;background:#161b22;border:1px solid #30363d;border-radius:12px;padding:24px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+      <h2 style="color:#e6edf3;margin:0" id="regime-title">⚙️ Market Regime</h2>
+      <button onclick="closeRegime()" style="background:none;border:none;color:#8b949e;font-size:24px;cursor:pointer">✕</button>
+    </div>
+    <div id="regime-tabs" style="display:flex;gap:8px;margin-bottom:16px">
+      <button class="regime-tab active" onclick="switchRegimeTab('general')">🎛️ Général</button>
+      <button class="regime-tab" onclick="switchRegimeTab('tiers')">🔶 Tiers</button>
+      <button class="regime-tab" onclick="switchRegimeTab('STD')">🚀 STD</button>
+      <button class="regime-tab" onclick="switchRegimeTab('NEO')">🧠 NEO</button>
+      <button class="regime-tab" onclick="switchRegimeTab('SWARM')">🐝 SWARM</button>
+    </div>
+    <div id="regime-content"></div>
+    <div style="display:flex;gap:12px;margin-top:20px;justify-content:flex-end">
+      <button onclick="closeRegime()" style="background:#21262d;border:1px solid #30363d;color:#8b949e;padding:8px 20px;border-radius:8px;cursor:pointer">Annuler</button>
+      <button onclick="saveRegime()" style="background:#238636;border:none;color:#fff;padding:8px 24px;border-radius:8px;cursor:pointer;font-weight:600">💾 Appliquer (sans restart)</button>
+    </div>
+    <div id="regime-status" style="margin-top:12px;text-align:center;font-size:12px;color:#8b949e"></div>
+  </div>
+</div>
+
+<style>
+  .regime-tab { background:#21262d; border:1px solid #30363d; color:#8b949e; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:12px; font-weight:600; transition:all .2s }
+  .regime-tab.active { background:#388bfd20; border-color:#58a6ff; color:#58a6ff }
+  .regime-tab:hover { border-color:#58a6ff }
+  .rg-row { display:flex; align-items:center; padding:8px 0; border-bottom:1px solid #21262d }
+  .rg-label { flex:1; color:#c9d1d9; font-size:13px }
+  .rg-input { width:100px; background:#0d1117; border:1px solid #30363d; color:#e6edf3; padding:6px 10px; border-radius:6px; text-align:right; font-size:13px }
+  .rg-unit { width:40px; color:#8b949e; font-size:11px; text-align:left; padding-left:6px }
+  .rg-section { color:#58a6ff; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:1px; padding:12px 0 6px; border-bottom:2px solid #21262d }
+</style>
+
+<script>
+let regimeConfig = null;
+let currentRegimeTab = 'general';
+
+const REGIME_FIELDS = {
+  general: [
+    { section: 'Position Sizing' },
+    { key: 'general.max_position_sol', label: 'Taille position max', unit: 'SOL', step: 0.01 },
+    { key: 'general.fee_reserve_sol', label: 'Réserve pour fees', unit: 'SOL', step: 0.01 },
+    { key: 'general.max_open_positions', label: 'Positions max simultanées', unit: '', step: 1 },
+    { section: 'Risk Management' },
+    { key: 'general.hard_stop_pct', label: 'Hard stop', unit: '%', step: 1 },
+  ],
+  tiers: [
+    { section: '5-Tier Exit System' },
+    { key: 'tiers.enabled', label: 'Tiers activés', unit: '', type: 'bool' },
+    { key: 'tiers.sell_pct', label: 'Vente par palier', unit: '×100%', step: 0.05 },
+    { key: 'tiers.floor_offset_pct', label: 'Floor offset (au-dessus du tier)', unit: '%', step: 5 },
+    { section: 'Niveaux de paliers' },
+    { key: 'tiers.levels.0', label: 'Tier 1', unit: '%', step: 5 },
+    { key: 'tiers.levels.1', label: 'Tier 2', unit: '%', step: 10 },
+    { key: 'tiers.levels.2', label: 'Tier 3', unit: '%', step: 10 },
+    { key: 'tiers.levels.3', label: 'Tier 4', unit: '%', step: 50 },
+  ],
+  STD: [
+    { section: 'Entry Filters' },
+    { key: 'strategies.STD.min_buyers', label: 'Buyers minimum', unit: '', step: 5 },
+    { key: 'strategies.STD.min_ratio', label: 'Ratio minimum', unit: 'x', step: 0.1 },
+    { key: 'strategies.STD.max_ratio', label: 'Ratio maximum', unit: 'x', step: 0.1 },
+    { key: 'strategies.STD.max_dumps', label: 'Dumps maximum', unit: '', step: 1 },
+    { key: 'strategies.STD.max_avg_buy', label: 'Avg buy max', unit: '$', step: 5 },
+    { key: 'strategies.STD.window_sec', label: 'Window max', unit: 's', step: 10 },
+    { section: 'Trail Stops' },
+    { key: 'strategies.STD.trail_activate_pct', label: 'Trail activation', unit: '%', step: 5 },
+    { key: 'strategies.STD.trail_default_pct', label: 'Trail (0 tiers)', unit: '%', step: 1 },
+    { key: 'strategies.STD.trail_after_1tier_pct', label: 'Trail (1+ tier)', unit: '%', step: 1 },
+    { key: 'strategies.STD.trail_after_3tier_pct', label: 'Trail (3+ tiers)', unit: '%', step: 1 },
+    { section: 'Limits' },
+    { key: 'strategies.STD.max_hold_sec', label: 'Max hold', unit: 's', step: 60 },
+    { key: 'strategies.STD.slots', label: 'Slots paper', unit: '', step: 1 },
+  ],
+  NEO: [
+    { section: 'Entry Filters' },
+    { key: 'strategies.NEO.min_buyers', label: 'Buyers minimum', unit: '', step: 5 },
+    { key: 'strategies.NEO.min_ratio', label: 'Ratio minimum', unit: 'x', step: 0.1 },
+    { key: 'strategies.NEO.max_ratio', label: 'Ratio maximum', unit: 'x', step: 0.1 },
+    { key: 'strategies.NEO.q_min', label: 'Quality score min', unit: '', step: 1 },
+    { section: 'Trail Stops' },
+    { key: 'strategies.NEO.trail_activate_pct', label: 'Trail activation', unit: '%', step: 5 },
+    { key: 'strategies.NEO.trail_base_pct', label: 'Trail base', unit: '%', step: 1 },
+    { key: 'strategies.NEO.trail_tight_pct', label: 'Trail tight', unit: '%', step: 1 },
+    { key: 'strategies.NEO.trail_tight_at_pct', label: 'Trail tight à partir de', unit: '%', step: 5 },
+    { key: 'strategies.NEO.trail_after_1tier_pct', label: 'Trail (1+ tier)', unit: '%', step: 1 },
+    { key: 'strategies.NEO.trail_after_3tier_pct', label: 'Trail (3+ tiers)', unit: '%', step: 1 },
+    { section: 'Limits' },
+    { key: 'strategies.NEO.max_hold_sec', label: 'Max hold', unit: 's', step: 60 },
+    { key: 'strategies.NEO.slots', label: 'Slots paper', unit: '', step: 1 },
+  ],
+  SWARM: [
+    { section: 'Entry Filters' },
+    { key: 'strategies.SWARM.min_buyers', label: 'Buyers minimum', unit: '', step: 5 },
+    { key: 'strategies.SWARM.max_avg_buy', label: 'Avg buy max', unit: '$', step: 5 },
+    { key: 'strategies.SWARM.min_ratio', label: 'Ratio minimum', unit: 'x', step: 0.1 },
+    { key: 'strategies.SWARM.max_ratio', label: 'Ratio maximum', unit: 'x', step: 0.1 },
+    { key: 'strategies.SWARM.window_min_sec', label: 'Window min', unit: 's', step: 5 },
+    { key: 'strategies.SWARM.window_max_sec', label: 'Window max', unit: 's', step: 10 },
+    { section: 'Trail Stops (0 tiers)' },
+    { key: 'strategies.SWARM.trail_activate_pct', label: 'Trail activation', unit: '%', step: 5 },
+    { key: 'strategies.SWARM.trail_base_pct', label: 'Trail base', unit: '%', step: 1 },
+    { key: 'strategies.SWARM.trail_mid_pct', label: 'Trail mid', unit: '%', step: 1 },
+    { key: 'strategies.SWARM.trail_mid_at_pct', label: 'Trail mid à partir de', unit: '%', step: 10 },
+    { key: 'strategies.SWARM.trail_tight_pct', label: 'Trail tight', unit: '%', step: 1 },
+    { key: 'strategies.SWARM.trail_tight_at_pct', label: 'Trail tight à partir de', unit: '%', step: 50 },
+    { section: 'Trail Stops (après tiers)' },
+    { key: 'strategies.SWARM.trail_after_1tier_pct', label: 'Après 1 tier', unit: '%', step: 1 },
+    { key: 'strategies.SWARM.trail_after_2tier_pct', label: 'Après 2 tiers', unit: '%', step: 1 },
+    { key: 'strategies.SWARM.trail_after_3tier_pct', label: 'Après 3 tiers', unit: '%', step: 1 },
+    { key: 'strategies.SWARM.trail_after_4tier_pct', label: 'Après 4 tiers', unit: '%', step: 1 },
+    { section: 'Limits' },
+    { key: 'strategies.SWARM.max_hold_sec', label: 'Max hold', unit: 's', step: 60 },
+    { key: 'strategies.SWARM.max_hold_exempt_pnl', label: 'Exempt si P&L >', unit: '%', step: 10 },
+    { key: 'strategies.SWARM.slots', label: 'Slots paper', unit: '', step: 1 },
+  ],
+};
+
+function getNestedVal(obj, path) {
+  return path.split('.').reduce((o, k) => o?.[k], obj);
+}
+
+function setNestedVal(obj, path, val) {
+  const keys = path.split('.');
+  let cur = obj;
+  for (let i = 0; i < keys.length - 1; i++) {
+    if (!cur[keys[i]]) cur[keys[i]] = {};
+    cur = cur[keys[i]];
+  }
+  cur[keys[keys.length - 1]] = val;
+}
+
+async function openRegime() {
+  const r = await fetch('/api/runtime-config', { headers: { 'Authorization': 'Basic ' + btoa('raph:Saluts123') }});
+  regimeConfig = await r.json();
+  document.getElementById('regime-modal').style.display = 'block';
+  switchRegimeTab('general');
+}
+
+function closeRegime() { document.getElementById('regime-modal').style.display = 'none'; }
+
+function switchRegimeTab(tab) {
+  currentRegimeTab = tab;
+  document.querySelectorAll('.regime-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.regime-tab').forEach(t => { if(t.textContent.includes(tab === 'general' ? 'Général' : tab === 'tiers' ? 'Tiers' : tab)) t.classList.add('active'); });
+  
+  const fields = REGIME_FIELDS[tab] || [];
+  let html = '';
+  fields.forEach((f, i) => {
+    if (f.section) {
+      html += '<div class="rg-section">' + f.section + '</div>';
+      return;
+    }
+    const val = getNestedVal(regimeConfig, f.key);
+    if (f.type === 'bool') {
+      html += '<div class="rg-row"><span class="rg-label">' + f.label + '</span>' +
+        '<label style="cursor:pointer"><input type="checkbox" id="rg-' + i + '" data-key="' + f.key + '" ' + (val ? 'checked' : '') + ' style="width:18px;height:18px"> ' +
+        '<span style="color:#8b949e;font-size:12px">' + (val ? 'Oui' : 'Non') + '</span></label></div>';
+    } else {
+      html += '<div class="rg-row"><span class="rg-label">' + f.label + '</span>' +
+        '<input class="rg-input" id="rg-' + i + '" type="number" value="' + (val ?? '') + '" step="' + (f.step || 1) + '" data-key="' + f.key + '">' +
+        '<span class="rg-unit">' + f.unit + '</span></div>';
+    }
+  });
+  document.getElementById('regime-content').innerHTML = html;
+}
+
+async function saveRegime() {
+  const fields = REGIME_FIELDS[currentRegimeTab] || [];
+  const patch = {};
+  fields.forEach((f, i) => {
+    if (f.section) return;
+    const el = document.getElementById('rg-' + i);
+    if (!el) return;
+    let val;
+    if (f.type === 'bool') val = el.checked;
+    else val = parseFloat(el.value);
+    if (val !== undefined && !isNaN(val)) setNestedVal(patch, f.key, val);
+  });
+  
+  document.getElementById('regime-status').innerHTML = '⏳ Application en cours...';
+  try {
+    const r = await fetch('/api/runtime-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + btoa('raph:Saluts123') },
+      body: JSON.stringify(patch)
+    });
+    const d = await r.json();
+    if (d.success) {
+      document.getElementById('regime-status').innerHTML = '<span style="color:#3fb950">✅ Appliqué v' + d.version + ' — sans restart</span>';
+      setTimeout(() => { document.getElementById('regime-status').innerHTML = ''; }, 3000);
+    } else {
+      document.getElementById('regime-status').innerHTML = '<span style="color:#f85149">❌ ' + (d.error || 'Erreur') + '</span>';
+    }
+  } catch(e) {
+    document.getElementById('regime-status').innerHTML = '<span style="color:#f85149">❌ ' + e.message + '</span>';
+  }
+}
+</script>
+
 </body>
 </html>

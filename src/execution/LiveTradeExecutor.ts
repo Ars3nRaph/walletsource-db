@@ -18,6 +18,7 @@ import {
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 import bs58 from 'bs58';
 import { logger } from '../utils/logger.js';
+import { getRuntimeConfig } from '../utils/runtimeConfig.js';
 import type { Pool } from 'pg';
 import type { TradeSignal } from './TradeExecutor.js';
 
