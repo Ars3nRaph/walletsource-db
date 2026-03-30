@@ -1596,7 +1596,7 @@ export class TradeExecutor {
     const swarmCount = Array.from(this.openPositions.values()).filter(p => p.swarmStrategy).length;
     const cartelOpenCount = Array.from(this.openPositions.values()).filter(p => p.cartelStrategy).length;
     const stdCount = Array.from(this.openPositions.values()).filter(p => !p.neoStrategy && !p.earlyStrategy && !p.cartelStrategy && !p.swarmStrategy).length;
-    const MAX_NEO = 1; // v10.14.4: NEO is losing
+    const MAX_NEO = 0; // DISABLED — replaced by SWARM v3
     const MAX_CARTEL = 1; // v10.14.4: reduced for ELITE
     const MAX_SWARM = 2; // SWARM v1.0: organic retail crowd (buyers≥80, avg_buy<$25, ratio 2.0-3.5x)
     const MAX_STD = 3; // v10.14.4
@@ -1701,8 +1701,54 @@ export class TradeExecutor {
     }
 
 
+
+    // ══════════════════════════════════════════════════════════════
+    // SWARM v3 — Optimized variant (replaces NEO slot)
+    // Backtest: Window≥45s + skip MC 6-7K dead zone → +36.5% avg vs +28% baseline
+    // Uses NEO's old slot (1 dedicated slot, separate from SWARM v1.2)
+    // ══════════════════════════════════════════════════════════════
+    const swarm3Count = Array.from(this.openPositions.values()).filter(p => (p as any).swarm3Strategy).length;
+    const MAX_SWARM3 = 1;
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 45 && elapsedSec <= 90) {
+      const sw3SbRatio = buyCount > 0 ? sellCount / buyCount : 0;
+      const sw3AvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
+      if (
+        uniqueBuyerCount >= 80 &&
+        sw3AvgBuy < 25 &&
+        mcRatio >= 2.0 && mcRatio <= 3.5 &&
+        currentMC < 12000 &&
+        !(currentMC >= 6000 && currentMC < 7000) &&  // skip 6-7K dead zone
+        sw3SbRatio < 0.4
+      ) {
+        if (swarm3Count >= MAX_SWARM3) {
+          // Don't return — fall through to SWARM v1.2
+        } else if (this.openPositions.size >= 7) {
+          // Don't return — fall through
+        } else {
+          const sw3Pos = 0.35;
+          this.lastBuyTimestamp = Date.now();
+          this.openPositions.set(tokenAddress, {
+            entryMC: currentMC, entryTime: new Date(), highestMC: currentMC, lowestMCAfterEntry: currentMC,
+            tradeCount: 0, walletAddress, peakTime: Date.now(), hadSignificantPump: false,
+            entryBuyVol: buyVol, entryBuyCount: buyCount, entryBuyerCount: uniqueBuyerCount,
+            entrySellersCount: sellCount, staleTicks: 0, ceilingHigh: currentMC,
+            pumpPeaks: [], pumpState: 'PUMP' as const, cycleHigh: currentMC, dipLow: currentMC,
+            tickMCs: [currentMC], confirmationDone: true, swarmStrategy: true,
+          });
+          // Tag as SWARM v3 (swarm3Strategy flag for slot counting)
+          (this.openPositions.get(tokenAddress) as any).swarm3Strategy = true;
+          logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: sw3AvgBuy.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0) }, '🐝 SWARM v3 BUY');
+          return {
+            action: 'BUY', confidence: 0.85, percentage: 100, playbook_strategy: 'RIDE',
+            wallet_risk_score: 0.3, position_sol: sw3Pos,
+            reason: `🐝 SWARM v3 BUY — ${uniqueBuyerCount}b avg=$${sw3AvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | sb=${sw3SbRatio.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${sw3Pos}SOL`
+          };
+        }
+      }
+    }
+
         // ══════════════════════════════════════════════════════════════
-    // SWARM STRATEGY v1.0 — Organic retail crowd signal
+    // SWARM STRATEGY v1.2 — Organic retail crowd signal (broader filters)
     // Backtest CARTEL (163t): buyers≥80 + avg_buy<$25 → 8 fusées +198% avg
     // Signal: masse retail (≥80 buyers, avg<$25, ratio 2.0-3.5x, T=20-90s)
     // Philosophy: not smart money, it's the crowd that makes fusées
