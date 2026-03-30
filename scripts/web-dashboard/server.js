@@ -985,8 +985,34 @@ app.get('/api/live-wallet', async (req, res) => {
       }
       const key = buy.tx_signature || buy.token_address;
       const sellArr = sellMap[key] || sellMap[buy.token_address] || [];
-      const sell = sellArr.find(s => !s._used);
-      if (sell) sell._used = true;
+      // Mark ALL sells for this buy (tier exits + final trail = multiple SELLs per BUY)
+      const matchedSells = sellArr.filter(s => !s._used);
+      matchedSells.forEach(s => s._used = true);
+      // Aggregate: combine tier exits + trail into one result
+      const sell = matchedSells.length > 0 ? (() => {
+        if (matchedSells.length === 1) return matchedSells[0];
+        // Multiple sells: sum SOL received, aggregate P&L, use last sell's reason/time
+        const agg = { ...matchedSells[matchedSells.length - 1] }; // base on last (trail close)
+        let totalSolOut = 0, totalPnl = 0, totalFee = 0, totalJito = 0;
+        const reasons = [];
+        for (const s of matchedSells) {
+          totalSolOut += parseFloat(s.sol_out_actual || s.sol_actual || 0);
+          totalPnl += parseFloat(s.pnl_sol || 0);
+          totalFee += parseFloat(s.fee_sol || 0);
+          totalJito += parseFloat(s.jito_tip_sol || 0);
+          reasons.push(s.reason);
+        }
+        agg.sol_actual = totalSolOut;
+        agg.sol_out_actual = totalSolOut;
+        agg.pnl_sol = totalPnl;
+        agg.pnl_pct = buy.sol_actual > 0 ? (totalPnl / parseFloat(buy.sol_actual) * 100) : 0;
+        agg.fee_sol = totalFee;
+        agg.jito_tip_sol = totalJito;
+        agg.reason = reasons.join(' → ');
+        agg.exit_type = reasons[reasons.length - 1]?.includes('TRAIL') ? 'RT-TRAIL' : 
+                         reasons[reasons.length - 1]?.includes('HARD_STOP') ? 'HARD_STOP' : 'TIER';
+        return agg;
+      })() : null;
 
       const pos     = parseFloat(buy.sol_intended || buy.sol_actual || 0);
       const feeBuy  = parseFloat(buy.fee_sol || 0);
