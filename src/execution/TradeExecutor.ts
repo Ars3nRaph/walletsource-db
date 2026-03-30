@@ -612,9 +612,12 @@ export class TradeExecutor {
     // ══════════════════════════════════════════════════════════════
     const rtPos = this.openPositions.get(tokenAddress);
     if (rtPos && mcUsd > 0) {
-      const rtPnl = ((mcUsd - rtPos.entryMC) / rtPos.entryMC) * 100;
+      // Simulate real sell slippage for paper accuracy (pump.fun: ~3.5% slippage + 1% fee + price drift)
+      const PAPER_SELL_SLIPPAGE = (getRuntimeConfig()?.general?.paper_sell_slippage_pct || 8) / 100; // 8% default
+      const slippedMC = mcUsd * (1 - PAPER_SELL_SLIPPAGE); // MC we'd actually sell at
+      const rtPnl = ((slippedMC - rtPos.entryMC) / rtPos.entryMC) * 100;
       const rtHoldSec = (Date.now() - rtPos.entryTime.getTime()) / 1000;
-      const rtPeakPnl = ((rtPos.highestMC - rtPos.entryMC) / rtPos.entryMC) * 100;
+      const rtPeakPnl = ((rtPos.highestMC * (1 - PAPER_SELL_SLIPPAGE) - rtPos.entryMC) / rtPos.entryMC) * 100;
       const rtDropFromPeak = rtPos.highestMC > 0 ? (rtPos.highestMC - mcUsd) / rtPos.highestMC : 0;
       
       // ═══ 5-TIER EXIT: sell 20% at +30%, +60%, +100%, +200%, trail remainder ═══
@@ -733,7 +736,8 @@ export class TradeExecutor {
           // Still above floor — suppress trail, let it ride to next tier
           // (but log for debugging)
         } else {
-          const captured = ((rtPos.highestMC * (1 - rtDropLimit) - rtPos.entryMC) / rtPos.entryMC * 100).toFixed(1);
+          const capturedMC = rtPos.highestMC * (1 - rtDropLimit) * (1 - PAPER_SELL_SLIPPAGE);
+          const captured = ((capturedMC - rtPos.entryMC) / rtPos.entryMC * 100).toFixed(1);
           rtReason = `⚡ RT-TRAIL — drop -${(rtDropFromPeak*100).toFixed(0)}%>${(rtDropLimit*100).toFixed(0)}% from peak +${rtPeakPnl.toFixed(0)}% | captured ~${captured}% | sellers ${rtSellerRatio >= 0 ? (rtSellerRatio*100).toFixed(0)+'%' : 'n/a'}`;
           rtShouldSell = true;
           this.consecutiveHardStops = 0;
@@ -832,7 +836,8 @@ export class TradeExecutor {
     const pos = this.openPositions.get(tokenAddress);
     const entryMC = pos?.entryMC || 0;
     const exitMC = mc || pos?.lowestMCAfterEntry || entryMC;
-    const pnl = entryMC > 0 ? ((exitMC - entryMC) / entryMC * 100).toFixed(1) : '0';
+    const SWEEP_SLIP = 0.08;
+    const pnl = entryMC > 0 ? ((exitMC * (1 - SWEEP_SLIP) - entryMC) / entryMC * 100).toFixed(1) : '0';
     this.openPositions.delete(tokenAddress);
     this.closedTokens.set(tokenAddress, { exitType: 'SWEEP', exitMC: exitMC, exitTime: Date.now(), entryMC, peakMC: pos?.highestMC || 0, reentryCount: 99 });
     // Log sweep to paper-trades via onTrade if available

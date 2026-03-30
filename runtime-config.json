@@ -5,7 +5,8 @@
     "max_position_sol": 0.35,
     "max_open_positions": 7,
     "hard_stop_pct": -20,
-    "fee_reserve_sol": 0.05
+    "fee_reserve_sol": 0.05,
+    "paper_sell_slippage_pct": 8
   },
   "tiers": {
     "enabled": true,
