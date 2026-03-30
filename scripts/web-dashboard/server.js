@@ -915,7 +915,7 @@ app.get('/api/live-wallet', async (req, res) => {
              pnl_sol, pnl_pct, pnl_gross_sol,
              fee_sol, jito_tip_sol, slippage_sol,
              tx_signature, tx_sig_buy, reason, exit_type,
-             mc_usd, latency_ms, executed_at, parsed_ok
+             mc_usd, latency_ms, executed_at, parsed_ok, balance_after
       FROM live_trades_v2 WHERE side='SELL' ORDER BY executed_at
     `);
 
@@ -1012,7 +1012,7 @@ app.get('/api/live-wallet', async (req, res) => {
         pnl_sol: pnlSol !== null ? parseFloat(pnlSol.toFixed(6)) : null,
         pnl_pct: pnlPct !== null ? parseFloat(pnlPct.toFixed(2)) : null,
         balance_before: null, // computed after balance walk
-        balance_after: null, // set in post-loop walk
+        balance_after: sell?.balance_after ? parseFloat(sell.balance_after) : null,
         // extra live
         tx_buy: buy.tx_signature,
         tx_sell: sell?.tx_signature || null,
@@ -1025,23 +1025,13 @@ app.get('/api/live-wallet', async (req, res) => {
     const completed = tradeLog.filter(t => t.pnl_pct !== null);
     const avgPnl = completed.length ? completed.reduce((s,t) => s+t.pnl_pct, 0)/completed.length : 0;
     const wr = (wins+losses) > 0 ? parseFloat((wins/(wins+losses)*100).toFixed(1)) : 0;
-    // Use RPC balance as authoritative final balance
+    // Use RPC balance as authoritative
     const finalBal = walletBalance ?? 0;
-    // Walk backward from RPC to get initial, then forward for per-trade balance
-    const totalPnlFromTrades = tradeLog.reduce((s, t) => s + (t.pnl_sol || 0), 0);
-    const totalBuyCosts = tradeLog.reduce((s, t) => s + (t.action === 'OPEN' ? (t.position_sol + (t.fees_sol || 0)) : 0), 0);
-    const initialBalance = finalBal - totalPnlFromTrades + totalBuyCosts;
-    // Now walk forward to set per-trade balance
-    let runBal = initialBalance;
-    for (const t of tradeLog) {
-      if (t.action === 'OPEN') {
-        runBal -= (t.position_sol + (t.fees_sol || 0));
-      } else {
-        // closed trade: apply P&L
-        runBal += (t.pnl_sol || 0);
-      }
-      t.balance_after = parseFloat(runBal.toFixed(4));
-    }
+    // Initial = first trade's balance_after - first trade's pnl (approx)
+    const firstSell = tradeLog.find(t => t.balance_after != null);
+    const initialBalance = firstSell 
+      ? firstSell.balance_after - (firstSell.pnl_sol || 0) + (firstSell.position_sol || 0)
+      : finalBal;
     const drag = finalBal > initialBalance
       ? parseFloat(((totalFees+totalSlip)/(totalFees+totalSlip+finalBal-initialBalance)*100).toFixed(1)) : 0;
 

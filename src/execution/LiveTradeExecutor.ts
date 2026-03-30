@@ -480,12 +480,26 @@ export class LiveTradeExecutor {
               latencyMs: result.latencyMs,
             });
 
-            logger.info({
-              token: tokenMint,
-              pnl: `${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(6)} SOL`,
-              realReceived: realSolReceived.toFixed(6),
-              feeSol: onChainSell.feeSol.toFixed(6),
-            }, pnlSol >= 0 ? '✅ SELL WIN (background)' : '❌ SELL LOSS (background)');
+            // Query real wallet balance after SELL
+            try {
+              const balAfter = await this.getBalance();
+              await this.pool.query(
+                'UPDATE live_trades_v2 SET balance_after = $1 WHERE tx_signature = $2',
+                [balAfter, txSig]
+              );
+              logger.info({
+                token: tokenMint,
+                pnl: `${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(6)} SOL`,
+                realReceived: realSolReceived.toFixed(6),
+                balance: balAfter.toFixed(6),
+              }, pnlSol >= 0 ? '✅ SELL WIN (background)' : '❌ SELL LOSS (background)');
+            } catch { 
+              logger.info({
+                token: tokenMint,
+                pnl: `${pnlSol >= 0 ? '+' : ''}${pnlSol.toFixed(6)} SOL`,
+                realReceived: realSolReceived.toFixed(6),
+              }, pnlSol >= 0 ? '✅ SELL WIN (background)' : '❌ SELL LOSS (background)');
+            }
           } catch (e: any) { logger.warn({ error: e.message }, 'SELL background parse failed'); }
         });
       }
