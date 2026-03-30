@@ -780,6 +780,14 @@ function renderWallet(d){
     const totalAllFees=totalFeesSol+totalSlipSol;
     const feesDrag=(totalAllFees/cfg.initial_sol*100).toFixed(2);
     const s={final_balance_sol:finalBal,final_balance_usd:finalBal*cfg.sol_price_usd,total_pnl_sol:netPnlSol,total_pnl_pct:totalPnlPct,total_fees_sol:totalFeesSol,total_slippage_sol:totalSlipSol,total_jito_sol:totalJitoSol,total_pump_fees_sol:totalPumpSol,fees_drag_pct:feesDrag,total_trades:closed.length,wins,losses,win_rate_pct:wrPct,avg_pnl_pct:avgPnl,open:openT.length};
+    // Compute wallet impact from balance_after chain
+    for (let i = 0; i < filteredTrades.length; i++) {
+      const t = filteredTrades[i];
+      if (t.balance_after != null && t.pnl_sol != null) {
+        const balBefore = t.balance_after - t.pnl_sol;
+        t.wallet_impact_pct = balBefore > 0 ? (t.pnl_sol / balBefore * 100) : null;
+      }
+    }
     const trades=filteredTrades;
     document.getElementById('config-bar').innerHTML=[
       `💰 Initial: <span class="val">${cfg.initial_sol} SOL</span>`,

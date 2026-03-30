@@ -277,7 +277,7 @@ export class LiveTradeExecutor {
     }
 
     if (signal.action === 'BUY')  return this.executeBuy(tokenMint, signal, currentMC);
-    if (signal.action === 'SELL') return this.executeSell(tokenMint, signal);
+    if (signal.action === 'SELL') return this.executeSell(tokenMint, signal, currentMC);
     return null;
   }
 
@@ -405,6 +405,7 @@ export class LiveTradeExecutor {
               slippagePct: positionSol > 0 ? (slippageSol / positionSol * 100) : 0,
               parsedOk: onChainBuy.parsedOk,
               latencyMs: result.latencyMs,
+              mcUsd: currentMC,
             });
             logger.info({ token: tokenMint, realSol: realSolSpent.toFixed(6), tokens: onChainBuy.tokenDelta.toString().slice(0, 10) }, '📊 BUY on-chain parsed (background)');
           } catch (e: any) { logger.warn({ error: e.message }, 'BUY background parse failed'); }
@@ -419,7 +420,7 @@ export class LiveTradeExecutor {
 
   // ━━━ SELL ━━━
 
-  private async executeSell(tokenMint: string, signal: TradeSignal): Promise<TradeResult> {
+  private async executeSell(tokenMint: string, signal: TradeSignal, currentMC?: number): Promise<TradeResult> {
     const t0 = Date.now();
     const pos = this.openPositions.get(tokenMint);
     if (!pos) return { success: false, error: 'No position', latencyMs: 0 };
@@ -481,6 +482,7 @@ export class LiveTradeExecutor {
               parsedOk: onChainSell.parsedOk,
               buyReason,
               latencyMs: result.latencyMs,
+              mcUsd: currentMC,
             });
 
             // Query real wallet balance after SELL
@@ -793,7 +795,7 @@ export class LiveTradeExecutor {
     tx: string; reason: string; pnl?: number; pnlPct?: number;
     tokensAmount?: bigint; feeSol?: number; jitoTipSol?: number;
     slippageSol?: number; slippagePct?: number;
-    txSigBuy?: string; parsedOk?: boolean; exitType?: string; pnlGross?: number; buyReason?: string; latencyMs?: number;
+    txSigBuy?: string; parsedOk?: boolean; exitType?: string; pnlGross?: number; buyReason?: string; latencyMs?: number; mcUsd?: number;
   }) {
     try {
       await this.pool.query(`
@@ -821,7 +823,7 @@ export class LiveTradeExecutor {
           params.reason.match(/v[\d.]+/)?.[0] ?? null,
           params.exitType ?? null,
           // Parse buyers/ratio/quality from reason string
-          null, // mc_usd — not reliably available in reason
+          params.mcUsd ?? null, // mc_usd from currentMC
           (() => { const m = (params.buyReason || params.reason).match(/(\d+)b\s/); return m ? parseInt(m[1]) : null; })(),  // buyers
           (() => { const m = (params.buyReason || params.reason).match(/(\d+\.\d+)x/); return m ? parseFloat(m[1]) : null; })(),  // ratio
           (() => { const m = (params.buyReason || params.reason).match(/Q(\d)/); return m ? parseInt(m[1]) : null; })(),  // quality_score
