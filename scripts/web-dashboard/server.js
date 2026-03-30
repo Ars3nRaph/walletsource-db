@@ -1303,41 +1303,22 @@ app.post('/api/send-sol', async (req, res) => {
     const { to, amount } = req.body;
     if (!to || !amount || amount <= 0) return res.status(400).json({ success: false, error: 'Invalid params' });
     
-    const cp = await import('child_process');
-    const fs = await import('fs');
+    const { Connection, Keypair, PublicKey, Transaction, SystemProgram, sendAndConfirmTransaction } = await import('@solana/web3.js');
+    const bs58 = await import('bs58');
     
-    // Build and execute transfer via a small Node script that uses the existing keypair
-    const script = `
-      import { Connection, Keypair, PublicKey, Transaction, SystemProgram, sendAndConfirmTransaction } from '@solana/web3.js';
-      import bs58 from 'bs58';
-      import dotenv from 'dotenv';
-      dotenv.config();
-      
-      const conn = new Connection(process.env.HELIUS_RPC_URL || 'https://mainnet.helius-rpc.com/?api-key=' + process.env.HELIUS_API_KEY);
-      const kp = Keypair.fromSecretKey(bs58.decode(process.env.TRADING_WALLET_PRIVATE_KEY));
-      const tx = new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: kp.publicKey,
-          toPubkey: new PublicKey('${to}'),
-          lamports: Math.round(${amount} * 1e9),
-        })
-      );
-      const sig = await sendAndConfirmTransaction(conn, tx, [kp], { commitment: 'confirmed' });
-      console.log(JSON.stringify({ success: true, tx: sig }));
-    `;
+    const conn = new Connection(process.env.HELIUS_RPC_URL);
+    const kp = Keypair.fromSecretKey(bs58.default.decode(process.env.TRADING_PRIVATE_KEY));
     
-    const tmpFile = '/tmp/send-sol-' + Date.now() + '.mjs';
-    fs.writeFileSync(tmpFile, script);
+    const tx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: kp.publicKey,
+        toPubkey: new PublicKey(to),
+        lamports: Math.round(amount * 1e9),
+      })
+    );
     
-    const result = cp.execSync('node ' + tmpFile, { 
-      cwd: path.join(__dirname, '../..'),
-      timeout: 30000,
-      env: { ...process.env, NODE_PATH: path.join(__dirname, '../../node_modules') }
-    }).toString().trim();
-    
-    fs.unlinkSync(tmpFile);
-    
-    const parsed = JSON.parse(result);
+    const sig = await sendAndConfirmTransaction(conn, tx, [kp], { commitment: 'confirmed' });
+    const parsed = { success: true, tx: sig };
     if (parsed.success) {
       // Log the withdrawal in DB
       const balance = await (async () => {
