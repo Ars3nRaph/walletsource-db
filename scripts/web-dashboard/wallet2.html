@@ -748,7 +748,8 @@ function renderWallet(d){
     const totalPumpSol=filteredTrades.reduce((a,t)=>a+(t.pump_fee_buy_sol||0)+(t.pump_fee_sell_sol||0),0);
     const openCostSol=openT.reduce((a,t)=>a+(t.position_sol||0)+(t.fees_sol||0),0); // wallet-sim deducts pos+jito only
     const netPnlSol=totalPnlSol-openCostSol; // v10.14: subtract open position cost
-    const finalBal=cfg.initial_sol+netPnlSol;
+    const rpcBal = d.wallet?.balance_sol;
+    const finalBal = rpcBal != null ? rpcBal : (cfg.initial_sol + netPnlSol);
     const totalPnlPct=(netPnlSol/cfg.initial_sol*100);
     const wrPct=closed.length>0?(wins/closed.length*100).toFixed(1):'0.0';
     const avgPnl=closed.length>0?(closed.reduce((a,t)=>a+(t.pnl_pct||0),0)/closed.length).toFixed(1):'0.0';

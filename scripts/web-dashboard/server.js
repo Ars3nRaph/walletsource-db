@@ -821,7 +821,7 @@ app.get('/api/wallet-sim', async (req, res) => {
         pnl_sol: pnlSOL !== null ? parseFloat(pnlSOL.toFixed(6)) : null,
         pnl_pct: pnlPct !== null ? parseFloat(pnlPct.toFixed(2)) : null,
         peak_pct: sell?.peak_pct != null ? parseFloat(parseFloat(sell.peak_pct).toFixed(1)) : null,
-        balance_before: parseFloat(before.toFixed(4)),
+        balance_before: null, // computed after balance walk
         balance_after: parseFloat(balance.toFixed(4))
       });
     }
@@ -898,7 +898,7 @@ app.get('/api/live-wallet', async (req, res) => {
         const rpcData = await rpcRes.json();
         walletBalance = (rpcData?.result?.value ?? 0) / 1e9;
       }
-    } catch(e) { /* rpc optionnel */ }
+    } catch(e) { console.error('RPC balance error:', e.message); }
 
     // 2. Récupérer les BUY depuis live_trades_v2
     const { rows: buys } = await pool.query(`
@@ -926,19 +926,15 @@ app.get('/api/live-wallet', async (req, res) => {
       sellMap[key].push(s);
     }
 
-    // 4. Reconstruire le wallet réel — balance initiale = premier dépôt estimé
-    //    On part du solde actuel et on remonte (ou on part de 0 et on accumule)
-    let balance = walletBalance ?? 0;
+    // 4. Reconstruire le wallet réel
+    // Use RPC balance as anchor, walk backward to find initial, then forward for per-trade balance
     let totalFees = 0, totalJito = 0, totalSlip = 0;
     let wins = 0, losses = 0;
     const tradeLog = [];
-
-    // Calculer P&L cumulé pour retrouver balance initiale
-    // balance_initiale = balance_actuelle - somme(pnl_net)
-    const completedSells = sells.filter(s => s.pnl_sol !== null);
-    const totalPnl = completedSells.reduce((sum, s) => sum + (parseFloat(s.pnl_sol) || 0), 0);
-    const initialBalance = walletBalance !== null ? walletBalance - totalPnl : 0;
-    balance = initialBalance;
+    
+    // Compute net flow from all trades to derive initial balance
+    // initial = currentRPC - sum(all sell proceeds) + sum(all buy costs)
+    let netFlow = 0; // positive = wallet gained, negative = wallet lost
 
     for (const buy of buys) {
       const key = buy.tx_signature || buy.token_address;
@@ -950,8 +946,8 @@ app.get('/api/live-wallet', async (req, res) => {
       const feeBuy  = parseFloat(buy.fee_sol || 0);
       const jitoBuy = parseFloat(buy.jito_tip_sol || 0);
       const slipBuy = parseFloat(buy.slippage_sol || 0);
-      const before  = balance;
-      balance -= (pos + feeBuy + jitoBuy);
+      // balance tracking deferred to after loop
+      const buyCost = parseFloat(buy.sol_actual || pos) + feeBuy + jitoBuy;
 
       let pnlSol = null, pnlPct = null, exitType = null, exitReason = null;
       let feeSell = 0, jitoSell = 0, slipSell = 0, solReceived = null;
@@ -971,7 +967,7 @@ app.get('/api/live-wallet', async (req, res) => {
           return 'OTHER';
         })();
         exitReason = sell.reason;
-        balance += (solReceived - feeSell - jitoSell);
+        const sellProceeds = solReceived;
         if (pnlSol > 0) wins++; else losses++;
       }
 
@@ -1012,11 +1008,11 @@ app.get('/api/live-wallet', async (req, res) => {
         pump_fees_sol: 0,
         slippage_buy_sol: parseFloat(slipBuy.toFixed(6)),
         slippage_sell_sol: parseFloat(slipSell.toFixed(6)),
-        wallet_impact_pct: pnlSol !== null && before > 0 ? parseFloat((pnlSol/before*100).toFixed(2)) : null,
+        wallet_impact_pct: null, // computed after balance walk
         pnl_sol: pnlSol !== null ? parseFloat(pnlSol.toFixed(6)) : null,
         pnl_pct: pnlPct !== null ? parseFloat(pnlPct.toFixed(2)) : null,
-        balance_before: parseFloat(before.toFixed(4)),
-        balance_after: parseFloat(balance.toFixed(4)),
+        balance_before: null, // computed after balance walk
+        balance_after: null, // set in post-loop walk
         // extra live
         tx_buy: buy.tx_signature,
         tx_sell: sell?.tx_signature || null,
@@ -1029,7 +1025,23 @@ app.get('/api/live-wallet', async (req, res) => {
     const completed = tradeLog.filter(t => t.pnl_pct !== null);
     const avgPnl = completed.length ? completed.reduce((s,t) => s+t.pnl_pct, 0)/completed.length : 0;
     const wr = (wins+losses) > 0 ? parseFloat((wins/(wins+losses)*100).toFixed(1)) : 0;
-    const finalBal = walletBalance ?? parseFloat(balance.toFixed(4));
+    // Use RPC balance as authoritative final balance
+    const finalBal = walletBalance ?? 0;
+    // Walk backward from RPC to get initial, then forward for per-trade balance
+    const totalPnlFromTrades = tradeLog.reduce((s, t) => s + (t.pnl_sol || 0), 0);
+    const totalBuyCosts = tradeLog.reduce((s, t) => s + (t.action === 'OPEN' ? (t.position_sol + (t.fees_sol || 0)) : 0), 0);
+    const initialBalance = finalBal - totalPnlFromTrades + totalBuyCosts;
+    // Now walk forward to set per-trade balance
+    let runBal = initialBalance;
+    for (const t of tradeLog) {
+      if (t.action === 'OPEN') {
+        runBal -= (t.position_sol + (t.fees_sol || 0));
+      } else {
+        // closed trade: apply P&L
+        runBal += (t.pnl_sol || 0);
+      }
+      t.balance_after = parseFloat(runBal.toFixed(4));
+    }
     const drag = finalBal > initialBalance
       ? parseFloat(((totalFees+totalSlip)/(totalFees+totalSlip+finalBal-initialBalance)*100).toFixed(1)) : 0;
 
@@ -1045,7 +1057,7 @@ app.get('/api/live-wallet', async (req, res) => {
       },
       summary: {
         final_balance_sol: parseFloat(finalBal.toFixed(4)),
-        total_pnl_sol: parseFloat(totalPnl.toFixed(4)),
+        total_pnl_sol: parseFloat((finalBal - initialBalance).toFixed(4)),
         total_pnl_pct: initialBalance > 0 ? parseFloat(((finalBal/initialBalance-1)*100).toFixed(2)) : 0,
         total_trades: completed.length + tradeLog.filter(t=>t.action==='OPEN').length,
         wins, losses,
