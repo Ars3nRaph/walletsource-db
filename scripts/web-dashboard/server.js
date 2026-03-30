@@ -1601,7 +1601,10 @@ async function generateCSV(year, month) {
       wallet_address,
       jito_bundle,
       latency_ms,
-      parsed_ok
+      parsed_ok,
+      balance_after,
+      sol_price_eur,
+      sol_price_usd
     FROM live_trades_v2
     WHERE executed_at >= $1 AND executed_at < $2
     ORDER BY executed_at ASC
@@ -1616,7 +1619,10 @@ async function generateCSV(year, month) {
     'Fee_SOL','Jito_Tip_SOL','Slippage_SOL','Slippage_PCT',
     'PnL_SOL','PnL_PCT','PnL_Gross_SOL','MC_USD','Ratio','Buyers',
     'Quality','TX_Signature','TX_Sig_Buy','Wallet','Jito_Bundle',
-    'Latency_MS','Parsed_OK','Reason'
+    'Latency_MS','Parsed_OK','Balance_After_SOL',
+    'SOL_Price_EUR','SOL_Price_USD',
+    'Acquisition_EUR','Cession_EUR','PnL_EUR','Fees_EUR','Portfolio_Value_EUR',
+    'Reason'
   ];
   
   const csvRows = [headers.join(',')];
@@ -1665,6 +1671,15 @@ async function generateCSV(year, month) {
       r.jito_bundle ?? '',
       r.latency_ms || '',
       r.parsed_ok ?? '',
+      r.balance_after || '',
+      r.sol_price_eur || '',
+      r.sol_price_usd || '',
+      // Fiscal EUR calculations
+      r.side === 'BUY' && r.sol_actual && r.sol_price_eur ? (parseFloat(r.sol_actual) * parseFloat(r.sol_price_eur)).toFixed(2) : '',
+      r.side === 'SELL' && r.sol_out_actual && r.sol_price_eur ? (parseFloat(r.sol_out_actual) * parseFloat(r.sol_price_eur)).toFixed(2) : '',
+      r.pnl_sol && r.sol_price_eur ? (parseFloat(r.pnl_sol) * parseFloat(r.sol_price_eur)).toFixed(2) : '',
+      (parseFloat(r.fee_sol || 0) + parseFloat(r.jito_tip_sol || 0)) * (parseFloat(r.sol_price_eur) || 0) ? ((parseFloat(r.fee_sol || 0) + parseFloat(r.jito_tip_sol || 0)) * parseFloat(r.sol_price_eur)).toFixed(4) : '',
+      r.balance_after && r.sol_price_eur ? (parseFloat(r.balance_after) * parseFloat(r.sol_price_eur)).toFixed(2) : '',
       escapeCsv(r.reason || '')
     ].map(v => escapeCsv(v)).join(',');
     

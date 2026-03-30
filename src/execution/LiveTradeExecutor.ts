@@ -406,6 +406,7 @@ export class LiveTradeExecutor {
               parsedOk: onChainBuy.parsedOk,
               latencyMs: result.latencyMs,
               mcUsd: currentMC,
+              ...(await (async () => { const p = await this.getSolPrices(); return { solPriceEur: p.eur, solPriceUsd: p.usd }; })()),
             });
             logger.info({ token: tokenMint, realSol: realSolSpent.toFixed(6), tokens: onChainBuy.tokenDelta.toString().slice(0, 10) }, '📊 BUY on-chain parsed (background)');
           } catch (e: any) { logger.warn({ error: e.message }, 'BUY background parse failed'); }
@@ -483,6 +484,7 @@ export class LiveTradeExecutor {
               buyReason,
               latencyMs: result.latencyMs,
               mcUsd: currentMC,
+              ...(await (async () => { const p = await this.getSolPrices(); return { solPriceEur: p.eur, solPriceUsd: p.usd }; })()),
             });
 
             // Query real wallet balance after SELL
@@ -795,7 +797,7 @@ export class LiveTradeExecutor {
     tx: string; reason: string; pnl?: number; pnlPct?: number;
     tokensAmount?: bigint; feeSol?: number; jitoTipSol?: number;
     slippageSol?: number; slippagePct?: number;
-    txSigBuy?: string; parsedOk?: boolean; exitType?: string; pnlGross?: number; buyReason?: string; latencyMs?: number; mcUsd?: number;
+    txSigBuy?: string; parsedOk?: boolean; exitType?: string; pnlGross?: number; buyReason?: string; latencyMs?: number; mcUsd?: number; solPriceEur?: number; solPriceUsd?: number;
   }) {
     try {
       await this.pool.query(`
@@ -804,8 +806,8 @@ export class LiveTradeExecutor {
            reason, jito_bundle, jito_tip_sol, latency_ms,
            sol_actual, tokens_amount, fee_sol,
            slippage_sol, slippage_pct, tx_sig_buy, wallet_address, parsed_ok,
-           buy_strategy, strategy_version, exit_type, mc_usd, buyers, ratio, quality_score)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
+           buy_strategy, strategy_version, exit_type, mc_usd, buyers, ratio, quality_score, sol_price_eur, sol_price_usd)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
         [
           params.mint, params.side, params.solIn, params.solOut,
           params.pnl ?? null, params.pnlPct ?? null, params.tx,
@@ -827,6 +829,8 @@ export class LiveTradeExecutor {
           (() => { const m = (params.buyReason || params.reason).match(/(\d+)b\s/); return m ? parseInt(m[1]) : null; })(),  // buyers
           (() => { const m = (params.buyReason || params.reason).match(/(\d+\.\d+)x/); return m ? parseFloat(m[1]) : null; })(),  // ratio
           (() => { const m = (params.buyReason || params.reason).match(/Q(\d)/); return m ? parseInt(m[1]) : null; })(),  // quality_score
+          params.solPriceEur ?? null,
+          params.solPriceUsd ?? null,
         ]
       );
     } catch (e: any) {
@@ -842,6 +846,28 @@ export class LiveTradeExecutor {
       } catch (e2: any) {
         logger.error({ error: e2.message }, '❌ dbLogFull fallback also failed');
       }
+    }
+  }
+
+  // ━━━ SOL PRICE FOR FISCAL LOGGING ━━━
+  private _solPriceCache: { eur: number; usd: number; ts: number } | null = null;
+  
+  async getSolPrices(): Promise<{ eur: number; usd: number }> {
+    // Cache for 60s
+    if (this._solPriceCache && Date.now() - this._solPriceCache.ts < 60_000) {
+      return { eur: this._solPriceCache.eur, usd: this._solPriceCache.usd };
+    }
+    try {
+      const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=eur,usd', {
+        signal: AbortSignal.timeout(3000)
+      });
+      const d = await r.json() as any;
+      const eur = d?.solana?.eur ?? 0;
+      const usd = d?.solana?.usd ?? 0;
+      this._solPriceCache = { eur, usd, ts: Date.now() };
+      return { eur, usd };
+    } catch {
+      return { eur: this._solPriceCache?.eur ?? 0, usd: this._solPriceCache?.usd ?? 0 };
     }
   }
 
