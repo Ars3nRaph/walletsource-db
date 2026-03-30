@@ -229,6 +229,9 @@ export class LiveTradeExecutor {
           maxPos: this.config.maxPositionSol + ' SOL',
           maxDaily: this.config.maxDailyLossSol + ' SOL loss',
         }, '💰 LiveTradeExecutor initialized');
+
+        // Check for deposits/withdrawals every 2 minutes
+        setInterval(() => this.detectDepositsWithdrawals().catch(() => {}), 120_000);
       } catch {
         logger.error('Invalid TRADING_PRIVATE_KEY — live trading disabled');
         this.keypair = Keypair.generate();
@@ -837,6 +840,46 @@ export class LiveTradeExecutor {
       } catch (e2: any) {
         logger.error({ error: e2.message }, '❌ dbLogFull fallback also failed');
       }
+    }
+  }
+
+  // ━━━ DEPOSIT/WITHDRAW DETECTION ━━━
+  async detectDepositsWithdrawals(): Promise<void> {
+    try {
+      const wallet = this.keypair.publicKey.toBase58();
+      const currentBal = await this.getBalance();
+      
+      // Get last known balance from DB
+      const { rows } = await this.pool.query(
+        'SELECT balance_after FROM live_trades_v2 WHERE balance_after IS NOT NULL ORDER BY executed_at DESC LIMIT 1'
+      );
+      const lastBal = rows[0]?.balance_after ? parseFloat(rows[0].balance_after) : null;
+      
+      if (lastBal === null) return; // no history yet
+      
+      const diff = currentBal - lastBal;
+      // Ignore tiny diffs (< 0.001 SOL) — rounding / rent
+      if (Math.abs(diff) < 0.001) return;
+      
+      // Check if there are any new trades since last balance — if yes, skip (trade caused the diff)
+      const { rows: recentTrades } = await this.pool.query(
+        "SELECT COUNT(*) as c FROM live_trades_v2 WHERE executed_at > NOW() - INTERVAL '2 minutes' AND side IN ('BUY','SELL')"
+      );
+      if (parseInt(recentTrades[0].c) > 0) return; // recent trade explains the diff
+      
+      const side = diff > 0 ? 'DEPOSIT' : 'WITHDRAW';
+      const amount = Math.abs(diff);
+      
+      await this.pool.query(
+        `INSERT INTO live_trades_v2 (token_address, side, sol_actual, reason, wallet_address, balance_after, executed_at, parsed_ok)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW(), true)`,
+        ['SOL', side, amount, `${side === 'DEPOSIT' ? '💰' : '📤'} ${side} ${amount.toFixed(4)} SOL`, wallet, currentBal]
+      );
+      
+      logger.info({ side, amount: amount.toFixed(4), balance: currentBal.toFixed(4) }, 
+        side === 'DEPOSIT' ? '💰 SOL DEPOSIT detected' : '📤 SOL WITHDRAW detected');
+    } catch (e: any) {
+      logger.warn({ error: e.message }, 'Deposit/withdraw detection failed');
     }
   }
 

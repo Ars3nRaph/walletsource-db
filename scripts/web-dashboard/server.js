@@ -764,6 +764,29 @@ app.get('/api/wallet-sim', async (req, res) => {
     let wins = 0, losses = 0;
 
     for (const buy of buys) {
+      // Handle DEPOSIT/WITHDRAW entries
+      if (buy.side === 'DEPOSIT' || buy.side === 'WITHDRAW') {
+        tradeLog.push({
+          token: buy.side,
+          token_full: 'SOL',
+          action: buy.side,
+          timestamp: buy.executed_at,
+          sell_timestamp: null,
+          position_sol: parseFloat(buy.sol_actual || 0),
+          buy_strategy: buy.side,
+          strategy_version: '',
+          buy_reason: buy.reason,
+          exit_reason: null,
+          exit_type: null,
+          pnl_sol: null,
+          pnl_pct: null,
+          fees_sol: 0,
+          balance_after: buy.balance_after ? parseFloat(buy.balance_after) : null,
+          balance_before: null,
+          wallet_impact_pct: null,
+        });
+        continue;
+      }
       const sell = sellMap[buy.token_address]?.slice(-1)[0];
       const pos = parseFloat(buy.position_sol) || 0;
       if (pos <= 0) continue;
@@ -906,7 +929,7 @@ app.get('/api/live-wallet', async (req, res) => {
              fee_sol, jito_tip_sol, slippage_sol, slippage_pct,
              tx_signature, reason, buy_strategy, strategy_version,
              quality_score, buyers, ratio, mc_usd, latency_ms, executed_at, wallet_address, parsed_ok
-      FROM live_trades_v2 WHERE side='BUY' ORDER BY executed_at
+      FROM live_trades_v2 WHERE side IN ('BUY','DEPOSIT','WITHDRAW') ORDER BY executed_at
     `);
 
     // 3. Récupérer les SELL
@@ -937,6 +960,29 @@ app.get('/api/live-wallet', async (req, res) => {
     let netFlow = 0; // positive = wallet gained, negative = wallet lost
 
     for (const buy of buys) {
+      // Handle DEPOSIT/WITHDRAW entries
+      if (buy.side === 'DEPOSIT' || buy.side === 'WITHDRAW') {
+        tradeLog.push({
+          token: buy.side,
+          token_full: 'SOL',
+          action: buy.side,
+          timestamp: buy.executed_at,
+          sell_timestamp: null,
+          position_sol: parseFloat(buy.sol_actual || 0),
+          buy_strategy: buy.side,
+          strategy_version: '',
+          buy_reason: buy.reason,
+          exit_reason: null,
+          exit_type: null,
+          pnl_sol: null,
+          pnl_pct: null,
+          fees_sol: 0,
+          balance_after: buy.balance_after ? parseFloat(buy.balance_after) : null,
+          balance_before: null,
+          wallet_impact_pct: null,
+        });
+        continue;
+      }
       const key = buy.tx_signature || buy.token_address;
       const sellArr = sellMap[key] || sellMap[buy.token_address] || [];
       const sell = sellArr.find(s => !s._used);

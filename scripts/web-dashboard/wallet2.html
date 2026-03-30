@@ -749,7 +749,7 @@ function renderWallet(d){
     const openCostSol=openT.reduce((a,t)=>a+(t.position_sol||0)+(t.fees_sol||0),0); // wallet-sim deducts pos+jito only
     const netPnlSol=totalPnlSol-openCostSol; // v10.14: subtract open position cost
     const rpcBal = d.wallet?.balance_sol;
-    const finalBal = rpcBal != null ? rpcBal : (cfg.initial_sol + netPnlSol);
+    const finalBal = rpcBal != null ? rpcBal : d.summary?.final_balance_sol ?? 0;
     const totalPnlPct=(netPnlSol/cfg.initial_sol*100);
     const wrPct=closed.length>0?(wins/closed.length*100).toFixed(1):'0.0';
     const avgPnl=closed.length>0?(closed.reduce((a,t)=>a+(t.pnl_pct||0),0)/closed.length).toFixed(1):'0.0';
@@ -872,7 +872,7 @@ function renderPage() {
         <td style="white-space:nowrap;font-size:11px">${fmtTime(t.timestamp)}</td>
         <td><a href="https://pump.fun/${t.token_full}" target="_blank" style="color:#58a6ff;text-decoration:none;font-size:12px">${t.token}</a></td>
         <td style="font-size:12px">${t.position_sol.toFixed(2)}</td>
-        <td style="font-size:12px">${t.buy_mc?("$"+t.buy_mc.toLocaleString()):"—"}</td>
+        <td style="font-size:12px">${t.action==='DEPOSIT'||t.action==='WITHDRAW'?'—':t.buy_mc?("$"+t.buy_mc.toLocaleString()):"—"}</td>
         <td class="${cls}" style="font-weight:600" title="${
           t.action==='OPEN'?'Position ouverte':
           (t.exit_type&&(t.exit_type.includes('TRAIL')))?('Peak atteint: +'+(t.peak_pct||t.mc_change_pct||'?')+'%'):
@@ -897,7 +897,7 @@ function renderPage() {
         <td class="${cls}" style="font-weight:600;font-size:12px">${pnlSol}</td>
         <td style="font-size:11px;font-weight:600;color:${t.wallet_impact_pct>0?'#3fb950':t.wallet_impact_pct<0?'#f85149':'#8b949e'}" title="Impact sur le wallet">${t.wallet_impact_pct!=null?((t.wallet_impact_pct>=0?'+':'')+t.wallet_impact_pct.toFixed(2)+'%'):'—'}</td>
         <td style="color:#f0883e;font-size:11px" title="Slip:${(slipB+slipS).toFixed(4)} Pump:${(pumpB+pumpS).toFixed(4)} Jito:${(jitoB+jitoS).toFixed(5)}">${totalF.toFixed(4)}</td>
-        <td style="font-size:12px;font-weight:600">${t.balance_after.toFixed(2)}</td>
+        <td style="font-size:12px;font-weight:600">${t.balance_after != null ? t.balance_after.toFixed(4) : '—'}</td>
         <td style="font-size:10px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.exit_reason||''}">${fmtExit(t.exit_reason)}</td>
         <td><button onclick="showChart('${t.token_full}','${t.token}')" style="background:#21262d;border:1px solid #30363d;color:#58a6ff;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px" onmouseover="this.style.background='#30363d'" onmouseout="this.style.background='#21262d'">📈</button></td>
       </tr>`;
