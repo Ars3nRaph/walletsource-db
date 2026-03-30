@@ -1073,11 +1073,36 @@ app.get('/api/live-wallet', async (req, res) => {
     const wr = (wins+losses) > 0 ? parseFloat((wins/(wins+losses)*100).toFixed(1)) : 0;
     // Use RPC balance as authoritative
     const finalBal = walletBalance ?? 0;
-    // Initial = first trade's balance_after - first trade's pnl (approx)
-    const firstSell = tradeLog.find(t => t.balance_after != null);
-    const initialBalance = firstSell 
-      ? firstSell.balance_after - (firstSell.pnl_sol || 0) + (firstSell.position_sol || 0)
-      : finalBal;
+
+    // ── Recompute balance_after as running total (ordered by close time) ──
+    // Walk BACKWARD from current RPC balance, subtract each closed trade's P&L
+    // This handles overlapping positions correctly (trade A open while B closes)
+    const closedTrades = tradeLog
+      .filter(t => t.pnl_sol !== null && t.sell_timestamp)
+      .sort((a, b) => new Date(b.sell_timestamp) - new Date(a.sell_timestamp)); // newest first
+    
+    let runBal = finalBal;
+    // Also account for open positions (their buy cost is "locked" in tokens)
+    const openTrades = tradeLog.filter(t => t.action === 'OPEN');
+    for (const ot of openTrades) {
+      runBal += ot.position_sol || 0; // add back locked SOL
+    }
+    
+    for (const t of closedTrades) {
+      t.balance_after = parseFloat(runBal.toFixed(6));
+      t.balance_before = parseFloat((runBal - (t.pnl_sol || 0)).toFixed(6));
+      t.wallet_impact_pct = t.balance_before > 0 
+        ? parseFloat(((t.pnl_sol / t.balance_before) * 100).toFixed(2))
+        : null;
+      runBal -= (t.pnl_sol || 0); // go back in time
+    }
+    // runBal is now the initial balance (before any trade)
+    const initialBalance = parseFloat(runBal.toFixed(6));
+    
+    // Open trades: show current balance minus other open costs
+    for (const ot of openTrades) {
+      ot.balance_after = null; // still open, no final balance
+    }
     const drag = finalBal > initialBalance
       ? parseFloat(((totalFees+totalSlip)/(totalFees+totalSlip+finalBal-initialBalance)*100).toFixed(1)) : 0;
 
