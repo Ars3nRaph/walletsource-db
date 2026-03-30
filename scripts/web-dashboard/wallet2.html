@@ -243,6 +243,21 @@
 
     <!-- Strategy Comparison Card -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;margin-bottom:24px" id="strat-cards">
+            <!-- Market Regime Indicator -->
+      <div style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #30363d;border-radius:12px;padding:16px;margin-bottom:20px;display:flex;align-items:center;gap:16px;justify-content:space-between">
+        <div>
+          <div style="font-size:11px;color:#8b949e;text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Market Regime (6h SWARM)</div>
+          <div id="regime-label" style="font-size:24px;font-weight:700">—</div>
+          <div id="regime-detail" style="font-size:11px;color:#8b949e;margin-top:2px">Chargement...</div>
+        </div>
+        <div style="text-align:right">
+          <label style="font-size:11px;color:#8b949e;display:flex;align-items:center;gap:8px;cursor:pointer">
+            Auto Live
+            <label class="toggle-switch sm"><input type="checkbox" id="regime-auto-toggle" onchange="toggleRegimeAuto(this.checked)"><span class="slider"></span></label>
+          </label>
+        </div>
+      </div>
+
       <div class="strat-card" data-strat="std" onclick="toggleStrat('std')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #f0883e;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
           <span style="font-size:16px;font-weight:700;color:#58a6ff">🚀 STANDARD (v10.19)</span>
@@ -1399,6 +1414,34 @@ loadWallet();setInterval(loadWallet,10000);
 
     // Load config on startup
     loadConfig();
+    loadRegime();
+    setInterval(loadRegime, 60000);
+    
+    async function loadRegime() {
+      try {
+        const r = await fetch('/api/market-regime', { headers: { 'Authorization': 'Basic ' + btoa('raph:Saluts123') }});
+        const d = await r.json();
+        const el = document.getElementById('regime-label');
+        const det = document.getElementById('regime-detail');
+        const colors = { BULL: '#3fb950', WARM: '#58a6ff', NEUTRAL: '#8b949e', BEAR: '#f85149', INSUFFICIENT: '#6e7681', ERROR: '#f85149' };
+        const icons = { BULL: '🟢', WARM: '🔵', NEUTRAL: '⚪', BEAR: '🔴', INSUFFICIENT: '⏳', ERROR: '❌' };
+        el.textContent = (icons[d.regime]||'') + ' ' + d.regime;
+        el.style.color = colors[d.regime] || '#8b949e';
+        if (d.trades != null) det.textContent = d.trades + ' trades | avg ' + d.avgPnl + '% | WR ' + Math.round((d.wr||0)*100) + '%';
+        else det.textContent = d.error || '';
+      } catch(e) {}
+    }
+    
+    async function toggleRegimeAuto(enabled) {
+      try {
+        await fetch('/api/market-regime/auto', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + btoa('raph:Saluts123') },
+          body: JSON.stringify({ enabled })
+        });
+        showToast(enabled ? '📊 Auto-régime activé' : '📊 Auto-régime désactivé');
+      } catch(e) { showToast('❌ ' + e.message, true); }
+    }
     </script>
 
 </body>

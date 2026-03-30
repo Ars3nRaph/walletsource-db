@@ -1095,6 +1095,129 @@ function scheduleDeferredRestart(reason) {
   console.log(`⏳ Deferred restart scheduled (${reason}) — polling every 10s`);
 }
 
+// ═══ MARKET REGIME DETECTOR ═══
+// Uses rolling 6h window of SWARM paper trades to detect market conditions
+// BULL: avg6h > 15% AND wr6h > 50% → live ON
+// WARM: avg6h > 5% AND wr6h > 40% → live ON
+// NEUTRAL: between warm and bear → live stays as-is (no change)
+// BEAR: avg6h < -5% OR wr6h < 35% → live OFF
+
+let _lastRegime = null;
+let _regimeCheckInterval = null;
+
+async function checkMarketRegime() {
+  try {
+    const { rows } = await pool.query(`
+      WITH recent AS (
+        SELECT 
+          s.pnl_pct,
+          b.timestamp as buy_time,
+          b.buy_strategy
+        FROM paper_trades b
+        JOIN paper_trades s ON s.token_address = b.token_address 
+          AND s.action = 'SELL' AND s.timestamp > b.timestamp
+        WHERE b.action = 'BUY' 
+          AND b.buy_strategy = 'SWARM'
+          AND b.timestamp > NOW() - INTERVAL '6 hours'
+      )
+      SELECT 
+        COUNT(*) AS trades,
+        ROUND(AVG(pnl_pct)::numeric, 1) AS avg_pnl,
+        ROUND(COUNT(*) FILTER (WHERE pnl_pct > 0)::numeric / NULLIF(COUNT(*), 0), 2) AS wr,
+        COUNT(*) FILTER (WHERE pnl_pct < -20) AS hard_stops
+      FROM recent
+    `);
+    
+    const r = rows[0];
+    const trades = parseInt(r.trades);
+    const avgPnl = parseFloat(r.avg_pnl) || 0;
+    const wr = parseFloat(r.wr) || 0;
+    const hs = parseInt(r.hard_stops);
+    
+    let regime, shouldTrade;
+    
+    if (trades < 5) {
+      regime = 'INSUFFICIENT';
+      shouldTrade = null; // don't change
+    } else if (avgPnl > 15 && wr > 0.50) {
+      regime = 'BULL';
+      shouldTrade = true;
+    } else if (avgPnl > 5 && wr > 0.40) {
+      regime = 'WARM';
+      shouldTrade = true;
+    } else if (avgPnl < -5 || wr < 0.35) {
+      regime = 'BEAR';
+      shouldTrade = false;
+    } else {
+      regime = 'NEUTRAL';
+      shouldTrade = null; // don't change
+    }
+    
+    return { regime, shouldTrade, trades, avgPnl, wr, hs, timestamp: new Date().toISOString() };
+  } catch (e) {
+    console.error('Market regime check failed:', e.message);
+    return { regime: 'ERROR', shouldTrade: null, error: e.message };
+  }
+}
+
+async function autoToggleLive(regimeData) {
+  if (regimeData.shouldTrade === null) return; // NEUTRAL/INSUFFICIENT → no change
+  
+  const fsSync = await import('fs');
+  const cp = await import('child_process');
+  const envPath = path.join(__dirname, '../../.env');
+  const content = fsSync.readFileSync(envPath, 'utf-8');
+  const currentDryRun = content.match(/^DRY_RUN=(.*)$/m)?.[1] === 'true';
+  const isLive = !currentDryRun;
+  
+  if (regimeData.shouldTrade === isLive) return; // already in correct state
+  
+  const newDryRun = regimeData.shouldTrade ? 'false' : 'true';
+  const newContent = content.replace(/^DRY_RUN=.*$/m, `DRY_RUN=${newDryRun}`);
+  fsSync.writeFileSync(envPath, newContent);
+  
+  console.log(`🔄 Market regime: ${regimeData.regime} → DRY_RUN=${newDryRun} (was ${currentDryRun})`);
+  
+  // Schedule deferred restart
+  scheduleDeferredRestart(`market-regime:${regimeData.regime}`);
+}
+
+
+
+// GET /api/market-regime — current market regime detection
+app.get('/api/market-regime', async (req, res) => {
+  const data = await checkMarketRegime();
+  res.json(data);
+});
+
+// POST /api/market-regime/auto — enable/disable auto market regime toggle
+let _autoRegimeEnabled = false;
+app.post('/api/market-regime/auto', async (req, res) => {
+  const { enabled } = req.body;
+  _autoRegimeEnabled = !!enabled;
+  
+  if (_autoRegimeEnabled && !_regimeCheckInterval) {
+    // Check every 5 minutes
+    _regimeCheckInterval = setInterval(async () => {
+      if (!_autoRegimeEnabled) return;
+      const data = await checkMarketRegime();
+      console.log(`📊 Regime check: ${data.regime} | trades=${data.trades} avg=${data.avgPnl}% wr=${(data.wr*100).toFixed(0)}%`);
+      _lastRegime = data;
+      await autoToggleLive(data);
+    }, 5 * 60 * 1000);
+    // Immediate first check
+    const data = await checkMarketRegime();
+    _lastRegime = data;
+    console.log(`📊 Regime auto-toggle ENABLED: ${data.regime}`);
+  } else if (!_autoRegimeEnabled && _regimeCheckInterval) {
+    clearInterval(_regimeCheckInterval);
+    _regimeCheckInterval = null;
+    console.log('📊 Regime auto-toggle DISABLED');
+  }
+  
+  res.json({ success: true, autoEnabled: _autoRegimeEnabled, currentRegime: _lastRegime });
+});
+
 // GET /api/config — read all strategy params from .env + TradeExecutor constants
 app.get('/api/config', async (req, res) => {
   try {
