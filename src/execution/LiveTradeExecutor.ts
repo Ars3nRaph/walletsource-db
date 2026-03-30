@@ -811,7 +811,18 @@ export class LiveTradeExecutor {
         ]
       );
     } catch (e: any) {
-      logger.warn({ error: e.message }, 'dbLogFull failed');
+      logger.error({ error: e.message, side: params.side, mint: params.mint?.slice(0, 12) }, '❌ dbLogFull FAILED — trade NOT saved to DB');
+      // Fallback: minimal INSERT so the trade is never completely lost
+      try {
+        await this.pool.query(
+          `INSERT INTO live_trades_v2 (token_address, side, sol_intended, tx_signature, reason, executed_at)
+           VALUES ($1, $2, $3, $4, $5, NOW())`,
+          [params.mint, params.side, params.solIn, params.tx, params.reason]
+        );
+        logger.info({ mint: params.mint?.slice(0, 12), side: params.side }, '🔄 dbLogFull fallback: minimal row saved');
+      } catch (e2: any) {
+        logger.error({ error: e2.message }, '❌ dbLogFull fallback also failed');
+      }
     }
   }
 
