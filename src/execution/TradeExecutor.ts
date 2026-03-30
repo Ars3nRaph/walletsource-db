@@ -686,12 +686,24 @@ export class TradeExecutor {
         }
       }
 
-      // 1. Tiered trailing stop
+      // 1. Tiered trailing stop — with inter-tier floor protection
       if (rtDropLimit > 0 && rtDropFromPeak > rtDropLimit) {
-        const captured = ((rtPos.highestMC * (1 - rtDropLimit) - rtPos.entryMC) / rtPos.entryMC * 100).toFixed(1);
-        rtReason = `⚡ RT-TRAIL — drop -${(rtDropFromPeak*100).toFixed(0)}%>${(rtDropLimit*100).toFixed(0)}% from peak +${rtPeakPnl.toFixed(0)}% | captured ~${captured}% | sellers ${rtSellerRatio >= 0 ? (rtSellerRatio*100).toFixed(0)+'%' : 'n/a'}`;
-        rtShouldSell = true;
-        this.consecutiveHardStops = 0; // CB reset on non-HS exit
+        // ═══ INTER-TIER FLOOR: don't trail-sell if still above last tier level ═══
+        // After selling at +30%, only trail if P&L drops below +25% (protect tier gains)
+        // This lets the token breathe between tiers instead of cutting at every correction
+        const tierFloors = [0, 25, 55, 90, 180]; // floor P&L% after 0/1/2/3/4 tiers sold
+        const tiersCount = ((rtPos.tiersSold || 0) & 1) + (((rtPos.tiersSold || 0) >> 1) & 1) + (((rtPos.tiersSold || 0) >> 2) & 1) + (((rtPos.tiersSold || 0) >> 3) & 1); // popcount
+        const tierFloor = tierFloors[tiersCount] || 0;
+        
+        if (rtPnl > tierFloor) {
+          // Still above floor — suppress trail, let it ride to next tier
+          // (but log for debugging)
+        } else {
+          const captured = ((rtPos.highestMC * (1 - rtDropLimit) - rtPos.entryMC) / rtPos.entryMC * 100).toFixed(1);
+          rtReason = `⚡ RT-TRAIL — drop -${(rtDropFromPeak*100).toFixed(0)}%>${(rtDropLimit*100).toFixed(0)}% from peak +${rtPeakPnl.toFixed(0)}% | captured ~${captured}% | sellers ${rtSellerRatio >= 0 ? (rtSellerRatio*100).toFixed(0)+'%' : 'n/a'}`;
+          rtShouldSell = true;
+          this.consecutiveHardStops = 0;
+        }
       }
       
       // 1b. SWARM max hold 600s (RT) — exempt if actively rising (v1.2: let rockets run)
