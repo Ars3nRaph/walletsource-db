@@ -785,12 +785,12 @@ export class LiveTradeExecutor {
            reason, jito_bundle, jito_tip_sol, latency_ms,
            sol_actual, tokens_amount, fee_sol,
            slippage_sol, slippage_pct, tx_sig_buy, wallet_address, parsed_ok,
-           buy_strategy, strategy_version, exit_type, mc_usd, buyers, ratio, quality_score, latency_ms)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
+           buy_strategy, strategy_version, exit_type, mc_usd, buyers, ratio, quality_score)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
         [
           params.mint, params.side, params.solIn, params.solOut,
           params.pnl ?? null, params.pnlPct ?? null, params.tx,
-          params.reason, true, params.jitoTipSol ?? (this.config.jitoTipBuyLamports / 1e9), null,
+          params.reason, true, params.jitoTipSol ?? (this.config.jitoTipBuyLamports / 1e9), params.latencyMs ?? null,
           Math.abs(params.side === 'BUY' ? (params.solIn + (params.slippageSol ?? 0)) : params.solOut),
           params.tokensAmount ? params.tokensAmount.toString() : null,
           params.feeSol ?? null,
@@ -808,7 +808,6 @@ export class LiveTradeExecutor {
           (() => { const m = (params.buyReason || params.reason).match(/(\d+)b\s/); return m ? parseInt(m[1]) : null; })(),  // buyers
           (() => { const m = (params.buyReason || params.reason).match(/(\d+\.\d+)x/); return m ? parseFloat(m[1]) : null; })(),  // ratio
           (() => { const m = (params.buyReason || params.reason).match(/Q(\d)/); return m ? parseInt(m[1]) : null; })(),  // quality_score
-          params.latencyMs ?? null,
         ]
       );
     } catch (e: any) {

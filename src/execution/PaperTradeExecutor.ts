@@ -25,6 +25,7 @@ export class PaperTradeExecutor extends TradeExecutor {
     super(pool);
     this.paperMode = process.env.PAPER_TRADING_MODE === 'true';
     this.liveMode = process.env.LIVE_TRADING === 'true';
+    logger.info({ LIVE_TRADING: process.env.LIVE_TRADING, DRY_RUN: process.env.DRY_RUN, liveMode: this.liveMode }, '🔧 Live mode check');
     this.logFilePath = process.env.PAPER_TRADING_LOG_FILE || './data/paper-trades.log';
 
     if (this.paperMode) {
