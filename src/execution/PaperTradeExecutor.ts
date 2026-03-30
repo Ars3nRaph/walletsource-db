@@ -302,6 +302,30 @@ export class PaperTradeExecutor extends TradeExecutor {
         logger.error({ error: err?.message, token: tokenAddress.slice(0, 8) }, '❌ Live execution error');
       });
   }
+
+  // ═══ TIER EXIT: forward partial sells to LiveTradeExecutor ═══
+  protected onTierExit(tokenAddress: string, pctToSell: number, reason: string, currentMC: number): void {
+    if (!this.liveExecutor) return;
+    if (this.liveExecutor.config?.dryRun) return;
+    
+    const pos = this.openPositions?.get(tokenAddress);
+    const isSwarm = pos?.swarmStrategy;
+    const isNeo = pos?.neoStrategy;
+    const isStd = !isSwarm && !isNeo;
+    
+    if (isStd && process.env.LIVE_STD !== 'true') return;
+    if (isNeo && process.env.LIVE_NEO !== 'true') return;
+    if (isSwarm && process.env.LIVE_SWARM !== 'true') return;
+    
+    this.liveExecutor.executePartialSell(tokenAddress, pctToSell, reason, currentMC)
+      .then((result: any) => {
+        if (result?.success) {
+          logger.info({ token: tokenAddress.slice(0, 8), pct: Math.round(pctToSell * 100), ms: result.latencyMs }, '🔶 TIER EXIT OK');
+        }
+      })
+      .catch((e: any) => logger.warn({ error: e.message }, '⚠️ Tier exit failed'));
+  }
+
   public onSweepClose(token: string, signal: TradeSignal, mc: number): void {
     // v10.10h: compute elapsed from token detection (consistent with all other log entries)
     const rideEntry = this.rideCache?.get(token);
