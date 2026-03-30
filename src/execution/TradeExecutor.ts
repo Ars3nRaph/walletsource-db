@@ -1457,10 +1457,10 @@ export class TradeExecutor {
     const swarmCount = Array.from(this.openPositions.values()).filter(p => p.swarmStrategy).length;
     const cartelOpenCount = Array.from(this.openPositions.values()).filter(p => p.cartelStrategy).length;
     const stdCount = Array.from(this.openPositions.values()).filter(p => !p.neoStrategy && !p.earlyStrategy && !p.cartelStrategy && !p.swarmStrategy).length;
-    const MAX_NEO = 1; // v10.14.4: NEO is losing
+    const MAX_NEO = 0; // v10.14.4: NEO is losing
     const MAX_CARTEL = 1; // v10.14.4: reduced for ELITE
     const MAX_SWARM = 2; // SWARM v1.0: organic retail crowd (buyers≥80, avg_buy<$25, ratio 2.0-3.5x)
-    const MAX_STD = 3; // v10.14.4
+    const MAX_STD = 0; // v10.14.4
     const isNeoEntry = mcRatio < 2.0 && elapsedSec <= 75;
     if (isNeoEntry && neoCount >= MAX_NEO) {
       return this.none(`🚫 NEO pool full (${neoCount}/${MAX_NEO}) — skip`, 'RIDE');

@@ -1064,6 +1064,37 @@ app.get('/wallet2', (req, res) => res.sendFile(path.join(__dirname, 'wallet2.htm
 
 // ═══ LIVE CONTROL APIs ═══
 
+// ═══ DEFERRED RESTART — waits for positions to close ═══
+let _deferredRestartTimer = null;
+function scheduleDeferredRestart(reason) {
+  if (_deferredRestartTimer) {
+    console.log('⏳ Deferred restart already scheduled, skipping duplicate');
+    return;
+  }
+  let attempts = 0;
+  const maxAttempts = 60; // 10s × 60 = 10 minutes max
+  _deferredRestartTimer = setInterval(async () => {
+    attempts++;
+    try {
+      const cp = await import('child_process');
+      const result = cp.execSync('bash scripts/safe-restart.sh', { 
+        cwd: path.join(__dirname, '../..'), timeout: 10000 
+      }).toString();
+      console.log(`✅ Deferred restart succeeded (${reason}) after ${attempts} attempts`);
+      clearInterval(_deferredRestartTimer);
+      _deferredRestartTimer = null;
+    } catch (e) {
+      if (attempts >= maxAttempts) {
+        console.error(`❌ Deferred restart timed out after ${maxAttempts} attempts (${reason})`);
+        clearInterval(_deferredRestartTimer);
+        _deferredRestartTimer = null;
+      }
+      // else keep polling
+    }
+  }, 10000);
+  console.log(`⏳ Deferred restart scheduled (${reason}) — polling every 10s`);
+}
+
 // GET /api/config — read all strategy params from .env + TradeExecutor constants
 app.get('/api/config', async (req, res) => {
   try {
@@ -1167,10 +1198,14 @@ app.post('/api/live-toggle', async (req, res) => {
     content = content.replace(/^DRY_RUN=.*$/m, `DRY_RUN=${enabled ? 'false' : 'true'}`);
     fsSync.writeFileSync(envPath, content);
     
-    // Safe restart
-    cp.execSync('bash scripts/safe-restart.sh', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
-    
-    res.json({ success: true, DRY_RUN: !enabled, message: enabled ? 'LIVE TRADING ENABLED' : 'LIVE TRADING DISABLED (paper only)' });
+    // Try restart — deferred if positions open
+    try {
+      cp.execSync('bash scripts/safe-restart.sh', { cwd: path.join(__dirname, '../..'), timeout: 10000 });
+      res.json({ success: true, DRY_RUN: !enabled, restarted: true, message: enabled ? 'LIVE TRADING ENABLED' : 'LIVE TRADING DISABLED (paper only)' });
+    } catch (restartErr) {
+      scheduleDeferredRestart('live-toggle');
+      res.json({ success: true, DRY_RUN: !enabled, restarted: false, deferred: true, message: 'Changement enregistré — restart auto dès fermeture des positions' });
+    }
   } catch (err) {
     console.error('live-toggle error:', err);
     res.status(500).json({ success: false, error: err.message });
@@ -1200,11 +1235,19 @@ app.post('/api/strategy-toggle', async (req, res) => {
     ts = ts.replace(re, `$1${newVal}`);
     fsSync.writeFileSync(tsPath, ts);
     
-    // Compile + restart
+    // Compile always (instant)
     cp.execSync('npx tsc', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
-    cp.execSync('bash scripts/safe-restart.sh', { cwd: path.join(__dirname, '../..'), timeout: 30000 });
     
-    res.json({ success: true, strategy, enabled, slots: newVal });
+    // Try restart — if positions open, schedule deferred restart
+    try {
+      cp.execSync('bash scripts/safe-restart.sh', { cwd: path.join(__dirname, '../..'), timeout: 10000 });
+      res.json({ success: true, strategy, enabled, slots: newVal, restarted: true });
+    } catch (restartErr) {
+      // Positions open — schedule deferred restart that polls every 10s
+      console.log(`⏳ Positions open — scheduling deferred restart for ${strategy} toggle`);
+      scheduleDeferredRestart(`strategy-toggle:${strategy}`);
+      res.json({ success: true, strategy, enabled, slots: newVal, restarted: false, deferred: true, message: 'Positions ouvertes — restart automatique dès fermeture' });
+    }
   } catch (err) {
     console.error('strategy-toggle error:', err);
     res.status(500).json({ success: false, error: err.message });
