@@ -264,6 +264,24 @@ export class PaperTradeExecutor extends TradeExecutor {
   /** Forward BUY/SELL signals to LiveTradeExecutor */
   protected onLiveSignal(signal: any, tokenAddress: string, currentMC: number): void {
     if (!this.liveExecutor) return;
+    
+    // Per-strategy live toggle check
+    const reason = signal.reason || signal.playbook_strategy || '';
+    const pos = this.openPositions?.get(tokenAddress);
+    const isSwarm = reason.includes('SWARM') || pos?.swarmStrategy;
+    const isNeo = reason.includes('NEO') || pos?.neoStrategy;
+    const isCartel = reason.includes('CARTEL') || pos?.cartelStrategy;
+    const isStd = !isSwarm && !isNeo && !isCartel;
+    
+    const liveStd = process.env.LIVE_STD === 'true';
+    const liveNeo = process.env.LIVE_NEO === 'true';
+    const liveSwarm = process.env.LIVE_SWARM === 'true';
+    
+    if (isStd && !liveStd) return;
+    if (isNeo && !liveNeo) return;
+    if (isSwarm && !liveSwarm) return;
+    if (isCartel) return; // CARTEL always off
+    
     this.liveExecutor.executeSignal(signal, tokenAddress, currentMC)
       .then((result: any) => {
         if (result) {

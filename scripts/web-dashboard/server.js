@@ -1506,6 +1506,69 @@ app.post('/api/strategy-toggle', async (req, res) => {
   }
 });
 
+// POST /api/live-strategy-toggle — enable/disable live trading per strategy (no restart needed)
+app.post('/api/live-strategy-toggle', async (req, res) => {
+  try {
+    const fsSync = await import('fs');
+    const { strategy, enabled } = req.body;
+    
+    if (!['STD', 'NEO', 'SWARM'].includes(strategy)) {
+      return res.status(400).json({ success: false, error: 'Invalid strategy' });
+    }
+    
+    const envPath = path.join(__dirname, '../../.env');
+    let env = fsSync.readFileSync(envPath, 'utf-8');
+    const varName = `LIVE_${strategy}`;
+    const val = enabled ? 'true' : 'false';
+    
+    const re = new RegExp(`^${varName}=.*$`, 'm');
+    if (re.test(env)) {
+      env = env.replace(re, `${varName}=${val}`);
+    } else {
+      env += `\n${varName}=${val}`;
+    }
+    fsSync.writeFileSync(envPath, env);
+    
+    // Update process.env in-memory for the dashboard
+    process.env[varName] = val;
+    
+    // Also update the running bot's env via PM2 (no restart needed — env read at signal time)
+    const cp = await import('child_process');
+    try {
+      cp.execSync(`pm2 set walletsource-db:env:${varName} ${val}`, { timeout: 5000 });
+    } catch {}
+    // Restart bot to pick up new env
+    try {
+      cp.execSync('bash scripts/safe-restart.sh', { cwd: path.join(__dirname, '../..'), timeout: 10000 });
+      res.json({ success: true, strategy, live_enabled: enabled, restarted: true });
+    } catch {
+      scheduleDeferredRestart(`live-toggle:${strategy}`);
+      res.json({ success: true, strategy, live_enabled: enabled, restarted: false, deferred: true });
+    }
+  } catch (err) {
+    console.error('live-strategy-toggle error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/live-strategy-status — get per-strategy live/paper status
+app.get('/api/live-strategy-status', async (req, res) => {
+  const fsSync = await import('fs');
+  const tsPath = path.join(__dirname, '../../src/execution/TradeExecutor.ts');
+  const ts = fsSync.readFileSync(tsPath, 'utf-8');
+  
+  const getMax = (name) => { const m = ts.match(new RegExp(`const ${name} = (\\d+)`)); return m ? parseInt(m[1]) : 0; };
+  
+  res.json({
+    success: true,
+    strategies: {
+      STD:   { paper_slots: getMax('MAX_STD'),   paper_enabled: getMax('MAX_STD') > 0,   live_enabled: process.env.LIVE_STD === 'true' },
+      NEO:   { paper_slots: getMax('MAX_NEO'),   paper_enabled: getMax('MAX_NEO') > 0,   live_enabled: process.env.LIVE_NEO === 'true' },
+      SWARM: { paper_slots: getMax('MAX_SWARM'), paper_enabled: getMax('MAX_SWARM') > 0, live_enabled: process.env.LIVE_SWARM === 'true' },
+    }
+  });
+});
+
 // POST /api/config/save — save params to TradeExecutor.ts + .env, compile, safe-restart
 app.post('/api/config/save', async (req, res) => {
   try {

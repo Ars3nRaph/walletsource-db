@@ -296,10 +296,16 @@
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="std-sol">—</div></div>
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="std-hs">—</div></div>
         </div>
-        <div class="strat-controls">
-          <label class="toggle-switch sm"><input type="checkbox" id="std-toggle" checked onchange="toggleStrategy('STD', this.checked)"><span class="slider"></span></label>
-          <span style="color:#8b949e;font-size:11px">Actif</span>
-          <button class="btn-params" onclick="event.stopPropagation();openParams('STD')">⚙️ Paramètres</button>
+        <div class="strat-controls" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:4px">
+            <label class="toggle-switch sm"><input type="checkbox" id="std-paper-toggle" checked onchange="toggleStrategy('STD', this.checked)"><span class="slider"></span></label>
+            <span style="color:#8b949e;font-size:10px">📄 Paper</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:4px">
+            <label class="toggle-switch sm"><input type="checkbox" id="std-live-toggle" onchange="toggleLiveStrategy('STD', this.checked)"><span class="slider" style="background:#da3633"></span></label>
+            <span style="color:#8b949e;font-size:10px">💰 Live</span>
+          </div>
+          <button class="btn-params" onclick="event.stopPropagation();openParams('STD')">⚙️</button>
         </div>
         <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="std-params">
           b≥80 • ratio 2.2-3.0x • d&lt;21 • avgBuy&lt;$50 • HS -20% • Trail 22%@+15% • 0.35 SOL
@@ -319,10 +325,16 @@
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="neo-sol">—</div></div>
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="neo-hs">—</div></div>
         </div>
-        <div class="strat-controls">
-          <label class="toggle-switch sm"><input type="checkbox" id="neo-toggle" checked onchange="toggleStrategy('NEO', this.checked)"><span class="slider"></span></label>
-          <span style="color:#8b949e;font-size:11px">Actif</span>
-          <button class="btn-params" onclick="event.stopPropagation();openParams('NEO')">⚙️ Paramètres</button>
+        <div class="strat-controls" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:4px">
+            <label class="toggle-switch sm"><input type="checkbox" id="neo-paper-toggle" checked onchange="toggleStrategy('NEO', this.checked)"><span class="slider"></span></label>
+            <span style="color:#8b949e;font-size:10px">📄 Paper</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:4px">
+            <label class="toggle-switch sm"><input type="checkbox" id="neo-live-toggle" onchange="toggleLiveStrategy('NEO', this.checked)"><span class="slider" style="background:#da3633"></span></label>
+            <span style="color:#8b949e;font-size:10px">💰 Live</span>
+          </div>
+          <button class="btn-params" onclick="event.stopPropagation();openParams('NEO')">⚙️</button>
         </div>
         <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="neo-params">
           Loading NEO config...
@@ -342,10 +354,16 @@
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="swarm-sol">—</div></div>
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="swarm-hs">—</div></div>
         </div>
-        <div class="strat-controls">
-          <label class="toggle-switch sm"><input type="checkbox" id="swarm-toggle" checked onchange="toggleStrategy('SWARM', this.checked)"><span class="slider"></span></label>
-          <span style="color:#8b949e;font-size:11px">Actif</span>
-          <button class="btn-params" onclick="event.stopPropagation();openParams('SWARM')">⚙️ Paramètres</button>
+        <div class="strat-controls" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:4px">
+            <label class="toggle-switch sm"><input type="checkbox" id="swarm-paper-toggle" checked onchange="toggleStrategy('SWARM', this.checked)"><span class="slider"></span></label>
+            <span style="color:#8b949e;font-size:10px">📄 Paper</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:4px">
+            <label class="toggle-switch sm"><input type="checkbox" id="swarm-live-toggle" checked onchange="toggleLiveStrategy('SWARM', this.checked)"><span class="slider" style="background:#da3633"></span></label>
+            <span style="color:#8b949e;font-size:10px">💰 Live</span>
+          </div>
+          <button class="btn-params" onclick="event.stopPropagation();openParams('SWARM')">⚙️</button>
         </div>
         <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center">
           ≥80 buyers • avg_buy&lt;$25 • ratio 2.0-3.5x • T=20-90s • HS -20% • Trail 18%→13%@50%→8%@200% @+30% • 0.35 SOL • Max 2 slots
@@ -1269,11 +1287,22 @@ loadWallet();setInterval(loadWallet,10000);
           ? '✅ Actif — Wallet ' + currentConfig.live.TRADING_WALLET.slice(0,8) + '…'
           : '⏸️ Mode Paper — Aucune transaction réelle';
         
-        // Update strategy toggles
+        // Update paper strategy toggles
         ['STD','NEO','SWARM'].forEach(s => {
-          const el = document.getElementById(s.toLowerCase() + '-toggle');
+          const el = document.getElementById(s.toLowerCase() + '-paper-toggle');
           if (el) el.checked = currentConfig.strategies[s].slots > 0;
         });
+        // Load live strategy status
+        try {
+          const lr = await fetch('/api/live-strategy-status', { headers: { 'Authorization': 'Basic ' + btoa('raph:Saluts123') } });
+          const ld = await lr.json();
+          if (ld.success) {
+            ['STD','NEO','SWARM'].forEach(s => {
+              const el = document.getElementById(s.toLowerCase() + '-live-toggle');
+              if (el) el.checked = ld.strategies[s].live_enabled;
+            });
+          }
+        } catch(e) { console.warn('live-strategy-status error:', e); }
       } catch(e) { console.error('loadConfig error:', e); }
     }
 
@@ -1322,13 +1351,42 @@ loadWallet();setInterval(loadWallet,10000);
         } else {
           showToast('❌ ' + data.error, true);
           // Revert checkbox
-          const el = document.getElementById(strat.toLowerCase() + '-toggle');
+          const el = document.getElementById(strat.toLowerCase() + '-paper-toggle');
           if (el) el.checked = !enabled;
         }
       } catch(e) { 
         showToast('❌ ' + e.message, true);
-        const el = document.getElementById(strat.toLowerCase() + '-toggle');
+        const el = document.getElementById(strat.toLowerCase() + '-paper-toggle');
         if (el) el.checked = !enabled;
+      }
+    }
+
+    async function toggleLiveStrategy(strat, enabled) {
+      if (enabled && !confirm('⚠️ Activer le LIVE pour ' + strat + ' ?\nDes trades réels seront exécutés.')) {
+        document.getElementById(strat.toLowerCase() + '-live-toggle').checked = false;
+        return;
+      }
+      showToast('⏳ ' + (enabled ? '💰 Activation' : '⏸️ Désactivation') + ' LIVE ' + strat + '...');
+      try {
+        const r = await fetch('/api/live-strategy-toggle', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Basic ' + btoa('raph:Saluts123') },
+          body: JSON.stringify({ strategy: strat, enabled })
+        });
+        const data = await r.json();
+        if (data.success) {
+          const msg = data.deferred 
+            ? '⏳ LIVE ' + strat + (enabled ? ' ON' : ' OFF') + ' — restart dès fermeture positions'
+            : (enabled ? '💰 LIVE ' + strat + ' activé' : '⏸️ LIVE ' + strat + ' désactivé');
+          showToast(msg);
+          setTimeout(() => loadConfig(), 3000);
+        } else {
+          showToast('❌ ' + data.error, true);
+          document.getElementById(strat.toLowerCase() + '-live-toggle').checked = !enabled;
+        }
+      } catch(e) {
+        showToast('❌ ' + e.message, true);
+        document.getElementById(strat.toLowerCase() + '-live-toggle').checked = !enabled;
       }
     }
 
