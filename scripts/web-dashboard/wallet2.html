@@ -654,6 +654,7 @@ function applyAdvancedFilters(trades) {
       if (filters.result.has('OPEN') && t.action === 'OPEN') return true;
       if (filters.result.has('WIN') && t.action === 'WIN') return true;
       if (filters.result.has('LOSS') && t.action === 'LOSS') return true;
+      if (t.action === 'DEPOSIT' || t.action === 'WITHDRAW') return true;
       return false;
     });
   }
@@ -725,6 +726,7 @@ function applyAdvancedFilters(trades) {
 }
 
 function getTradeStrat(t) {
+  if (t.action === 'DEPOSIT' || t.action === 'WITHDRAW' || t.buy_strategy === 'DEPOSIT' || t.buy_strategy === 'WITHDRAW') return t.action === 'DEPOSIT' || t.buy_strategy === 'DEPOSIT' ? 'deposit' : 'withdraw';
   if (t.buy_reason && t.buy_reason.includes('SWARM')) return 'swarm';
   if (t.buy_reason && t.buy_reason.includes('ELITE')) return 'elite';
   if (t.buy_reason && t.buy_reason.includes('CARTEL')) return 'cartel';
@@ -751,7 +753,7 @@ async function loadWallet(){
 function renderWallet(d){
     const{config:cfg,trades:allTrades}=d;
     // Filter trades by active strategies
-    const realTrades=allTrades.filter(t=>t.action!=='SKIP' && t.buy_strategy!=='CARTEL'); // CARTEL excluded
+    const realTrades=allTrades.filter(t=>t.action!=='SKIP' && t.buy_strategy!=='CARTEL' && t.action!=='DEPOSIT' && t.action!=='WITHDRAW'); // CARTEL excluded
     // v10.13: Populate version filter dropdown
     const vSelect=document.getElementById('f-version');
     if(vSelect&&vSelect.options.length<=1){
@@ -887,8 +889,8 @@ function renderPage() {
     const tbody=document.getElementById('trades-body');
     tbody.innerHTML=pageTrades.map((t,pi)=>{ const i = start + pi;
       const cls=t.action==='WIN'?'win':t.action==='LOSS'?'loss':'open';
-      const strat=t.buy_reason&&t.buy_reason.includes('SWARM')?'swarm':t.buy_reason&&t.buy_reason.includes('ELITE')?'elite':t.buy_reason&&t.buy_reason.includes('CARTEL')?'cartel':t.buy_reason&&t.buy_reason.includes('NEO')?'neo':'std';
-      const stratLabel=strat==='swarm'?'🐝 SWARM':strat==='elite'?'👑 ELITE':strat==='cartel'?'🎯 CARTEL':strat==='neo'?'🧠 NEO':'🚀 STD';
+      const strat=getTradeStrat(t);
+      const stratLabel=strat==='deposit'?'📥 DEPOSIT':strat==='withdraw'?'📤 WITHDRAW':strat==='swarm'?'🐝 SWARM':strat==='elite'?'👑 ELITE':strat==='cartel'?'🎯 CARTEL':strat==='neo'?'🧠 NEO':'🚀 STD';
       const stratCls='strat-'+strat;
       const slipB=t.slippage_buy_sol||0,slipS=t.slippage_sell_sol||0;
       const pumpB=t.pump_fee_buy_sol||0,pumpS=t.pump_fee_sell_sol||0;
