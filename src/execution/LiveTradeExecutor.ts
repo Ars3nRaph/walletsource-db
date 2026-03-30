@@ -935,11 +935,19 @@ export class LiveTradeExecutor {
       // Ignore tiny diffs (< 0.001 SOL) — rounding / rent
       if (Math.abs(diff) < 0.001) return;
       
-      // Check if there are any new trades since last balance — if yes, skip (trade caused the diff)
+      // Check if there are any recent trades OR open positions that explain the balance change
+      // Use 5min window (detector runs every 2min, trade+parse can take time)
       const { rows: recentTrades } = await this.pool.query(
-        "SELECT COUNT(*) as c FROM live_trades_v2 WHERE executed_at > NOW() - INTERVAL '2 minutes' AND side IN ('BUY','SELL')"
+        "SELECT COUNT(*) as c FROM live_trades_v2 WHERE executed_at > NOW() - INTERVAL '5 minutes' AND side IN ('BUY','SELL')"
       );
       if (parseInt(recentTrades[0].c) > 0) return; // recent trade explains the diff
+      
+      // Also check if there are any open live positions (BUY without matching SELL)
+      // Their existence means balance changes are from trading, not manual transfers
+      const { rows: openPos } = await this.pool.query(
+        "SELECT COUNT(*) as c FROM live_trades_v2 b WHERE b.side = 'BUY' AND NOT EXISTS (SELECT 1 FROM live_trades_v2 s WHERE s.side = 'SELL' AND s.token_address = b.token_address AND s.executed_at > b.executed_at)"
+      );
+      if (parseInt(openPos[0].c) > 0) return; // open positions explain balance diff
       
       const side = diff > 0 ? 'DEPOSIT' : 'WITHDRAW';
       const amount = Math.abs(diff);
