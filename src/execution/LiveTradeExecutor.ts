@@ -278,6 +278,39 @@ export class LiveTradeExecutor {
     return null;
   }
 
+  private async recoverPositions(): Promise<void> {
+    try {
+      const { rows } = await this.pool.query(`
+        SELECT b.token_address, b.sol_intended, b.sol_actual, b.tx_signature, b.executed_at, b.reason
+        FROM live_trades_v2 b
+        WHERE b.side = 'BUY' 
+          AND b.executed_at > NOW() - INTERVAL '24 hours'
+          AND b.token_address NOT IN (
+            SELECT s.token_address FROM live_trades_v2 s WHERE s.side = 'SELL' AND s.executed_at > b.executed_at
+          )
+      `);
+      for (const r of rows) {
+        if (!this.openPositions.has(r.token_address)) {
+          this.openPositions.set(r.token_address, {
+            tokenMint: r.token_address,
+            tokenAccount: '',
+            entryTxSig: r.tx_signature || '',
+            entryPrice: 0,
+            entryMC: 0,
+            entrySol: parseFloat(r.sol_actual || r.sol_intended || '0'),
+            tokenAmount: 0n, // unknown — SELL will use max fallback
+            entryTime: new Date(r.executed_at),
+            walletAddress: this.keypair.publicKey.toBase58(),
+            buyReason: r.reason || '',
+            realEntrySol: parseFloat(r.sol_actual || '0'),
+          });
+          logger.info({ token: r.token_address, sol: r.sol_actual }, '♻️ Recovered open position from DB');
+        }
+      }
+      if (rows.length > 0) logger.info({ count: rows.length }, '♻️ Position recovery complete');
+    } catch (e: any) { logger.warn({ error: e.message }, 'Position recovery query failed'); }
+  }
+
   async emergencyCloseAll(): Promise<void> {
     logger.error('🚨 EMERGENCY CLOSE ALL');
     this.killed = true;
@@ -473,6 +506,7 @@ export class LiveTradeExecutor {
     const response = await fetch('https://pumpportal.fun/api/trade-local', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(5000),
       body: JSON.stringify({
         publicKey: this.keypair.publicKey.toBase58(),
         action: 'buy',
@@ -504,14 +538,19 @@ export class LiveTradeExecutor {
     // pump.fun tokens have 6 decimals
     const uiAmount = Number(tokenAmount) / 1e6;
     
+    // If tokenAmount is 0 (BUY parse not finished), sell max by using a huge amount
+    // PumpPortal will sell whatever we hold
+    const sellAmount = uiAmount > 0 ? uiAmount : 999_999_999_999;
+    
     const response = await fetch('https://pumpportal.fun/api/trade-local', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(5000),
       body: JSON.stringify({
         publicKey: this.keypair.publicKey.toBase58(),
         action: 'sell',
         mint: mint.toBase58(),
-        amount: uiAmount,
+        amount: sellAmount,
         denominatedInSol: 'false',
         slippage: Math.floor(this.config.slippageBps / 100),
         priorityFee: 0.00005, // SOL
@@ -640,7 +679,7 @@ export class LiveTradeExecutor {
     let size = available * this.config.maxPositionPctWallet;
     size = Math.min(size, this.config.maxPositionSol);
     // MC cap: max 10% of market cap (assume ~$150/SOL)
-    const solPrice = parseFloat(process.env.SOL_PRICE_USD || '150');
+    const solPrice = parseFloat(process.env.SOL_PRICE_USD || '80');
     size = Math.min(size, currentMC * 0.10 / solPrice);
     // Confidence scaling
     const conf = signal.confidence ?? 0.5;
