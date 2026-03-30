@@ -906,7 +906,11 @@ function renderPage() {
         <td style="font-size:10px;color:#8b949e;white-space:nowrap" title="${t.strategy_version||''}">${verShort}</td>
         <td style="white-space:nowrap;font-size:11px">${fmtTime(t.timestamp)}</td>
         <td><a href="https://pump.fun/${t.token_full}" target="_blank" style="color:#58a6ff;text-decoration:none;font-size:12px">${t.token}</a></td>
-        <td style="font-size:12px">${t.position_sol.toFixed(2)}</td>
+        <td style="font-size:12px">${(()=>{
+          if(t.action==='DEPOSIT') return '<span style="color:#3fb950;font-weight:600">+'+t.position_sol.toFixed(4)+'</span>';
+          if(t.action==='WITHDRAW') return '<span style="color:#f0883e;font-weight:600">-'+t.position_sol.toFixed(4)+'</span>';
+          return t.position_sol.toFixed(2);
+        })()}</td>
         <td style="font-size:12px">${t.action==='DEPOSIT'||t.action==='WITHDRAW'?'—':t.buy_mc?("$"+t.buy_mc.toLocaleString()):"—"}</td>
         <td class="${cls}" style="font-weight:600" title="${
           t.action==='OPEN'?'Position ouverte':
