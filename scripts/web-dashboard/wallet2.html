@@ -753,14 +753,14 @@ async function loadWallet(){
 function renderWallet(d){
     const{config:cfg,trades:allTrades}=d;
     // Filter trades by active strategies
-    const realTrades=allTrades.filter(t=>t.action!=='SKIP' && t.buy_strategy!=='CARTEL' && t.action!=='DEPOSIT' && t.action!=='WITHDRAW'); // CARTEL excluded
+    const realTrades=allTrades.filter(t=>t.action!=='SKIP' && t.buy_strategy!=='CARTEL'); // CARTEL excluded
     // v10.13: Populate version filter dropdown
     const vSelect=document.getElementById('f-version');
     if(vSelect&&vSelect.options.length<=1){
       const versions=[...new Set(realTrades.map(t=>t.strategy_version).filter(Boolean))].sort();
       versions.forEach(v=>{const o=document.createElement('option');o.value=v;o.textContent=v;vSelect.appendChild(o);});
     }
-    const stratFiltered=realTrades.filter(t=>activeStrats.has(getTradeStrat(t)));
+    const stratFiltered=realTrades.filter(t=>{ const s=getTradeStrat(t); return s==='deposit'||s==='withdraw'||activeStrats.has(s); });
     const filteredTrades=applyAdvancedFilters([...stratFiltered]);
     // Recalculate summary from filtered trades
     const closed=filteredTrades.filter(t=>t.action==='WIN'||t.action==='LOSS');
@@ -857,13 +857,14 @@ function renderWallet(d){
       }
     }
 
-    const stdTrades = stratSource.filter(t => getTradeStrat(t) === 'std');
+    const statsSource = stratSource.filter(t => t.action!=='DEPOSIT' && t.action!=='WITHDRAW');
+    const stdTrades = statsSource.filter(t => getTradeStrat(t) === 'std');
     stratStats(stdTrades, 'std');
-    const neoTrades = stratSource.filter(t => getTradeStrat(t) === 'neo');
+    const neoTrades = statsSource.filter(t => getTradeStrat(t) === 'neo');
     stratStats(neoTrades, 'neo');
     // CARTEL stats removed
     // elite card removed — legacy trades classified as 'elite' exist but no DOM card
-    const swarmTrades = stratSource.filter(t => getTradeStrat(t) === 'swarm');
+    const swarmTrades = statsSource.filter(t => getTradeStrat(t) === 'swarm');
     stratStats(swarmTrades, 'swarm');
     // Load NEO config for dynamic params display
     fetch('/api/neo-config').then(r=>r.json()).then(nc=>{
