@@ -463,7 +463,7 @@ export class PaperTradeExecutor extends TradeExecutor {
         else if (reason.includes('SELL_DOM_60s')) exitType = 'SELL_DOM_60s';
 
         const pm = reason.match(/P&L\s+([+-]?[\d.]+)%/) || reason.match(/HARD_STOP\s+([+-]?[\d.]+)%/);
-        const cm = reason.match(/captured\s+~?([\d.]+)%/);
+        const cm = reason.match(/captured\s+~?([+-]?[\d.]+)%/); // Fix: capture negative values (-29.1%)
         const pk = reason.match(/peak\s+\+?([\d.]+)%/);
         const pnlPct = pm ? parseFloat(pm[1]) : (cm ? parseFloat(cm[1]) : null);
 

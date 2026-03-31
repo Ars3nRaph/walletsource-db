@@ -6,7 +6,7 @@ import { RateLimiter } from '../utils/rateLimiter.js';
 
 const DEXSCREENER_BASE_URL = 'https://api.dexscreener.com/latest/dex';
 const REQUEST_DELAY_MS = 300;
-const MAX_RETRIES = 3;
+const MAX_RETRIES = 2; // reduced: most failures = token not indexed yet
 const BACKOFF_BASE_MS = 1000;
 
 export class DexScreenerClient {
@@ -47,7 +47,22 @@ export class DexScreenerClient {
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
 
-        const data = await response.json() as DexScreenerResponse;
+        // Handle empty body (token too new, not indexed yet) — no retry needed
+        const text = await response.text();
+        if (!text || text.trim() === '') {
+          logger.debug({ tokenAddress }, 'DexScreener: empty body (token not indexed yet)');
+          await this.sleep(REQUEST_DELAY_MS);
+          return { pairs: null } as DexScreenerResponse;
+        }
+
+        let data: DexScreenerResponse;
+        try {
+          data = JSON.parse(text) as DexScreenerResponse;
+        } catch (_parseErr) {
+          logger.debug({ tokenAddress }, 'DexScreener: non-JSON response (token not indexed yet)');
+          await this.sleep(REQUEST_DELAY_MS);
+          return { pairs: null } as DexScreenerResponse;
+        }
 
         logger.debug({ tokenAddress, hasPairs: data.pairs !== null }, 'DexScreener response received');
 
@@ -57,7 +72,7 @@ export class DexScreenerClient {
         return data;
       } catch (error) {
         lastError = error as Error;
-        logger.warn({ error, attempt, tokenAddress }, 'DexScreener request failed');
+        if (attempt > 0) logger.debug({ attempt, tokenAddress }, 'DexScreener retry failed');
 
         // If this is the last attempt, throw
         if (attempt === MAX_RETRIES - 1) {
