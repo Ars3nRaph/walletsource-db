@@ -1728,7 +1728,7 @@ export class TradeExecutor {
         mcRatio >= 2.0 && mcRatio <= 3.5 &&
         currentMC < 12000 &&
         !(currentMC >= 6000 && currentMC < 7000) &&  // skip 6-7K dead zone
-        ultSellPressure < 0.3 &&                      // KEY: low sell pressure = organic momentum
+        ultSellPressure < 0.5 &&                      // KEY: low sell pressure = organic momentum
         ultSbRatio < 0.4
       ) {
         if (ultraCount >= MAX_ULTRA) {
