@@ -256,27 +256,13 @@ export class ForensicWorker {
 
 
       // Determine tracking mode based on wallet history
-      const walletProfile = await this.walletRepo.getByAddress(creatorWallet);
-      const rugCount = walletProfile?.rug_count ?? 0;
-      const strategy = walletProfile?.strategy ?? 'WATCH';
+      // v10.20: wallet strategy no longer determines tracking mode
+      // Creator Score + Funder Chain handle quality filtering in evaluateEntry
 
-      let trackingMode: 'deep' | 'medium' | 'fast_verdict';
-      if (strategy === 'RIDE' || strategy === 'FADE' || strategy === 'AVOID') {
-        trackingMode = 'deep';
-      } else if (isNewWallet && rugCount === 0) {
-        trackingMode = 'fast_verdict'; // Creator Score + Funder Chain handles new wallets — no need for deep
-        logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8) }, '🆕 New wallet → fast_verdict (Creator Score active)');
-      } else if (rugCount >= 3) {
-        trackingMode = 'medium';
-      } else {
-        trackingMode = 'fast_verdict';
-      }
-
-      // Force deep tracking for rugger priority wallets (5s poll instead of 30s)
-      const isRuggerPriority = false; // ruggerProfiler removed
-      if (isRuggerPriority && trackingMode !== 'deep') {
-        trackingMode = 'deep';
-      }
+      // v10.20: RIDE/FADE/AVOID removed — all tokens use fast_verdict
+      // Creator Score + Funder Chain handle wallet quality in evaluateEntry
+      const trackingMode: 'deep' | 'medium' | 'fast_verdict' = 'fast_verdict';
+      const isRuggerPriority = false;
 
       await this.monitoringRepo.enqueue(tokenMint, creatorWallet, MONITORING_DELAY_MINUTES, trackingMode);
 
@@ -287,7 +273,7 @@ export class ForensicWorker {
         logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8) }, '🎯 Rugger priority token detected');
       }
 
-      logger.info({ token: tokenMint, tracking_mode: trackingMode, rug_count: rugCount, strategy }, 'Token enqueued for monitoring');
+      logger.info({ token: tokenMint, tracking_mode: trackingMode }, 'Token enqueued for monitoring');
     } catch (error) {
       logger.error({ error, signature: txData.signature }, 'Failed to process new token');
     }
@@ -376,26 +362,11 @@ export class ForensicWorker {
       }
 
       // Determine tracking mode based on wallet history
-      const walletProfile = await this.walletRepo.getByAddress(creatorWallet);
-      const rugCount = walletProfile?.rug_count ?? 0;
-      const strategy = walletProfile?.strategy ?? 'WATCH';
+      // v10.20: wallet strategy no longer determines tracking mode
+      // Creator Score + Funder Chain handle quality filtering in evaluateEntry
 
-      let trackingMode: 'deep' | 'medium' | 'fast_verdict';
-      if (strategy === 'RIDE' || strategy === 'FADE' || strategy === 'AVOID') {
-        trackingMode = 'deep'; // Known interesting — full 10s/20min tracking
-      } else if (isNewWallet && rugCount === 0) {
-        // v9.2: NEW WALLETS GET DEEP TRACKING
-        // Critical fix: 3 SUCCESS tokens (35x, 89x, 61x) were missed because
-        // new wallets defaulted to fast_verdict. By the time the wallet got
-        // classified as RIDE (after verdict), the trading window was long gone.
-        // New wallets with 0 rugs are potential clean wallets — give them a chance.
-        trackingMode = 'deep';
-        logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8) }, '🆕 New wallet → deep tracking (potential clean)');
-      } else if (rugCount >= 3) {
-        trackingMode = 'medium'; // Known rugger — 30s/10min tracking
-      } else {
-        trackingMode = 'fast_verdict'; // Known non-RIDE — 2 checks only
-      }
+      // v10.20: all tokens → fast_verdict (Creator Score + Funder Chain in evaluateEntry)
+      const trackingMode: 'deep' | 'medium' | 'fast_verdict' = 'fast_verdict';
 
       await this.monitoringRepo.enqueue(tokenMint, creatorWallet, MONITORING_DELAY_MINUTES, trackingMode);
 
@@ -408,7 +379,7 @@ export class ForensicWorker {
         logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8), baselineMC: Math.round(entryMcUsd) }, '👁️ Watching — phased entry armed');
       }
 
-      logger.info({ token: tokenMint, tracking_mode: trackingMode, rug_count: rugCount, strategy }, 'Token enqueued for monitoring');
+      logger.info({ token: tokenMint, tracking_mode: trackingMode }, 'Token enqueued for monitoring');
     } catch (error) {
       logger.error({ error, token: message.mint }, 'Failed to process new token (PumpPortal)');
     }

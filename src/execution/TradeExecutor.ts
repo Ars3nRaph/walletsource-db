@@ -44,7 +44,7 @@ export interface TradeSignal {
   confidence: number;
   percentage?: number;
   reason: string;
-  playbook_strategy?: 'RIDE' | 'FADE' | 'WATCH' | 'AVOID';
+  playbook_strategy?: string;
   signals?: SignalBreakdown;
   wallet_risk_score?: number;  // v10.10j: 0-1 risk score from wallet_profiles → position sizing
   position_sol?: number;       // v10.10j: risk-adjusted position size (0.1-0.5 SOL)
@@ -129,38 +129,13 @@ interface LiveTradeState {
   rawTrades: { ts: number; type: 'buy'|'sell'; usd: number; trader: string; mc: number; }[];  // v10.11: raw tx log for analysis
 }
 
-/**
- * Per-wallet strategy parameters computed from historical data.
- * Each wallet gets custom entry/exit/SL based on its actual patterns.
- */
-interface WalletStrategy {
-  // Entry
-  minPumpPct: number;        // min pump above baseline to confirm entry (e.g., 0.10 = +10%)
-  maxEntryRatio: number;     // max MC/baseline ratio for entry (don't enter past this)
-  maxEntrySec: number;       // max seconds after detection to enter
-  
-  // Exit  
-  targetRatio: number;       // expected peak MC/baseline for partial exit
-  maxHoldSec: number;        // max hold time before force close
-  
-  // Risk
-  stopLossPct: number;       // stop-loss % from entry
-  trailingStopPct: number;   // trailing stop % from high
-  cascadeThreshold: number;  // consecutive sells to trigger cascade exit
-  
-  // Sizing
-  winRate: number;           // historical pump rate
-  evPerTrade: number;        // expected value per trade %
-  
-  // Source
-  sampleSize: number;        // how many tokens this is based on
-}
+// WalletStrategy interface REMOVED — Creator Score + Funder Chain handle wallet quality now
 
 /**
- * TradeExecutor v5.0 — Per-Wallet Strategy Engine
+ * TradeExecutor v10.20 — Market Demand Engine
  *
- * Each RIDE wallet gets its own entry/exit/SL parameters derived from
- * its historical token data. No more one-size-fits-all thresholds.
+ * Entry decisions based on market microstructure (buyers, volume, ratio, timing).
+ * Wallet quality filtered by Creator Score + Funder Chain (not RIDE/FADE labels).
  */
 export class TradeExecutor {
   private tokenRepo: TokenEventRepo;
@@ -172,15 +147,12 @@ export class TradeExecutor {
   private firstMC = new Map<string, number>();
   public liveState = new Map<string, LiveTradeState>(); // v10.14.1: public for TokenTracker fast_verdict
 
-  // Cache: token → { isRide, detectedAt, fdvAtDetection, walletAddress, strategy }
+  // Cache: token → { detectedAt, walletAddress, walletRiskScore }
   protected rideCache = new Map<string, {
-    isRide: boolean;
-    isCleanRide: boolean;
     detectedAt: Date;
     fdvAtDetection: number;
     walletAddress: string;
-    walletRiskScore?: number;
-    strategy: WalletStrategy | null;
+    walletRiskScore: number;
   }>();
   private evaluating = new Set<string>();
 
@@ -236,10 +208,10 @@ export class TradeExecutor {
     for (const [tokenAddress, pos] of this.openPositions.entries()) {
       const holdSec = (now - pos.entryTime.getTime()) / 1000;
       const cached = this.rideCache.get(tokenAddress);
-      const ws = cached ? this.walletStrategies.get(cached!.walletAddress) : null;
+      const ws = null; // WalletStrategy removed
       // SWARM: max hold 600s (v1.1) — use dedicated limit, not wallet strategy maxHoldSec
       const isSwarmPos = pos.swarmStrategy === true;
-      const maxHold = isSwarmPos ? 600 : (ws?.maxHoldSec ?? 600); // v10.10h: 10min max (was 180s)
+      const maxHold = 600; // v10.20: fixed 10min max hold for all strategies
       
       // Stale: no new trades AND past max hold time
       if (!this.openPositions.has(tokenAddress)) continue;
@@ -282,8 +254,6 @@ export class TradeExecutor {
   // Price history for momentum confirmation (last N ticks per token)
   private priceHistory = new Map<string, Array<{ mc: number; ts: number }>>();
 
-  // Per-wallet strategy cache (wallet_address → WalletStrategy)
-  private walletStrategies = new Map<string, WalletStrategy>();
 
   constructor(pool: Pool) {
     this.pool = pool;
@@ -386,7 +356,7 @@ export class TradeExecutor {
 
     // Dynamic cascade threshold from wallet strategy
     const cached = this.rideCache.get(tokenAddress);
-    const cascadeThresh = cached?.strategy?.cascadeThreshold ?? 5;
+    const cascadeThresh = 5; // v10.20: fixed cascade threshold
     
     
 
@@ -753,7 +723,7 @@ export class TradeExecutor {
   }
 
   isLiveTracked(tokenAddress: string): boolean {
-    return this.rideCache.get(tokenAddress)?.isRide === true;
+    return this.rideCache.has(tokenAddress);
   }
 
   private async maybeEvaluateLive(tokenAddress: string, currentMC: number): Promise<void> {
@@ -761,7 +731,7 @@ export class TradeExecutor {
 
     let cached = this.rideCache.get(tokenAddress);
     // v10: evaluate ALL tokens (entry based on market demand, not wallet)
-    if (cached && cached.isRide === false && !this.openPositions.has(tokenAddress)) {
+    if (false) { // v10.20: all tokens always evaluated
       // Only skip if we already checked and no position open
       // But re-evaluate after 5s in case buyer count changed
       const state = this.liveState.get(tokenAddress);
@@ -780,111 +750,34 @@ export class TradeExecutor {
       if (!cached) {
         const token = await this.tokenRepo.getByAddress(tokenAddress);
         if (!token) {
-          this.rideCache.set(tokenAddress, { isRide: false, isCleanRide: false, detectedAt: new Date(), fdvAtDetection: 0, walletAddress: '', walletRiskScore: 0.5, strategy: null });
+          this.rideCache.set(tokenAddress, { detectedAt: new Date(), fdvAtDetection: 0, walletAddress: '', walletRiskScore: 0.5 });
           return; // token not found — skip
         }
+        // v10.20: RIDE/FADE/AVOID removed — Creator Score + Funder Chain handle wallet quality in evaluateEntry
+        // All tokens reach evaluateEntry; market demand determines entry, not wallet reputation labels
         const wallet = await this.walletRepo.getByAddress(token.creator_wallet);
-        const playbook: RuggerPlaybook | null = wallet?.rugger_playbook
-          ? (typeof wallet.rugger_playbook === 'string'
-              ? JSON.parse(wallet.rugger_playbook) as RuggerPlaybook
-              : wallet.rugger_playbook as RuggerPlaybook)
-          : null;
-        const _isRide = playbook?.recommended_strategy === 'RIDE';
-        // v9.0: Also check wallet strategy column — wallets can be RIDE via SigmoidScorer
-        const _isRideByStrategy = wallet?.strategy === 'RIDE';
-        // v9.2: New wallets with 0 rugs are potential clean — evaluate them
-        const isNewClean = !wallet?.strategy && (wallet?.rug_count ?? 0) === 0;
-        // v10: ALL tokens are candidates (market demand determines entry, not wallet)
-        // v10.10j: Block FADE/WATCH wallets — backtest: WR 27%, avg -13% (22 trades, 16 losses eliminated)
-        // v10.10j: Store wallet risk score for position sizing
-        let walletRiskScore = wallet?.risk_score ?? 0.5; // default 0.5 for unknown wallets
-        const walletStrat = wallet?.strategy;
-        if (walletStrat === 'FADE') {
-          logger.debug({ wallet: token.creator_wallet.slice(0, 8), strategy: walletStrat, rugs: wallet?.rug_count }, '🚫 v10.10j: FADE wallet blocked');
-          this.rideCache.set(tokenAddress, { isRide: false, isCleanRide: false, detectedAt: new Date(), fdvAtDetection: 0, walletAddress: token.creator_wallet, walletRiskScore, strategy: null });
-          return;
-        }
+        let walletRiskScore = wallet?.risk_score ?? 0.5;
 
-        // v10.10j: Check funder's risk score (RPC-based, cached from OBSERVE prefetch)
+        // Inherit funder risk score (for position sizing, not blocking)
         const funderResult = await this.funderLookup.getFunder(token.creator_wallet);
         if (funderResult) {
           const funderProfile = await this.walletRepo.getByAddress(funderResult.funder);
           if (funderProfile) {
             const funderRisk = funderProfile.risk_score ?? 0;
-            const funderRugs = funderProfile.rug_count ?? 0;
-            const funderStrat = funderProfile.strategy;
-            // Inherit worst-of: funder risk or creator risk
             if (funderRisk > walletRiskScore) {
               walletRiskScore = Math.max(walletRiskScore, funderRisk * funderResult.confidence);
-              logger.info({ creator: token.creator_wallet.slice(0, 8), funder: funderResult.funder.slice(0, 8), funderRisk: funderRisk.toFixed(2), funderRugs, funderStrat, adjustedRisk: walletRiskScore.toFixed(2) }, '⚠️ v10.10j: Funder risk inherited');
-            }
-            // Block if funder is FADE
-            if (funderStrat === 'FADE' || funderStrat === 'AVOID') {
-              logger.info({ creator: token.creator_wallet.slice(0, 8), funder: funderResult.funder.slice(0, 8), funderStrat, funderRugs }, '🚫 v10.10j: Toxic funder — wallet blocked');
-              this.rideCache.set(tokenAddress, { isRide: false, isCleanRide: false, detectedAt: new Date(), fdvAtDetection: 0, walletAddress: token.creator_wallet, walletRiskScore: 1.0, strategy: null });
-              return;
             }
           }
-          // Store ancestry in DB (async, non-blocking)
           this.storeAncestry(token.creator_wallet, funderResult).catch(() => {});
         }
 
-        const effectiveRide = true;
-        
-        let strategy: WalletStrategy | null = null;
-        let isCleanRide = true; // v10: treat all as clean entry path
-        if (effectiveRide) {
-          // v9.0: Handle wallets WITHOUT a playbook or with minimal playbook (sample_size=0)
-          // These are clean/low-rug wallets classified as RIDE by the SigmoidScorer
-          const hasNoPlaybook = !playbook || playbook.sample_size === 0;
-          const isCleanWallet = (wallet?.rug_count ?? 0) <= 1;
-          isCleanRide = hasNoPlaybook && isCleanWallet;
-          // v9.2: Brand new wallets (no strategy) are always clean
-          if (isNewClean) isCleanRide = true;
-          if (isCleanRide) {
-            strategy = {
-              minPumpPct: 0.10,
-              maxEntryRatio: 2.50,
-              maxEntrySec: 30,
-              targetRatio: 2.0,
-              maxHoldSec: 120,
-              stopLossPct: 0.15,
-              trailingStopPct: 0.12,
-              cascadeThreshold: 4,
-              winRate: 0.70,  // 100% historical but conservative estimate
-              evPerTrade: 25,  // high EV from backtest
-              sampleSize: wallet?.survival_count ?? 3,
-            };
-            this.walletStrategies.set(token.creator_wallet, strategy);
-            logger.info({
-              wallet: token.creator_wallet.slice(0, 8),
-              survivalCount: wallet?.survival_count,
-            }, '🌟 CLEAN_RIDE strategy — high-quality clean wallet');
-          } else if (playbook) {
-            strategy = null;
-            // Skip wallets with negative EV
-            if (strategy.evPerTrade <= 0) {
-              logger.debug({ wallet: token.creator_wallet.slice(0, 8), ev: strategy.evPerTrade.toFixed(1) }, 'Skipping negative EV wallet');
-              this.rideCache.set(tokenAddress, { isRide: false, isCleanRide: false, detectedAt: new Date(), fdvAtDetection: 0, walletAddress: token.creator_wallet, walletRiskScore: walletRiskScore ?? 0.5, strategy: null });
-              return;
-            }
-          }
-        }
-        
         cached = {
-          isRide: effectiveRide && strategy !== null && strategy.evPerTrade > 0,
-          isCleanRide,
           detectedAt: token.detected_at ?? new Date(),
           fdvAtDetection: token.fdv_at_detection ?? 0,
           walletAddress: token.creator_wallet,
           walletRiskScore,
-          strategy,
         };
         this.rideCache.set(tokenAddress, cached);
-        if (!cached.isRide) {
-          return;
-        }
-        logger.info({ token: tokenAddress.slice(0, 8), mc: currentMC.toFixed(0), ev: strategy!.evPerTrade.toFixed(1) + '%' }, '🎯 RIDE token — per-wallet strategy active');
       }
 
       const elapsedMs = Date.now() - cached.detectedAt.getTime();
@@ -1013,8 +906,8 @@ export class TradeExecutor {
 
       const _elapsedSec = elapsedMinutes * 60;
       let cached = this.rideCache.get(tokenAddress);
-      if (!cached || !cached.strategy) {
-        // v10: create a default strategy for any token (market demand determines entry)
+      if (!cached) {
+        // Token not in cache — create entry
         const token = await this.tokenRepo.getByAddress(tokenAddress);
         if (!token) return this.none('Token not found');
         const detectedAt = token.detected_at ? new Date(token.detected_at) : new Date();
@@ -1022,30 +915,15 @@ export class TradeExecutor {
         
         // Auto-create cache entry with v10 default strategy
         const cacheEntry = {
-          isRide: true,
-          isCleanRide: true,
           detectedAt,
           fdvAtDetection: fdv,
           walletAddress: token.creator_wallet,
-          strategy: {
-            minPumpPct: 0.10,
-            maxEntryRatio: 2.5, // v10.3: reduced from 5.0 → 2.5 (2026-03-13 21:01 UTC) — ratio 2-3x: 9t WR=33% avg +2%, filter out late entries
-            maxEntrySec: 90,
-            targetRatio: 2.0,
-            sampleSize: 0,
-            winRate: 0,
-            evPerTrade: 0,
-            cascadeThreshold: 8,
-            maxHoldSec: 600, // SWARM v1.1: 300→600s — let rockets run
-            stopLossPct: 0.15,
-            trailingStopPct: 0.10,
-          }
+          walletRiskScore: 0.5,
         };
         this.rideCache.set(tokenAddress, cacheEntry);
         cached = cacheEntry;
       }
 
-      const ws = cached!.strategy!;
       const baselineMC = cached!.fdvAtDetection > 0 ? cached!.fdvAtDetection : (this.firstMC.get(tokenAddress) ?? currentMC);
       const state = this.liveState.get(tokenAddress);
       const elapsedSec = _elapsedSec;
@@ -1053,13 +931,13 @@ export class TradeExecutor {
 
       // ── MANAGE OPEN POSITION ──
       if (pos) {
-        const mResult = this.managePosition(tokenAddress, pos, ws, currentMC, elapsedSec, state);
+        const mResult = this.managePosition(tokenAddress, pos, null, currentMC, elapsedSec, state);
         if (mResult.action === 'BUY' || mResult.action === 'SELL') this.onLiveSignal(mResult, tokenAddress, currentMC);
         return mResult;
       }
 
       // ── EVALUATE ENTRY ──
-      const eResult = await this.evaluateEntry(tokenAddress, ws, currentMC, baselineMC, mcRatio, elapsedSec, state, cached!.walletAddress);
+      const eResult = await this.evaluateEntry(tokenAddress, null, currentMC, baselineMC, mcRatio, elapsedSec, state, cached!.walletAddress);
       if (eResult.action === 'BUY' || eResult.action === 'SELL') this.onLiveSignal(eResult, tokenAddress, currentMC);
       return eResult;
 
@@ -1076,7 +954,7 @@ export class TradeExecutor {
   private managePosition(
     tokenAddress: string,
     pos: OpenPosition,
-    ws: WalletStrategy,
+    _ws: any,
     currentMC: number,
     elapsedSec: number,
     state: LiveTradeState | undefined
@@ -1086,7 +964,7 @@ export class TradeExecutor {
     const pnlPct = ((currentMC - pos.entryMC) / pos.entryMC) * 100;
     const peakPnl = ((pos.highestMC - pos.entryMC) / pos.entryMC) * 100;
     const dropFromPeak = pos.highestMC > 0 ? (pos.highestMC - currentMC) / pos.highestMC : 0;
-    const _isClean = this.rideCache.get(tokenAddress)?.isCleanRide ?? false;
+    // RIDE/FADE/AVOID removed — Creator Score handles wallet quality
     const signals: SignalBreakdown = { timing_score: 0, momentum_score: 0, consistency_score: 0, risk_score: 0, wallet_score: 0 };
 
     // ══════════════════════════════════════════════════════════════
@@ -1356,7 +1234,7 @@ export class TradeExecutor {
 
   private async evaluateEntry(
     tokenAddress: string,
-    ws: WalletStrategy,
+    _ws: any,
     currentMC: number,
     baselineMC: number,
     mcRatio: number,
@@ -1773,11 +1651,11 @@ export class TradeExecutor {
     } catch { /* non-critical */ }
   }
 
-  private none(reason: string, strategy?: 'RIDE'|'FADE'|'WATCH'|'AVOID'): TradeSignal {
+  private none(reason: string, strategy?: string): TradeSignal {
     return { action: 'NONE', confidence: 0, reason, playbook_strategy: strategy };
   }
 
-  private sell(pct: number, confidence: number, strategy: 'RIDE', reason: string, signals: SignalBreakdown): TradeSignal {
+  private sell(pct: number, confidence: number, strategy: string, reason: string, signals: SignalBreakdown): TradeSignal {
     return { action: 'SELL', confidence, percentage: pct, reason, playbook_strategy: strategy, signals };
   }
 
