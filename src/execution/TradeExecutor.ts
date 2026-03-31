@@ -1370,7 +1370,7 @@ export class TradeExecutor {
     // Uses NEO's old slot (1 dedicated slot, separate from SWARM v1.2)
     // ══════════════════════════════════════════════════════════════
     const swarm3Count = Array.from(this.openPositions.values()).filter(p => (p as any).swarm3Strategy).length;
-    const MAX_SWARM3 = 1;
+    const MAX_SWARM3 = 0; // DISABLED — 2/2 HARD_STOP -66%, T=45-60s too late in cycle
     const swarmCount = Array.from(this.openPositions.values()).filter(p => p.swarmStrategy && !(p as any).swarm3Strategy && !(p as any).ultraStrategy).length;
     const MAX_SWARM = 2;
     if (!this.openPositions.has(tokenAddress) && elapsedSec >= 45 && elapsedSec <= 60) { // SWARM v3: T=45-60s

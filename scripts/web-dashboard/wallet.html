@@ -236,38 +236,38 @@
 
     <!-- Strategy Comparison Card -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;margin-bottom:24px" id="strat-cards">
-      <div class="strat-card" data-strat="std" onclick="toggleStrat('std')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #f0883e;border-radius:12px;padding:20px">
+      <div class="strat-card" data-strat="ultra" onclick="toggleStrat('ultra')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #f0883e;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
           <span style="font-size:16px;font-weight:700;color:#58a6ff">🚀 STANDARD (v10.19)</span>
           <span class="strat-badge std">ULTRA</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center">
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="std-count">0</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Win Rate</div><div style="font-size:20px;font-weight:700;color:#3fb950" id="std-wr">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Avg Net</div><div style="font-size:20px;font-weight:700" id="std-avg">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="ultra-count">0</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Win Rate</div><div style="font-size:20px;font-weight:700;color:#3fb950" id="ultra-wr">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Avg Net</div><div style="font-size:20px;font-weight:700" id="ultra-avg">—</div></div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;text-align:center;margin-top:10px">
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="std-sol">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="std-hs">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="ultra-sol">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="ultra-hs">—</div></div>
         </div>
         <div class="strat-controls"><button class="btn-params" onclick="event.stopPropagation();openParams('ULTRA')">⚙️ Paramètres</button></div>
         <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="std-params">
           b≥75 • ratio 2.0-3.0x • d&lt;25 • HS -20% • Trail 20%@+15% • No PUMP3 • No SELL_DOM • 0.30-0.50 SOL
         </div>
       </div>
-      <div class="strat-card" data-strat="neo" onclick="toggleStrat('neo')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #da3633;border-radius:12px;padding:20px">
+      <div class="strat-card" data-strat="swarm3" onclick="toggleStrat('swarm3')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #da3633;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
           <span style="font-size:16px;font-weight:700;color:#22c55e">🐝 SWARM v3</span>
           <span class="strat-badge neo">SWARM3</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center">
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="neo-count">0</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Win Rate</div><div style="font-size:20px;font-weight:700;color:#3fb950" id="neo-wr">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Avg Net</div><div style="font-size:20px;font-weight:700" id="neo-avg">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="swarm3-count">0</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Win Rate</div><div style="font-size:20px;font-weight:700;color:#3fb950" id="swarm3-wr">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Avg Net</div><div style="font-size:20px;font-weight:700" id="swarm3-avg">—</div></div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;text-align:center;margin-top:10px">
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="neo-sol">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="neo-hs">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="swarm3-sol">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="swarm3-hs">—</div></div>
         </div>
         <div class="strat-controls"><button class="btn-params" onclick="event.stopPropagation();openParams('SWARM3')">⚙️ Paramètres</button></div>
         <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="neo-params">
@@ -446,7 +446,7 @@
   </div>
 <script>
 let equityChart=null;
-const activeStrats = new Set(['ultra','swarm3','swarm','elite','std']); // v10.20: ULTRA+SWARM3+SWARM active
+const activeStrats = new Set(['ultra','swarm3','swarm','elite']); // v10.20: keys match getTradeStrat() output
 let _lastWalletData = null;
 const PAGE_SIZE = 25;
 let currentPage = 0;
@@ -790,10 +790,10 @@ function renderWallet(d){
       }
     }
 
-    const stdTrades = stratSource.filter(t => getTradeStrat(t) === 'ultra' || getTradeStrat(t) === 'std');
-    stratStats(stdTrades, 'std');
-    const neoTrades = stratSource.filter(t => getTradeStrat(t) === 'swarm3' || getTradeStrat(t) === 'neo');
-    stratStats(neoTrades, 'neo');
+    const ultraTrades = stratSource.filter(t => getTradeStrat(t) === 'ultra' || getTradeStrat(t) === 'std');
+    stratStats(ultraTrades, 'ultra');
+    const swarm3Trades = stratSource.filter(t => getTradeStrat(t) === 'swarm3' || getTradeStrat(t) === 'neo');
+    stratStats(swarm3Trades, 'swarm3');
     // CARTEL stats removed
     // elite card removed — legacy trades classified as 'elite' exist but no DOM card
     const swarmTrades = stratSource.filter(t => getTradeStrat(t) === 'swarm');
