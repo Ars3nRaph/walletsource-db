@@ -1613,7 +1613,7 @@ export class TradeExecutor {
     if (this.openPositions.size >= 7) { // 3 STD + 1 NEO + 1 CARTEL + 2 SWARM = 7 max
       return this.none(`🚫 Max total positions (7) — skip`, 'RIDE');
     }
-    if (!isNeoEntry && stdCount >= MAX_STD) {
+    if (!isNeoEntry && stdCount >= MAX_STD && MAX_STD > 0) { // skip guard when STD disabled
       return this.none(`🚫 STD pool full (${stdCount}/${MAX_STD}) — skip`, 'RIDE');
     }
 
