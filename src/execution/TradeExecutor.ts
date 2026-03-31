@@ -1604,14 +1604,14 @@ export class TradeExecutor {
     const MAX_SWARM = 2; // SWARM v1.0: organic retail crowd (buyers≥80, avg_buy<$25, ratio 2.0-3.5x)
     const MAX_STD = 0; // DISABLED — replaced by SWARM ULTRA
     const isNeoEntry = mcRatio < 2.0 && elapsedSec <= 75;
-    if (isNeoEntry && neoCount >= MAX_NEO) {
+    if (isNeoEntry && neoCount >= MAX_NEO && MAX_NEO > 0) {
       return this.none(`🚫 NEO pool full (${neoCount}/${MAX_NEO}) — skip`, 'RIDE');
     }
     if (cartelOpenCount >= MAX_CARTEL) {
       return this.none(`🚫 CARTEL pool full (${cartelOpenCount}/${MAX_CARTEL}) — skip`, 'RIDE');
     }
     // Individual pool guards moved inline to each strategy block for clarity
-    if (this.openPositions.size >= 7) { // 3 STD + 1 NEO + 1 CARTEL + 2 SWARM = 7 max
+    if (this.openPositions.size >= 6) { // 3 ULTRA + 2 SWARM + 1 SWARM3 = 6 max
       return this.none(`🚫 Max total positions (7) — skip`, 'RIDE');
     }
     if (!isNeoEntry && stdCount >= MAX_STD && MAX_STD > 0) { // skip guard when STD disabled
@@ -1734,7 +1734,7 @@ export class TradeExecutor {
       ) {
         if (ultraCount >= MAX_ULTRA) {
           // Fall through to other strategies
-        } else if (this.openPositions.size >= 7) {
+        } else if (this.openPositions.size >= 6) {
           // Fall through
         } else {
           const ultPos = 0.35;
@@ -1799,7 +1799,7 @@ export class TradeExecutor {
       ) {
         if (swarm3Count >= MAX_SWARM3) {
           // Don't return — fall through to SWARM v1.2
-        } else if (this.openPositions.size >= 7) {
+        } else if (this.openPositions.size >= 6) {
           // Don't return — fall through
         } else {
           const sw3Pos = 0.35;
@@ -1844,7 +1844,7 @@ export class TradeExecutor {
         if (swarmCount >= MAX_SWARM) {
           return this.none(`🚫 SWARM pool full (${swarmCount}/${MAX_SWARM})`, 'RIDE');
         }
-        if (this.openPositions.size >= 7) {
+        if (this.openPositions.size >= 6) {
           return this.none('🚫 Total pool full — skip', 'RIDE');
         }
         const swarmPos = 0.35; // slightly larger than STD min — crowd signal = higher conviction
