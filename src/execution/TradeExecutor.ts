@@ -1717,7 +1717,7 @@ export class TradeExecutor {
     // ══════════════════════════════════════════════════════════════
     const ultraCount = Array.from(this.openPositions.values()).filter(p => (p as any).ultraStrategy).length;
     const MAX_ULTRA = 3;
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 45 && elapsedSec <= 90) {
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 90) {
       const ultSbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       const ultAvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
       const ultSellVol = state?.sellVol || 0;
@@ -1775,7 +1775,7 @@ export class TradeExecutor {
     // ══════════════════════════════════════════════════════════════
     const swarm3Count = Array.from(this.openPositions.values()).filter(p => (p as any).swarm3Strategy).length;
     const MAX_SWARM3 = 1;
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 45 && elapsedSec <= 90) {
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 90) {
       const sw3SbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       const sw3AvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
       if (
@@ -2281,6 +2281,11 @@ export class TradeExecutor {
       this.circuitBreakerUntil = null;
       this.consecutiveHardStops = 0;
     }
+    // STD kill switch
+    if (MAX_STD <= 0) {
+      return this.none('🚫 STD disabled (MAX_STD=0)', 'RIDE');
+    }
+
     return {
       action: 'BUY', confidence, percentage: 100, playbook_strategy: 'RIDE',
       wallet_risk_score: wRisk,
