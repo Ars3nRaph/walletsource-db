@@ -522,15 +522,25 @@ export class TradeExecutor {
       
       for (let i = 0; i < tierLevels.length; i++) {
         const tierBit = 1 << i;
-        if (!(tiersSold & tierBit) && rtPnl >= tierLevels[i] && remaining > tierSellPct + 0.05) {
+        const isLastTier = i === tierLevels.length - 1;
+        // Last tier: close entire remaining position (no minimum check)
+        if (!(tiersSold & tierBit) && rtPnl >= tierLevels[i] && (isLastTier || remaining > tierSellPct + 0.05)) {
           rtPos.tiersSold = (rtPos.tiersSold || 0) | tierBit;
-          const pctToSell = tierSellPct / remaining; // sell 20% of ORIGINAL position = X% of current
-          remaining -= tierSellPct;
+          const sellAmt = isLastTier ? remaining : tierSellPct;
+          const pctToSell = sellAmt / remaining; // % of current holding to sell
+          remaining -= sellAmt;
           rtPos.tiersRemainingPct = remaining;
-          // Store tier P&L for blended calculation
           if (!rtPos.tierExitPnls) rtPos.tierExitPnls = [];
           rtPos.tierExitPnls.push(rtPnl);
           this.onTierExit(tokenAddress, pctToSell, `P&L +${rtPnl.toFixed(0)}% hit +${tierLevels[i]}% tier (${Math.round(remaining*100)}% left)`, mcUsd);
+          // Last tier = full close → position fully exited via tiers
+          if (isLastTier && remaining <= 0.01) {
+            this.openPositions.delete(tokenAddress);
+            this.closedTokens.set(tokenAddress, { exitType: 'TIER_FULL', exitMC: mcUsd, exitTime: Date.now(), entryMC: rtPos.entryMC, peakMC: rtPos.highestMC, reentryCount: 0 });
+            this.consecutiveHardStops = 0;
+            logger.info({ token: tokenAddress.slice(0,8), pnl: rtPnl.toFixed(0), tiers: tierLevels.length }, '🏆 TIER FULL CLOSE — all tiers hit');
+            return; // fully closed via tier exits, no trail needed
+          }
         }
       }
       
