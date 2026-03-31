@@ -377,7 +377,7 @@ export class PaperTradeExecutor extends TradeExecutor {
     // Write to paper_trades DB table
     try {
       const reason = signal.reason || '';
-      const buyStrategy = reason.includes('ELITE') ? 'ELITE' : reason.includes('SWARM') ? 'SWARM' : reason.includes('CARTEL') ? 'CARTEL' : reason.includes('NEO') ? 'NEO' : reason.includes('EARLY') ? 'EARLY' : 'STD';
+      const buyStrategy = reason.includes('ULTRA') ? 'ULTRA' : reason.includes('ELITE') ? 'ELITE' : reason.includes('SWARM v3') ? 'SWARM3' : reason.includes('SWARM') ? 'SWARM' : reason.includes('CARTEL') ? 'CARTEL' : reason.includes('NEO') ? 'NEO' : reason.includes('EARLY') ? 'EARLY' : 'STD';
 
       if (signal.action === 'BUY') {
         const bm = reason.match(/(\d+)\s*buyers/);
