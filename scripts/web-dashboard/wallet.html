@@ -238,8 +238,8 @@
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:16px;margin-bottom:24px" id="strat-cards">
       <div class="strat-card" data-strat="ultra" onclick="toggleStrat('ultra')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #f0883e;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#58a6ff">🚀 STANDARD (v10.19)</span>
-          <span class="strat-badge std">ULTRA</span>
+          <span style="font-size:16px;font-weight:700;color:#f0883e">⚡ ULTRA v7</span>
+          <span class="strat-badge std" style="background:rgba(240,136,62,0.15);color:#f0883e;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">ULTRA</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center">
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="ultra-count">0</div></div>
@@ -251,14 +251,14 @@
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="ultra-hs">—</div></div>
         </div>
         <div class="strat-controls"><button class="btn-params" onclick="event.stopPropagation();openParams('ULTRA')">⚙️ Paramètres</button></div>
-        <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="std-params">
-          b≥75 • ratio 2.0-3.0x • d&lt;25 • HS -20% • Trail 20%@+15% • No PUMP3 • No SELL_DOM • 0.30-0.50 SOL
+        <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="ultra-params">
+          ≥80 buyers • avg_buy&lt;$25 • ratio 2.2-3.5x • T=20-40s • SP&lt;0.5 • MC&lt;$12K • HS -25% • Creator Score • Funder Chain • 0.35 SOL • 3 slots
         </div>
       </div>
       <div class="strat-card" data-strat="swarm3" onclick="toggleStrat('swarm3')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #da3633;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#22c55e">🐝 SWARM v3</span>
-          <span class="strat-badge neo">SWARM3</span>
+          <span style="font-size:16px;font-weight:700;color:#6e7681">🐝 SWARM v3 <span style="font-size:11px;color:#f85149">DÉSACTIVÉ</span></span>
+          <span style="background:rgba(248,81,73,0.15);color:#f85149;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">OFF</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center">
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="swarm3-count">0</div></div>
@@ -270,8 +270,8 @@
           <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="swarm3-hs">—</div></div>
         </div>
         <div class="strat-controls"><button class="btn-params" onclick="event.stopPropagation();openParams('SWARM3')">⚙️ Paramètres</button></div>
-        <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="neo-params">
-          Loading SWARM3 config...
+        <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="swarm3-params">
+          T=45-60s • 2/2 HARD_STOP -66% • désactivé en attente de recalibration
         </div>
       </div>
 
@@ -290,7 +290,7 @@
         </div>
                 <div class="strat-controls"><button class="btn-params" onclick="event.stopPropagation();openParams('SWARM')">⚙️ Paramètres</button></div>
 <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center">
-          ≥80 buyers • avg_buy&lt;$25 • ratio 2.0-3.5x • T=20-90s • sb&lt;0.4 • mc&lt;$12K • HS -20% • Trail 20%@+40% • 0.35 SOL • Max 2 slots
+          ≥80 buyers • avg_buy&lt;$25 • ratio 2.0-3.5x • T=40-60s • sb&lt;0.4 • MC&lt;$12K • HS -20% • Creator Score • Funder Chain • 0.35 SOL • 2 slots
         </div>
       </div>
     </div>
