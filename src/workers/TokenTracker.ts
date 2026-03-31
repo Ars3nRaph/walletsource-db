@@ -19,8 +19,8 @@ import { PeakDurationDetector } from '../execution/PeakDurationDetector.js';
 import { PaperTradeExecutor } from '../execution/PaperTradeExecutor.js';
 import type { TokenSnapshot } from '../types/index.js';
 
-const POLL_INTERVAL_MS = 5 * 1000; // v10.10h: 10s → 5s for faster entry
-const TRACKING_DURATION_MS = 20 * 60 * 1000; // 20 minutes — full lifecycle capture including late rugs
+const POLL_INTERVAL_MS = 10 * 1000; // 5s→10s: entry via WS onTrade, DexScreener only for playbook data
+const TRACKING_DURATION_MS = 10 * 60 * 1000; // 10 minutes (was 20 — pump.fun action 90% in first 5min, 20min wastes slots)
 const RUG_GRACE_PERIOD_MS = 3 * 60 * 1000; // 3 minutes - continue tracking after RUG detection to collect lifecycle data
 // Batch mode: DexScreener allows 30 tokens/req. With 10s interval and 25 active tokens:
 // Max 1 batch/10s = 6 batches/min = 6 req/min (well within 300/min free limit)
@@ -236,7 +236,7 @@ export class TokenTracker {
         // Each token consumes 2 req/min (1 per 30s), rate limit = 300 req/min
         // Max capacity = 300 / 2 = 150 tokens theoretical. Use 135 (270 req/min = 90% utilization).
         // With 10min tracking + 30s polling: 135 slots × 6 cycles/h = 810 tokens/h capacity!
-        if (activeCount >= 500 || remainingQuota < 10) { // v10.14.1: raised from 135 — fast_verdict uses WS not DexScreener
+        if (activeCount >= 800 || remainingQuota < 10) { // raised 500→800: DexScreener empty-body fix eliminates quota drain
           // Check if this is a rugger priority token
           const isRuggerToken = false; // ruggerProfiler removed
           if (!isRuggerToken) {

@@ -264,8 +264,8 @@ export class ForensicWorker {
       if (strategy === 'RIDE' || strategy === 'FADE' || strategy === 'AVOID') {
         trackingMode = 'deep';
       } else if (isNewWallet && rugCount === 0) {
-        trackingMode = 'deep'; // v9.2: new wallets get deep (potential clean)
-        logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8) }, '🆕 New wallet → deep tracking (Helius path)');
+        trackingMode = 'fast_verdict'; // Creator Score + Funder Chain handles new wallets — no need for deep
+        logger.info({ token: tokenMint, wallet: creatorWallet.slice(0, 8) }, '🆕 New wallet → fast_verdict (Creator Score active)');
       } else if (rugCount >= 3) {
         trackingMode = 'medium';
       } else {
