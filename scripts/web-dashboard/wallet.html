@@ -152,7 +152,13 @@
     .pagination button.active { background:rgba(88,166,255,0.15); border-color:#58a6ff; color:#58a6ff; font-weight:700; }
     .pagination button:disabled { opacity:0.3; cursor:default; }
     .pagination .pag-info { color:#8b949e; font-size:12px; margin:0 8px; }
-  </style>
+  
+    /* Sell sub-rows */
+    tr.sell-subrow td { padding-top: 3px !important; padding-bottom: 3px !important; }
+    tr.sell-subrow:last-child { border-bottom: 1px solid #21262d !important; }
+    .partial { color: #e3b341 !important; }
+
+    </style>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.1.0/dist/chartjs-plugin-annotation.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
@@ -813,18 +819,56 @@ function renderPage() {
     const pageTrades = filteredTrades.slice(start, start + PAGE_SIZE);
     const tbody=document.getElementById('trades-body');
     tbody.innerHTML=pageTrades.map((t,pi)=>{ const i = start + pi;
-      const cls=t.action==='WIN'?'win':t.action==='LOSS'?'loss':'open';
+      const cls=t.action==='WIN'?'win':t.action==='LOSS'?'loss':t.action==='PARTIAL'?'partial':'open';
       const strat=t.buy_reason&&t.buy_reason.includes('ULTRA')?'ultra':t.buy_reason&&t.buy_reason.includes('SWARM v3')?'swarm3':t.buy_reason&&t.buy_reason.includes('SWARM')?'swarm':t.buy_reason&&t.buy_reason.includes('CARTEL')?'cartel':'std';
       const stratLabel=strat==='ultra'?'⚡ ULTRA':strat==='swarm3'?'🐝 SWv3':strat==='swarm'?'🐝 SWARM':strat==='cartel'?'🎯 CARTEL':'🚀 STD';
       const stratCls='strat-'+strat;
-      const slipB=t.slippage_buy_sol||0,slipS=t.slippage_sell_sol||0;
-      const pumpB=t.pump_fee_buy_sol||0,pumpS=t.pump_fee_sell_sol||0;
-      const jitoB=t.jito_buy_sol||0,jitoS=t.jito_sell_sol||0;
       const totalF=t.fees_sol+t.slippage_sol;
       const pnlPct=t.pnl_pct!==null?(t.pnl_pct>=0?'+':'')+t.pnl_pct.toFixed(1)+'%':'—';
       const pnlSol=t.pnl_sol!==null?(t.pnl_sol>=0?'+':'')+t.pnl_sol.toFixed(4):'—';
       const verShort=(t.strategy_version||'').replace('STD ','').replace('NEO ','').replace('CARTEL ','').replace('ELITE ','');
-      return`<tr class="${stratCls}">
+      const hasSells = t.sells && t.sells.length > 0;
+      // Helper: exit type label + color
+      const exitLabel = (et) => {
+        if(!et) return {l:'?', c:'#8b949e'};
+        if(et.startsWith('TIER-30')) return {l:'T1 +30%', c:'#3fb950'};
+        if(et.startsWith('TIER-60')) return {l:'T2 +60%', c:'#3fb950'};
+        if(et.startsWith('TIER-100')) return {l:'T3 +100%', c:'#56d364'};
+        if(et.startsWith('TIER-200')) return {l:'T4 +200%', c:'#56d364'};
+        if(et.startsWith('TIER')) return {l:'TIER', c:'#3fb950'};
+        if(et.includes('HARD_STOP')) return {l:'HARD_STOP', c:'#f85149'};
+        if(et.includes('TRAIL')) return {l:'TRAIL', c:'#e3b341'};
+        if(et.includes('SWEEP')) return {l:'SWEEP', c:'#8b949e'};
+        if(et.includes('PUMP3')) return {l:'PUMP3', c:'#d29922'};
+        return {l:et, c:'#8b949e'};
+      };
+      // Sell sub-rows
+      const sellRows = hasSells ? t.sells.map(s => {
+        const el = exitLabel(s.exit_type);
+        const sp = s.pnl_pct >= 0 ? '+' : '';
+        const sc = s.pnl_pct >= 0 ? '#3fb950' : '#f85149';
+        const isPeak = s.exit_type && s.exit_type.includes('TRAIL') && s.peak_pct;
+        const pctLabel = isPeak ? `<span style="font-size:9px;color:#8b949e">peak </span>+${s.peak_pct}%` : `${sp}${s.pnl_pct != null ? s.pnl_pct.toFixed(1) : '?'}%`;
+        return `<tr class="sell-subrow ${stratCls}" style="background:rgba(255,255,255,0.02);border-top:1px solid #1c2128">
+          <td colspan="2" style="padding-left:24px">
+            <span style="display:inline-block;background:${el.c}22;color:${el.c};border:1px solid ${el.c}44;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700">${el.l}</span>
+          </td>
+          <td style="font-size:9px;color:#8b949e">↳ ${Math.round(s.pct_sold)}% pos</td>
+          <td style="white-space:nowrap;font-size:10px;color:#8b949e">${fmtTime(s.timestamp)}</td>
+          <td style="font-size:10px;color:#8b949e">$${Math.round(s.mc_usd).toLocaleString()}</td>
+          <td style="font-size:10px;color:#8b949e">${s.sol_cost.toFixed(3)}</td>
+          <td></td>
+          <td style="font-size:11px;font-weight:600;color:${sc}">${pctLabel}</td>
+          <td style="font-size:11px;font-weight:700;color:${sc}">${sp}${s.pnl_sol.toFixed(4)}</td>
+          <td style="font-size:10px;color:#8b949e">${s.sol_out_net.toFixed(4)}</td>
+          <td></td>
+          <td style="font-size:10px;color:#f0883e" title="Slip:${s.slip_sol.toFixed(4)} Pump:${s.pump_sol.toFixed(4)} Jito:${s.jito_sol.toFixed(5)}">${s.fees_sol.toFixed(4)}</td>
+          <td></td>
+          <td style="font-size:9px;color:#8b949e;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${s.reason||''}">${(s.reason||'').slice(0,60)}</td>
+          <td></td>
+        </tr>`;
+      }).join('') : '';
+      return`<tr class="${stratCls}" style="border-bottom:${hasSells?'none':''}">
         <td>${i+1}</td>
         <td><span class="strat-badge ${strat}">${stratLabel}</span></td>
         <td style="font-size:10px;color:#8b949e;white-space:nowrap" title="${t.strategy_version||''}">${verShort}</td>
@@ -832,34 +876,25 @@ function renderPage() {
         <td><a href="https://pump.fun/${t.token_full}" target="_blank" style="color:#58a6ff;text-decoration:none;font-size:12px">${t.token}</a></td>
         <td style="font-size:12px">${t.position_sol.toFixed(2)}</td>
         <td style="font-size:12px">$${t.buy_mc.toLocaleString()}</td>
-        <td class="${cls}" style="font-weight:600" title="${
-          t.action==='OPEN'?'Position ouverte':
-          (t.exit_type&&(t.exit_type.includes('TRAIL')))?('Peak atteint: +'+(t.peak_pct||t.mc_change_pct||'?')+'%'):
-          'MC change: '+(t.mc_change_pct||'?')+'%'
-        }">${(()=>{
+        <td class="${cls}" style="font-weight:600">${(()=>{
           if(t.action==='OPEN') return '—';
-          // RT-TRAIL : afficher le peak réel capturé depuis le reason ou peak_pct
           if(t.exit_type&&t.exit_type.includes('TRAIL')){
-            // Extraire "captured ~X%" depuis le exit_reason
-            const m = (t.exit_reason||'').match(/captured ~([\d.]+)%/);
-            const captured = m ? parseFloat(m[1]) : null;
             const peak = t.peak_pct || null;
             if(peak) return `<span style="font-size:9px;color:#8b949e">peak</span> +${peak}%`;
-            if(captured) return `+${captured.toFixed(1)}%`;
-            return t.pnl_pct!==null?(t.pnl_pct>=0?'+':'')+t.pnl_pct+'%':'—';
+            const m=(t.exit_reason||'').match(/captured ~([\d.]+)%/);
+            if(m) return `+${parseFloat(m[1]).toFixed(1)}%`;
           }
-          // HARD_STOP, PUMP3, OTHER : mc_change = pnl réel
           return t.pnl_pct!==null?(t.pnl_pct>=0?'+':'')+t.pnl_pct+'%':
                  t.mc_change_pct!==null?(t.mc_change_pct>=0?'+':'')+t.mc_change_pct+'%':'—';
         })()}</td>
-        <td class="${cls}" style="font-weight:700;font-size:14px">${pnlPct}</td>
+        <td class="${cls}" style="font-weight:700;font-size:14px">${pnlPct}${t.tiers_hit>0?`<span style="font-size:9px;margin-left:4px;color:#3fb950">🔶${t.tiers_hit}T</span>`:''}</td>
         <td class="${cls}" style="font-weight:600;font-size:12px">${pnlSol}</td>
-        <td style="font-size:11px;font-weight:600;color:${t.wallet_impact_pct>0?'#3fb950':t.wallet_impact_pct<0?'#f85149':'#8b949e'}" title="Impact sur le wallet">${t.wallet_impact_pct!=null?((t.wallet_impact_pct>=0?'+':'')+t.wallet_impact_pct.toFixed(2)+'%'):'—'}</td>
-        <td style="color:#f0883e;font-size:11px" title="Slip:${(slipB+slipS).toFixed(4)} Pump:${(pumpB+pumpS).toFixed(4)} Jito:${(jitoB+jitoS).toFixed(5)}">${totalF.toFixed(4)}</td>
+        <td style="font-size:11px;font-weight:600;color:${t.wallet_impact_pct>0?'#3fb950':t.wallet_impact_pct<0?'#f85149':'#8b949e'}">${t.wallet_impact_pct!=null?((t.wallet_impact_pct>=0?'+':'')+t.wallet_impact_pct.toFixed(2)+'%'):'—'}</td>
+        <td style="color:#f0883e;font-size:11px">${totalF.toFixed(4)}</td>
         <td style="font-size:12px;font-weight:600">${t.balance_after.toFixed(2)}</td>
         <td style="font-size:10px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.exit_reason||''}">${fmtExit(t.exit_reason)}</td>
-        <td><button onclick="showChart('${t.token_full}','${t.token}')" style="background:#21262d;border:1px solid #30363d;color:#58a6ff;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px" onmouseover="this.style.background='#30363d'" onmouseout="this.style.background='#21262d'">📈</button></td>
-      </tr>`;
+        <td><button onclick="showChart('${t.token_full}','${t.token}')" style="background:#21262d;border:1px solid #30363d;color:#58a6ff;border-radius:6px;padding:3px 8px;cursor:pointer;font-size:11px">📈</button></td>
+      </tr>${sellRows}`;
     }).join('');
     // Pagination controls
     const pagDiv = document.getElementById('pagination');
