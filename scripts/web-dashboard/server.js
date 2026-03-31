@@ -694,13 +694,14 @@ app.get('/api/paper-trades/:token/chart', async (req, res) => {
   try {
     const token = req.params.token;
 
-    // Get BUY/SELL from paper_trades
+    // Get BUY/SELL from paper_trades (including tier exits)
     const { rows: pts } = await pool.query(
-      `SELECT action, mc_usd, elapsed_min, reason, timestamp
+      `SELECT action, mc_usd, elapsed_min, reason, timestamp, exit_type, pnl_pct
        FROM paper_trades WHERE token_address = $1 ORDER BY timestamp`, [token]
     );
     const buyPt = pts.find(p => p.action === 'BUY');
-    const sellPt = pts.find(p => p.action === 'SELL');
+    const sellPts = pts.filter(p => p.action === 'SELL');
+    const sellPt = sellPts[sellPts.length - 1]; // last sell for legacy compat
 
     // Get ALL price ticks: token_snapshots + trade_events combined
     const { rows: snaps } = await pool.query(
@@ -732,10 +733,20 @@ app.get('/api/paper-trades/:token/chart', async (req, res) => {
     const sell = sellPt ? { time: parseFloat(sellPt.elapsed_min) * 60, mc: parseFloat(sellPt.mc_usd), action: 'SELL', reason: sellPt.reason || '' } : null;
 
     if (buy) ticks.push(buy);
-    if (sell) ticks.push(sell);
+    // Build all sell markers (tiers + final)
+    const allSells = sellPts.map(s => ({
+      time: (new Date(s.timestamp).getTime() - t0) / 1000,
+      mc: parseFloat(s.mc_usd),
+      action: 'SELL',
+      reason: s.reason || '',
+      exit_type: s.exit_type || 'SELL',
+      pnl_pct: s.pnl_pct ? parseFloat(s.pnl_pct) : null
+    }));
+    for (const s of allSells) ticks.push(s);
+    if (sell && !allSells.length) ticks.push(sell);
     ticks.sort((a, b) => a.time - b.time);
 
-    res.json({ success: true, ticks, buy, sell, baseline });
+    res.json({ success: true, ticks, buy, sell, sells: allSells, baseline });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

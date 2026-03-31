@@ -963,9 +963,11 @@ async function showChart(tokenFull, tokenShort) {
     const entryMC = buyTick ? buyTick.mc : prices[0];
     const buyIdx = ticks.findIndex(t => t.action === 'BUY');
     const sellIdx = ticks.findIndex(t => t.action === 'SELL');
+    // Find last sell index for segmentation
+    const lastSellIdx = (() => { for(let i=ticks.length-1;i>=0;i--) if(ticks[i].action==='SELL') return i; return -1; })();
     const segColors = ticks.map((t, i) => {
       if (i < buyIdx || buyIdx === -1) return 'rgba(255,193,7,0.6)';
-      if (i >= buyIdx && (sellIdx === -1 || i <= sellIdx)) return prices[i] >= entryMC ? '#3fb950' : '#f85149';
+      if (i >= buyIdx && (lastSellIdx === -1 || i <= lastSellIdx)) return prices[i] >= entryMC ? '#3fb950' : '#f85149';
       return 'rgba(100,100,100,0.4)';
     });
     const ptR = ticks.map(t => t.action==='BUY'?8:t.action==='SELL'?8:1);
@@ -979,18 +981,32 @@ async function showChart(tokenFull, tokenShort) {
       ann.buyLabel={type:'label',xValue:buyIdx,yValue:buyTick.mc,content:['🟢 BUY','$'+Math.round(buyTick.mc).toLocaleString()],color:'#3fb950',font:{size:11,weight:'bold'},yAdjust:-25};
       ann.buyLine={type:'line',xMin:buyIdx,xMax:buyIdx,borderColor:'rgba(63,185,80,0.3)',borderWidth:1,borderDash:[4,4]};
     }
-    if(sellTick&&sellIdx>=0){
+    // All sell markers (tiers + final)
+    const allSells = data.sells || [];
+    const tierColors = {'TIER-30':'#3fb950','TIER-60':'#3fb950','TIER-100':'#00ff7f','TIER-200':'#00ff7f','RT-TRAIL':'#d29922','HARD_STOP':'#f85149','SWEEP':'#6e7681'};
+    const tierEmoji = {'TIER-30':'🔶T1','TIER-60':'🔶T2','TIER-100':'🔶T3','TIER-200':'🔶T4','RT-TRAIL':'📉TRAIL','HARD_STOP':'🛑HS','SWEEP':'🧹'};
+    allSells.forEach((s, si) => {
+      const sIdx = ticks.findIndex(t => t === s || (t.action==='SELL' && Math.abs(t.time - s.time) < 1 && Math.abs(t.mc - s.mc) < 1));
+      if (sIdx < 0) return;
+      const et = s.exit_type || 'SELL';
+      const sc = tierColors[et] || '#f85149';
+      const emoji = tierEmoji[et] || '🔴';
+      const pnl = s.pnl_pct != null ? s.pnl_pct.toFixed(1) : ((s.mc - entryMC) / entryMC * 100).toFixed(1);
+      ann['sell_'+si] = {type:'label',xValue:sIdx,yValue:s.mc,content:[emoji+' '+pnl+'%','$'+Math.round(s.mc).toLocaleString()],color:sc,font:{size:9,weight:'bold'},yAdjust:20+(si*18)};
+      ann['sellLine_'+si] = {type:'line',xMin:sIdx,xMax:sIdx,borderColor:sc+'55',borderWidth:1,borderDash:[3,3]};
+    });
+    // Fallback: if no sells array, use legacy single sell
+    if (!allSells.length && sellTick && sellIdx >= 0) {
       const sc=sellTick.mc>=entryMC?'#3fb950':'#f85149';
       const pnl=((sellTick.mc-entryMC)/entryMC*100).toFixed(1);
-      const reason=(sellTick.reason||'').replace(/\(.*?\)/g,'').replace(/P&L.*$/,'').trim().slice(0,35);
       ann.sellLabel={type:'label',xValue:sellIdx,yValue:sellTick.mc,content:['🔴 SELL '+(pnl>0?'+':'')+pnl+'%','$'+Math.round(sellTick.mc).toLocaleString()],color:sc,font:{size:10,weight:'bold'},yAdjust:25};
       ann.sellLine={type:'line',xMin:sellIdx,xMax:sellIdx,borderColor:'rgba(248,81,73,0.3)',borderWidth:1,borderDash:[4,4]};
     }
     if(entryMC) ann.entryLine={type:'line',yMin:entryMC,yMax:entryMC,borderColor:'rgba(88,166,255,0.3)',borderWidth:1,borderDash:[6,4],
       label:{display:true,content:'Entry $'+Math.round(entryMC).toLocaleString(),position:'start',color:'#58a6ff',font:{size:10},backgroundColor:'rgba(0,0,0,0.6)'}};
     if(buyIdx>0) ann.obsZone={type:'box',xMin:0,xMax:buyIdx,backgroundColor:'rgba(255,193,7,0.04)',borderWidth:0,label:{display:true,content:'👁 OBSERVE',position:{x:'center',y:'start'},color:'rgba(255,193,7,0.5)',font:{size:11}}};
-    if(buyIdx>=0&&sellIdx>buyIdx) ann.holdZone={type:'box',xMin:buyIdx,xMax:sellIdx,backgroundColor:'rgba(88,166,255,0.04)',borderWidth:0,label:{display:true,content:'📊 POSITION',position:{x:'center',y:'start'},color:'rgba(88,166,255,0.5)',font:{size:11}}};
-    if(sellIdx>=0&&sellIdx<ticks.length-1) ann.postZone={type:'box',xMin:sellIdx,xMax:ticks.length-1,backgroundColor:'rgba(100,100,100,0.04)',borderWidth:0,label:{display:true,content:'👻 POST-SELL',position:{x:'center',y:'start'},color:'rgba(100,100,100,0.5)',font:{size:11}}};
+    if(buyIdx>=0&&lastSellIdx>buyIdx) ann.holdZone={type:'box',xMin:buyIdx,xMax:lastSellIdx,backgroundColor:'rgba(88,166,255,0.04)',borderWidth:0,label:{display:true,content:'📊 POSITION',position:{x:'center',y:'start'},color:'rgba(88,166,255,0.5)',font:{size:11}}};
+    if(lastSellIdx>=0&&lastSellIdx<ticks.length-1) ann.postZone={type:'box',xMin:lastSellIdx,xMax:ticks.length-1,backgroundColor:'rgba(100,100,100,0.04)',borderWidth:0,label:{display:true,content:'👻 POST-SELL',position:{x:'center',y:'start'},color:'rgba(100,100,100,0.5)',font:{size:11}}};
     const pnlVal=sellTick&&buyTick?((sellTick.mc-buyTick.mc)/buyTick.mc*100).toFixed(1):'?';
     const pnlC=pnlVal>0?'#3fb950':'#f85149';
     document.getElementById('chart-title').innerHTML=`📈 ${tokenShort} <span style="color:${pnlC}">${pnlVal>0?'+':''}${pnlVal}%</span>`;
