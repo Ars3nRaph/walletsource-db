@@ -221,7 +221,7 @@ app.get('/api/stats', async (req, res) => {
         count(*) FILTER (WHERE action='SELL') as trades,
         round(100.0 * count(*) FILTER (WHERE action='SELL' AND pnl_pct > 0) / NULLIF(count(*) FILTER (WHERE action='SELL'), 0), 1) as wr,
         round(avg(pnl_pct) FILTER (WHERE action='SELL'), 1) as avg_pnl
-      FROM paper_trades WHERE (strategy = 'STD' OR buy_strategy = 'STD' OR buy_strategy = 'v10-MARKET' OR (buy_strategy IS NULL AND strategy IS NULL))
+      FROM paper_trades WHERE buy_strategy = 'ULTRA'
     `);
     stats.std = stdStats.rows[0];
 
@@ -231,7 +231,7 @@ app.get('/api/stats', async (req, res) => {
         count(*) FILTER (WHERE action='SELL') as trades,
         round(100.0 * count(*) FILTER (WHERE action='SELL' AND pnl_pct > 0) / NULLIF(count(*) FILTER (WHERE action='SELL'), 0), 1) as wr,
         round(avg(pnl_pct) FILTER (WHERE action='SELL'), 1) as avg_pnl
-      FROM paper_trades WHERE strategy = 'NEO' OR buy_strategy = 'NEO'
+      FROM paper_trades WHERE buy_strategy = 'SWARM3'
     `);
     stats.neo = neoStats.rows[0];
 
@@ -415,7 +415,11 @@ app.get('/api/system-health', async (req, res) => {
 
 // Start server
 // Auto-fix: reclassify any SWARM trades still tagged as STD at startup
-pool.query(`UPDATE paper_trades SET buy_strategy='SWARM', strategy_version='SWARM v1.1' WHERE buy_strategy='STD' AND reason ILIKE '%SWARM%'`)
+pool.query(`UPDATE paper_trades SET buy_strategy='ULTRA', strategy_version='ULTRA v7' WHERE buy_strategy='STD' AND reason ILIKE '%ULTRA%'`)
+  .catch(() => {});
+pool.query(`UPDATE paper_trades SET buy_strategy='SWARM3', strategy_version='SWARM v3' WHERE buy_strategy='SWARM' AND reason ILIKE '%SWARM v3%'`)
+  .catch(() => {});
+pool.query(`UPDATE paper_trades SET buy_strategy='SWARM', strategy_version='SWARM v1.2' WHERE buy_strategy='STD' AND reason ILIKE '%SWARM%'`)
   .then(r => { if (r.rowCount > 0) console.log('[startup] Fixed ' + r.rowCount + ' SWARM trades tagged as STD'); })
   .catch(() => {});
 
