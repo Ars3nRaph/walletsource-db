@@ -19,7 +19,15 @@
       200
     ],
     "sell_pct": 0.15,
-    "floor_offset_pct": 10
+    "floor_offset_pct": 10,
+    "sell_pcts": [
+      0.15,
+      0.25,
+      0.15,
+      0.15,
+      0.15,
+      0.15
+    ]
   },
   "strategies": {
     "STD": {

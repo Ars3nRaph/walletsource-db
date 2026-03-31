@@ -515,7 +515,8 @@ export class TradeExecutor {
       // ═══ 5-TIER EXIT: sell 20% at +30%, +60%, +100%, +200%, trail remainder ═══
       const _rc = getRuntimeConfig();
       const tierLevels = _rc?.tiers?.levels || [30, 60, 100, 200];
-      const tierSellPct = _rc?.tiers?.sell_pct || 0.20;
+      const tierSellPcts: number[] = _rc?.tiers?.sell_pcts || []; // per-tier sell %
+      const tierSellPctDefault = _rc?.tiers?.sell_pct || 0.15;
       const tierFloorOffset = _rc?.tiers?.floor_offset_pct || 10;
       const tiersSold = rtPos.tiersSold || 0;
       let remaining = rtPos.tiersRemainingPct ?? 1.0;
@@ -523,6 +524,7 @@ export class TradeExecutor {
       for (let i = 0; i < tierLevels.length; i++) {
         const tierBit = 1 << i;
         const isLastTier = i === tierLevels.length - 1;
+        const tierSellPct = tierSellPcts[i] ?? tierSellPctDefault; // per-tier or fallback
         // Last tier: close entire remaining position (no minimum check)
         if (!(tiersSold & tierBit) && rtPnl >= tierLevels[i] && (isLastTier || remaining > tierSellPct + 0.05)) {
           rtPos.tiersSold = (rtPos.tiersSold || 0) | tierBit;
