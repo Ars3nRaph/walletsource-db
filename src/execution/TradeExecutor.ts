@@ -578,13 +578,17 @@ export class TradeExecutor {
       const rtIsNeo = false; // NEO removed
       const rtIsCartel = rtPos.cartelStrategy === true;
       const rtIsSwarm = rtPos.swarmStrategy === true;
+      const rtIsUltra = (rtPos as any).ultraStrategy === true;
       // Trail activation: lower threshold if tiers already sold (protect remaining)
       const rtTiersSold = rtPos.tiersSold || 0;
-      let rtTrailTrigger = rtIsSwarm ? (_rc?.strategies?.SWARM?.trail_activate_pct || 30) : (rtIsNeo || rtIsCartel) ? (_rc?.strategies?.NEO?.trail_activate_pct || 15) : (_rc?.strategies?.STD?.trail_activate_pct || 15);
+      let rtTrailTrigger = rtIsSwarm ? (_rc?.strategies?.SWARM?.trail_activate_pct || 30)
+        : rtIsUltra ? 15   // ULTRA: trail activates at +15%
+        : rtIsCartel ? 15
+        : 15;
       if (rtTiersSold >= 1) rtTrailTrigger = Math.min(rtTrailTrigger, 15); // activate trail earlier after first tier
       if (rtPeakPnl >= rtTrailTrigger) {
-        if (rtIsSwarm) {
-          // SWARM v1.2: dynamic trail — tighter after tier exits lock in profit
+        if (rtIsSwarm || rtIsUltra) {
+          // SWARM/ULTRA: dynamic trail — tighter after tier exits lock in profit
           const swTiers = rtPos.tiersSold || 0;
           if (swTiers >= 15) {        // all 4 tiers sold (20% left) → very tight
             rtDropLimit = 0.06;
@@ -1479,7 +1483,7 @@ export class TradeExecutor {
     const MAX_SWARM3 = 1;
     const swarmCount = Array.from(this.openPositions.values()).filter(p => p.swarmStrategy && !(p as any).swarm3Strategy && !(p as any).ultraStrategy).length;
     const MAX_SWARM = 2;
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 90) {
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 45 && elapsedSec <= 90) { // SWARM v3: T=45-90s (stricter than v1.2)
       const sw3SbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       const sw3AvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
       if (
@@ -1522,7 +1526,7 @@ export class TradeExecutor {
           return {
             action: 'BUY', confidence: 0.85, percentage: 100, playbook_strategy: 'RIDE',
             wallet_risk_score: 0.3, position_sol: sw3Pos,
-            reason: `🐝 SWARM v3 BUY — ${uniqueBuyerCount}b avg=$${sw3AvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | sb=${sw3SbRatio.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${sw3Pos}SOL`
+            reason: `🐝 SWARM v3 BUY — ${uniqueBuyerCount}b avg=$${sw3AvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x T=${elapsedSec.toFixed(0)}s (45-90s) | sb=${sw3SbRatio.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${sw3Pos}SOL`
           };
         }
       }
