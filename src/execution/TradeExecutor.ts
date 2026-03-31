@@ -1413,7 +1413,7 @@ export class TradeExecutor {
 
     const ultraCount = Array.from(this.openPositions.values()).filter(p => (p as any).ultraStrategy).length;
     const MAX_ULTRA = 3; // ULTRA v7: SP<0.5 + Creator Score + Funder Chain
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 90) {
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 60) { // T=20-60s (was 90s — tokens at 90s are often end-of-pump)
       const ultSbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       const ultAvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
       const ultSellVol = state?.sellVol || 0;
@@ -1467,7 +1467,7 @@ export class TradeExecutor {
           return {
             action: 'BUY', confidence: 0.90, percentage: 100, playbook_strategy: 'RIDE',
             wallet_risk_score: 0.2, position_sol: ultPos,
-            reason: `⚡ ULTRA v7 BUY — ${uniqueBuyerCount}b avg=$${ultAvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | sp=${ultSellPressure.toFixed(2)} ${ultScoreLabel} mc=$${currentMC.toFixed(0)} pos=${ultPos}SOL`
+            reason: `⚡ ULTRA v7 BUY — ${uniqueBuyerCount}b avg=$${ultAvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x T=${elapsedSec.toFixed(0)}s | sp=${ultSellPressure.toFixed(2)} ${ultScoreLabel} mc=$${currentMC.toFixed(0)} pos=${ultPos}SOL`
           };
         }
       }
@@ -1483,7 +1483,7 @@ export class TradeExecutor {
     const MAX_SWARM3 = 1;
     const swarmCount = Array.from(this.openPositions.values()).filter(p => p.swarmStrategy && !(p as any).swarm3Strategy && !(p as any).ultraStrategy).length;
     const MAX_SWARM = 2;
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 45 && elapsedSec <= 90) { // SWARM v3: T=45-90s (stricter than v1.2)
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 45 && elapsedSec <= 60) { // SWARM v3: T=45-60s
       const sw3SbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       const sw3AvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
       if (
@@ -1538,7 +1538,7 @@ export class TradeExecutor {
     // Signal: masse retail (≥80 buyers, avg<$25, ratio 2.0-3.5x, T=20-90s)
     // Philosophy: not smart money, it's the crowd that makes fusées
     // ══════════════════════════════════════════════════════════════
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 90) {
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 60) { // T=20-60s
       const swarmSbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       // avgBuyUsd = buyVol (USD) / buyCount
       const swarmAvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
@@ -1580,7 +1580,7 @@ export class TradeExecutor {
         return {
           action: 'BUY', confidence: 0.82, percentage: 100, playbook_strategy: 'RIDE',
           wallet_risk_score: 0.3, position_sol: swarmPos,
-          reason: `🐝 SWARM v1.2 BUY — ${uniqueBuyerCount}b avg=$${swarmAvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | sb=${swarmSbRatio.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${swarmPos}SOL`
+          reason: `🐝 SWARM v1.2 BUY — ${uniqueBuyerCount}b avg=$${swarmAvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x T=${elapsedSec.toFixed(0)}s | sb=${swarmSbRatio.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${swarmPos}SOL`
         };
       }
     }
