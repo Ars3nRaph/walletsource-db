@@ -1717,7 +1717,7 @@ export class TradeExecutor {
     // Uses STD's 3 slots (separate from SWARM v1.2 and v3)
     // ══════════════════════════════════════════════════════════════
     const ultraCount = Array.from(this.openPositions.values()).filter(p => (p as any).ultraStrategy).length;
-    const MAX_ULTRA = 3;
+    const MAX_ULTRA = 3; // ULTRA v7: SP<0.5 + Creator Score + Funder Chain
     if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 90) {
       const ultSbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       const ultAvgBuy = buyCount > 0 ? buyVol / buyCount : 999;

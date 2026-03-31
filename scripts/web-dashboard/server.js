@@ -479,7 +479,7 @@ app.get('/api/paper-trades', async (req, res) => {
         buy_time: buy.timestamp,
         buy_mc: buy.mc,
         buy_reason: buy.reason,
-        entry_strategy: buy.buy_strategy || 'STD',
+        entry_strategy: buy.buy_strategy || 'ULTRA',
         strategy_version: buy.strategy_version,
         quality_score: buy.quality_score,
         sell_time: sell?.timestamp || null,
@@ -501,7 +501,7 @@ app.get('/api/paper-trades', async (req, res) => {
 
     const strategies = {};
     for (const t of completed) {
-      const strat = t.entry_strategy || 'STD';
+      const strat = t.entry_strategy || 'ULTRA';
       if (!strategies[strat]) strategies[strat] = { count: 0, wins: 0, total_pnl: 0 };
       strategies[strat].count++;
       if (t.pnl_pct > 0) strategies[strat].wins++;
@@ -830,7 +830,7 @@ app.get('/api/wallet-sim', async (req, res) => {
         action: sell && pnlSOL !== null ? (pnlSOL >= 0 ? 'WIN' : 'LOSS') : 'OPEN',
         timestamp: buy.timestamp, sell_timestamp: sell?.timestamp || null,
         position_sol: parseFloat(pos.toFixed(4)),
-        position_tier: buy.buy_strategy || 'STD',
+        position_tier: buy.buy_strategy || 'ULTRA',
         quality_score: buy.quality_score,
         buy_mc: buyMC ? parseFloat(buyMC.toFixed(0)) : null,
         sell_mc: sellMC ? parseFloat(sellMC.toFixed(0)) : null,
@@ -1441,8 +1441,8 @@ app.post('/api/runtime-config', (req, res) => {
     if (patch.strategies) {
       const envPath = path.join(__dirname, '../../.env');
       let env = readFileSync(envPath, 'utf-8');
-      if (patch.strategies.STD?.enabled_live !== undefined) env = env.replace(/^LIVE_STD=.*$/m, 'LIVE_STD=' + patch.strategies.STD.enabled_live);
-      if (patch.strategies.NEO?.enabled_live !== undefined) env = env.replace(/^LIVE_NEO=.*$/m, 'LIVE_NEO=' + patch.strategies.NEO.enabled_live);
+      if (patch.strategies.ULTRA?.enabled_live !== undefined) env = env.replace(/^LIVE_STD=.*$/m, 'LIVE_STD=' + patch.strategies.STD.enabled_live);
+      if (patch.strategies.SWARM3?.enabled_live !== undefined) env = env.replace(/^LIVE_NEO=.*$/m, 'LIVE_NEO=' + patch.strategies.NEO.enabled_live);
       if (patch.strategies.SWARM?.enabled_live !== undefined) env = env.replace(/^LIVE_SWARM=.*$/m, 'LIVE_SWARM=' + patch.strategies.SWARM.enabled_live);
       writeFileSync(envPath, env);
     }
@@ -1625,7 +1625,7 @@ app.post('/api/live-strategy-toggle', async (req, res) => {
     const fsSync = await import('fs');
     const { strategy, enabled } = req.body;
     
-    if (!['STD', 'NEO', 'SWARM'].includes(strategy)) {
+    if (!['ULTRA', 'SWARM', 'SWARM3'].includes(strategy)) {
       return res.status(400).json({ success: false, error: 'Invalid strategy' });
     }
     
@@ -1675,8 +1675,8 @@ app.get('/api/live-strategy-status', async (req, res) => {
   res.json({
     success: true,
     strategies: {
-      STD:   { paper_slots: getMax('MAX_STD'),   paper_enabled: getMax('MAX_STD') > 0,   live_enabled: process.env.LIVE_STD === 'true' },
-      NEO:   { paper_slots: getMax('MAX_NEO'),   paper_enabled: getMax('MAX_NEO') > 0,   live_enabled: process.env.LIVE_NEO === 'true' },
+      ULTRA: { paper_slots: getMax('MAX_ULTRA'), paper_enabled: getMax('MAX_ULTRA') > 0, live_enabled: process.env.LIVE_STD === 'true' },
+      SWARM3: { paper_slots: getMax('MAX_SWARM3'), paper_enabled: getMax('MAX_SWARM3') > 0, live_enabled: false },
       SWARM: { paper_slots: getMax('MAX_SWARM'), paper_enabled: getMax('MAX_SWARM') > 0, live_enabled: process.env.LIVE_SWARM === 'true' },
     }
   });
@@ -1701,10 +1701,10 @@ app.post('/api/config/save', async (req, res) => {
     
     // Map of param keys to their regex patterns in the source
     const paramMap = {
-      'STD.min_buyers':    { pattern: /(const\s+MIN_BUYERS\s*=\s*)\d+/, file: 'ts' },
-      'STD.slots':         { pattern: /(const\s+MAX_STD\s*=\s*)\d+/, file: 'ts' },
-      'STD.max_dumps':     { pattern: /(totalDumps\s*>=\s*)\d+/, file: 'ts' },
-      'NEO.slots':         { pattern: /(const\s+MAX_NEO\s*=\s*)\d+/, file: 'ts' },
+      'ULTRA.min_buyers':    { pattern: /(const\s+MIN_BUYERS\s*=\s*)\d+/, file: 'ts' },
+      'ULTRA.slots':         { pattern: /(const\s+MAX_ULTRA\s*=\s*)\d+/, file: 'ts' },
+      'ULTRA.max_dumps':     { pattern: /(totalDumps\s*>=\s*)\d+/, file: 'ts' },
+      'SWARM3.slots':         { pattern: /(const\s+MAX_SWARM3\s*=\s*)\d+/, file: 'ts' },
       'SWARM.slots':       { pattern: /(const\s+MAX_SWARM\s*=\s*)\d+/, file: 'ts' },
       'live.MAX_POSITION_SOL':   { pattern: /^(MAX_POSITION_SOL=).*$/m, file: 'env' },
       'live.MAX_DAILY_LOSS_SOL': { pattern: /^(MAX_DAILY_LOSS_SOL=).*$/m, file: 'env' },
