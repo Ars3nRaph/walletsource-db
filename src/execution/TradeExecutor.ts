@@ -1814,6 +1814,17 @@ export class TradeExecutor {
           });
           // Tag as SWARM v3 (swarm3Strategy flag for slot counting)
           (this.openPositions.get(tokenAddress) as any).swarm3Strategy = true;
+          // Creator Score + Funder chain check
+          const sw3Deployer = await getTokenDeployer(tokenAddress);
+          const sw3CS = sw3Deployer ? await getCreatorScore(sw3Deployer) : null;
+          if (sw3CS && (sw3CS.rugRate >= 50 || sw3CS.avgPeakMC < 8000)) {
+            this.openPositions.delete(tokenAddress);
+            return this.none(`🚫 SWARM3: deployer rug_rate=${sw3CS.rugRate.toFixed(0)}% avgPeak=$${sw3CS.avgPeakMC.toFixed(0)} — serial rugger`, 'RIDE');
+          }
+          if (!sw3CS && sw3Deployer) {
+            const sw3Funder = await checkDeployerFunding(sw3Deployer);
+            if (sw3Funder.blocked) { this.openPositions.delete(tokenAddress); return this.none(`🚫 SWARM3: ${sw3Funder.reason}`, 'RIDE'); }
+          }
           logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: sw3AvgBuy.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0) }, '🐝 SWARM v3 BUY');
           return {
             action: 'BUY', confidence: 0.85, percentage: 100, playbook_strategy: 'RIDE',
@@ -1857,6 +1868,17 @@ export class TradeExecutor {
           pumpPeaks: [], pumpState: 'PUMP' as const, cycleHigh: currentMC, dipLow: currentMC,
           tickMCs: [currentMC], confirmationDone: true, swarmStrategy: true,
         });
+        // Creator Score + Funder chain check
+        const swDeployer = await getTokenDeployer(tokenAddress);
+        const swCS = swDeployer ? await getCreatorScore(swDeployer) : null;
+        if (swCS && (swCS.rugRate >= 50 || swCS.avgPeakMC < 8000)) {
+          this.openPositions.delete(tokenAddress);
+          return this.none(`🚫 SWARM: deployer rug_rate=${swCS.rugRate.toFixed(0)}% avgPeak=$${swCS.avgPeakMC.toFixed(0)} — serial rugger`, 'RIDE');
+        }
+        if (!swCS && swDeployer) {
+          const swFunder = await checkDeployerFunding(swDeployer);
+          if (swFunder.blocked) { this.openPositions.delete(tokenAddress); return this.none(`🚫 SWARM: ${swFunder.reason}`, 'RIDE'); }
+        }
         logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: swarmAvgBuy.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0) }, '🐝 SWARM BUY');
         return {
           action: 'BUY', confidence: 0.82, percentage: 100, playbook_strategy: 'RIDE',
@@ -2016,6 +2038,12 @@ export class TradeExecutor {
           confirmationDone: false,
           neoStrategy: true,
         });
+
+        // NEO kill switch
+        if (MAX_NEO <= 0) {
+          this.openPositions.delete(tokenAddress);
+          return this.none('🚫 NEO disabled (MAX_NEO=0)', 'RIDE');
+        }
         
         return {
           action: 'BUY', confidence: 0.95, percentage: 100, playbook_strategy: 'RIDE',

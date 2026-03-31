@@ -3,8 +3,8 @@
   "_updated": "2026-03-30T18:22:38.360Z",
   "general": {
     "max_position_sol": 0.35,
-    "max_open_positions": 7,
-    "hard_stop_pct": -20,
+    "max_open_positions": 6,
+    "hard_stop_pct": -25,
     "fee_reserve_sol": 0.05,
     "paper_tx_latency_ms": 3000
   },
