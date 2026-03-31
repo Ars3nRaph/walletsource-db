@@ -446,7 +446,7 @@
   </div>
 <script>
 let equityChart=null;
-const activeStrats = new Set(['std','neo','elite','swarm']); // CARTEL removed
+const activeStrats = new Set(['ultra','swarm3','swarm','elite','std']); // v10.20: ULTRA+SWARM3+SWARM active
 let _lastWalletData = null;
 const PAGE_SIZE = 25;
 let currentPage = 0;
@@ -667,10 +667,12 @@ function applyAdvancedFilters(trades) {
 }
 
 function getTradeStrat(t) {
-  if (t.buy_reason && t.buy_reason.includes('SWARM')) return 'swarm';
-  if (t.buy_reason && t.buy_reason.includes('ELITE')) return 'elite';
-  if (t.buy_reason && t.buy_reason.includes('CARTEL')) return 'cartel';
-  if (t.buy_reason && t.buy_reason.includes('ULTRA')) return 'ultra'; if (t.buy_reason && t.buy_reason.includes('SWARM v3')) return 'swarm3';
+  const r = t.buy_reason || '';
+  if (r.includes('ULTRA')) return 'ultra';
+  if (r.includes('SWARM v3')) return 'swarm3';
+  if (r.includes('SWARM')) return 'swarm';
+  if (r.includes('ELITE')) return 'elite';
+  if (r.includes('CARTEL')) return 'cartel';
   return 'std';
 }
 
@@ -788,9 +790,9 @@ function renderWallet(d){
       }
     }
 
-    const stdTrades = stratSource.filter(t => getTradeStrat(t) === 'std');
+    const stdTrades = stratSource.filter(t => getTradeStrat(t) === 'ultra' || getTradeStrat(t) === 'std');
     stratStats(stdTrades, 'std');
-    const neoTrades = stratSource.filter(t => getTradeStrat(t) === 'neo');
+    const neoTrades = stratSource.filter(t => getTradeStrat(t) === 'swarm3' || getTradeStrat(t) === 'neo');
     stratStats(neoTrades, 'neo');
     // CARTEL stats removed
     // elite card removed — legacy trades classified as 'elite' exist but no DOM card
