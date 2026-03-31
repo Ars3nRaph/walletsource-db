@@ -7,6 +7,7 @@ import { RuggerProfiler, RuggerProfile } from './RuggerProfiler.js';
 import { CartelDetector } from './CartelDetector.js';
 import { logger } from '../utils/logger.js';
 import { getRuntimeConfig } from '../utils/runtimeConfig.js';
+import { getCreatorScore, getTokenDeployer, refreshCreatorScores } from '../utils/creatorScorer.js';
 import { readFileSync } from 'fs';
 // ━━━ Dynamic Param Loader (AutoTuner) ━━━
 interface TunedParamsCache {
@@ -215,6 +216,7 @@ export class TradeExecutor {
   private readonly CB_MAX_HS = 4; // v4.18: raised 2→4 (NEO needs more sample before CB fires)
   private readonly CB_PAUSE_MS = 15 * 60 * 1000; // v4.18: reduced 30min→15min pause
   public ruggerProfiler: RuggerProfiler;
+  private _creatorScoreRefreshed: number = 0;
   public cartelDetector: CartelDetector;
   private cartelCircuitBreakerUntil = 0;     // timestamp: pause CARTEL si 3 HS consécutifs
   private cartelConsecHS = 0;                 // compteur HS consécutifs CARTEL
@@ -1648,6 +1650,11 @@ export class TradeExecutor {
     if (!this.openPositions.has(tokenAddress) && !this.ruggerPositions.has(tokenAddress) && elapsedSec >= 3 && elapsedSec <= 30) {
       // Refresh profiles periodically
       await this.ruggerProfiler.refreshProfiles();
+      // Refresh creator scores every 30 min (lazy — only on first trade eval per token)
+      if (!this._creatorScoreRefreshed || Date.now() - this._creatorScoreRefreshed > 1800_000) {
+        this._creatorScoreRefreshed = Date.now();
+        refreshCreatorScores().catch(() => {});
+      }
       
       const ruggerProfile = this.ruggerProfiler.getProfile(walletAddress);
       if (ruggerProfile) {
@@ -1739,12 +1746,22 @@ export class TradeExecutor {
             pumpPeaks: [], pumpState: 'PUMP' as const, cycleHigh: currentMC, dipLow: currentMC,
             tickMCs: [currentMC], confirmationDone: true, swarmStrategy: true,
           });
+          // Creator score check (async — fire and forget if slow, but block if fast)
+          const ultDeployer = await getTokenDeployer(tokenAddress);
+          const ultCreatorScore = ultDeployer ? await getCreatorScore(ultDeployer) : null;
+          // Block serial ruggers: if deployer known AND (rug_rate >= 50% OR avg_peak_mc < 8K)
+          if (ultCreatorScore && (ultCreatorScore.rugRate >= 50 || ultCreatorScore.avgPeakMC < 8000)) {
+            this.openPositions.delete(tokenAddress);
+            return this.none(`🚫 ULTRA: deployer rug_rate=${ultCreatorScore.rugRate.toFixed(0)}% avgPeak=$${ultCreatorScore.avgPeakMC.toFixed(0)} — serial rugger`, 'RIDE');
+          }
+          const ultScoreLabel = ultCreatorScore ? `cs=${ultCreatorScore.score.toFixed(0)}` : 'cs=new';
+
           (this.openPositions.get(tokenAddress) as any).ultraStrategy = true;
-          logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: ultAvgBuy.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0), sp: ultSellPressure.toFixed(2) }, '⚡ ULTRA BUY');
+          logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: ultAvgBuy.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0), sp: ultSellPressure.toFixed(2), creatorScore: ultCreatorScore?.score?.toFixed(0) || 'new' }, '⚡ ULTRA BUY');
           return {
             action: 'BUY', confidence: 0.90, percentage: 100, playbook_strategy: 'RIDE',
             wallet_risk_score: 0.2, position_sol: ultPos,
-            reason: `⚡ ULTRA v7 BUY — ${uniqueBuyerCount}b avg=$${ultAvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | sp=${ultSellPressure.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${ultPos}SOL`
+            reason: `⚡ ULTRA v7 BUY — ${uniqueBuyerCount}b avg=$${ultAvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x ${elapsedSec.toFixed(0)}s | sp=${ultSellPressure.toFixed(2)} ${ultScoreLabel} mc=$${currentMC.toFixed(0)} pos=${ultPos}SOL`
           };
         }
       }
