@@ -8,6 +8,7 @@ import { CartelDetector } from './CartelDetector.js';
 import { logger } from '../utils/logger.js';
 import { getRuntimeConfig } from '../utils/runtimeConfig.js';
 import { getCreatorScore, getTokenDeployer, refreshCreatorScores } from '../utils/creatorScorer.js';
+import { checkDeployerFunding } from '../utils/funderTracer.js';
 import { readFileSync } from 'fs';
 // ━━━ Dynamic Param Loader (AutoTuner) ━━━
 interface TunedParamsCache {
@@ -1753,6 +1754,16 @@ export class TradeExecutor {
           if (ultCreatorScore && (ultCreatorScore.rugRate >= 50 || ultCreatorScore.avgPeakMC < 8000)) {
             this.openPositions.delete(tokenAddress);
             return this.none(`🚫 ULTRA: deployer rug_rate=${ultCreatorScore.rugRate.toFixed(0)}% avgPeak=$${ultCreatorScore.avgPeakMC.toFixed(0)} — serial rugger`, 'RIDE');
+          }
+          // Funder chain check — is this deployer funded by a known rugger?
+          // Only check for NEW deployers (unknown to creator_scores) to save RPC credits
+          if (!ultCreatorScore && ultDeployer) {
+            const funderCheck = await checkDeployerFunding(ultDeployer);
+            if (funderCheck.blocked) {
+              this.openPositions.delete(tokenAddress);
+              logger.info({ token: tokenAddress.slice(0,8), deployer: ultDeployer.slice(0,8), reason: funderCheck.reason }, '🚫 ULTRA: funder chain blocked');
+              return this.none(`🚫 ULTRA: ${funderCheck.reason}`, 'RIDE');
+            }
           }
           const ultScoreLabel = ultCreatorScore ? `cs=${ultCreatorScore.score.toFixed(0)}` : 'cs=new';
 
