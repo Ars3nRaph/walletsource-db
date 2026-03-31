@@ -635,7 +635,7 @@ export class TradeExecutor {
         // After selling at +30%, only trail if P&L drops below +40% (+10% above tier level)
         // This lets the token breathe between tiers instead of cutting at every correction
         const tierFloors = [0, ...tierLevels.map((l: number) => l + tierFloorOffset)]; // floor = tier level + offset
-        const tiersCount = [0,1,2,3,4].reduce((n,b) => n + (((rtPos.tiersSold || 0) >> b) & 1), 0); // popcount up to 5 tiers
+        const tiersCount = [0,1,2,3,4,5].reduce((n,b) => n + (((rtPos.tiersSold || 0) >> b) & 1), 0); // popcount up to 6 tiers
         const tierFloor = tierFloors[tiersCount] || 0;
         
         if (rtPnl > tierFloor) {

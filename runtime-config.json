@@ -15,9 +15,10 @@
       30,
       60,
       100,
+      150,
       200
     ],
-    "sell_pct": 0.2,
+    "sell_pct": 0.15,
     "floor_offset_pct": 10
   },
   "strategies": {
