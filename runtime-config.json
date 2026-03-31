@@ -11,6 +11,7 @@
   "tiers": {
     "enabled": true,
     "levels": [
+      15,
       30,
       60,
       100,

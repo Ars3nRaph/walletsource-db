@@ -625,7 +625,7 @@ export class TradeExecutor {
         // After selling at +30%, only trail if P&L drops below +40% (+10% above tier level)
         // This lets the token breathe between tiers instead of cutting at every correction
         const tierFloors = [0, ...tierLevels.map((l: number) => l + tierFloorOffset)]; // floor = tier level + offset
-        const tiersCount = ((rtPos.tiersSold || 0) & 1) + (((rtPos.tiersSold || 0) >> 1) & 1) + (((rtPos.tiersSold || 0) >> 2) & 1) + (((rtPos.tiersSold || 0) >> 3) & 1); // popcount
+        const tiersCount = [0,1,2,3,4].reduce((n,b) => n + (((rtPos.tiersSold || 0) >> b) & 1), 0); // popcount up to 5 tiers
         const tierFloor = tierFloors[tiersCount] || 0;
         
         if (rtPnl > tierFloor) {
@@ -1299,7 +1299,7 @@ export class TradeExecutor {
       if (
         uniqueBuyerCount >= 80 &&
         ultAvgBuy < 25 &&
-        mcRatio >= 2.0 && mcRatio <= 3.5 &&
+        mcRatio >= 2.2 && mcRatio <= 3.5 && // v10.21: 2.0→2.2 (tokens at 2.0x barely pumped → fragile)
         currentMC < 12000 &&
         !(currentMC >= 6000 && currentMC < 7000) &&  // skip 6-7K dead zone
         ultSellPressure < 0.5 &&                      // KEY: low sell pressure = organic momentum
