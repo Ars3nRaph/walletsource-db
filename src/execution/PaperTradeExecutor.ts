@@ -87,7 +87,7 @@ export class PaperTradeExecutor extends TradeExecutor {
            VALUES ($1, 'SHUTDOWN', 'RIDE', NOW(), $2, $3, 'SHUTDOWN', $4, $5)`,
           [tok, lastMC, pnl,
            'SHUTDOWN: ' + openCount + ' positions saved. Entry MC=' + pos.entryMC.toFixed(0) + ' Peak=' + pos.highestMC.toFixed(0) + ' Last=' + lastMC.toFixed(0),
-           (pos as any).ultraStrategy ? 'ULTRA' : (pos as any).ultraStrategy ? 'ULTRA' : (pos as any).swarm3Strategy ? 'SWARM3' : pos.swarmStrategy ? 'SWARM' : pos.neoStrategy ? 'NEO' : pos.cartelStrategy ? 'CARTEL' : 'STD']
+           (pos as any).ultraStrategy ? 'ULTRA' : (pos as any).ultraStrategy ? 'ULTRA' : (pos as any).swarm3Strategy ? 'SWARM3' : pos.swarmStrategy ? 'SWARM' : pos.cartelStrategy ? 'CARTEL' : 'STD']
         );
         
         logger.info({
@@ -95,7 +95,7 @@ export class PaperTradeExecutor extends TradeExecutor {
           entryMC: pos.entryMC.toFixed(0),
           lastMC: lastMC.toFixed(0),
           pnl: pnl.toFixed(1) + '%',
-          strategy: (pos as any).ultraStrategy ? 'ULTRA' : (pos as any).ultraStrategy ? 'ULTRA' : (pos as any).swarm3Strategy ? 'SWARM3' : pos.swarmStrategy ? 'SWARM' : pos.neoStrategy ? 'NEO' : pos.cartelStrategy ? 'CARTEL' : 'STD'
+          strategy: (pos as any).ultraStrategy ? 'ULTRA' : (pos as any).ultraStrategy ? 'ULTRA' : (pos as any).swarm3Strategy ? 'SWARM3' : pos.swarmStrategy ? 'SWARM' : pos.cartelStrategy ? 'CARTEL' : 'STD'
         }, '💾 Position state saved to DB');
       } catch (err: any) {
         logger.error({ token: tok.slice(0, 8), error: err?.message }, 'Failed to save position on shutdown');
@@ -168,7 +168,6 @@ export class PaperTradeExecutor extends TradeExecutor {
           dipLow: entryMC,
           tickMCs: [],
           confirmationDone: true,
-          neoStrategy: isNeoRecovery,
           cartelStrategy: isCartelRecovery,
           swarmStrategy: isSwarmRecovery,
         });
@@ -269,18 +268,16 @@ export class PaperTradeExecutor extends TradeExecutor {
     const reason = signal.reason || signal.playbook_strategy || '';
     const pos = this.openPositions?.get(tokenAddress);
     const isSwarm = reason.includes('SWARM') || pos?.swarmStrategy;
-    const isNeo = reason.includes('NEO') || pos?.neoStrategy;
     const isCartel = reason.includes('CARTEL') || pos?.cartelStrategy;
-    const isStd = !isSwarm && !isNeo && !isCartel;
+    const isStd = !isSwarm && !isCartel;
     
     // Only block BUY signals — SELL must always go through to close open positions
     if (signal.action === 'BUY') {
       const liveStd = process.env.LIVE_STD === 'true';
-      const liveNeo = process.env.LIVE_NEO === 'true';
+
       const liveSwarm = process.env.LIVE_SWARM === 'true';
       
       if (isStd && !liveStd) return;
-      if (isNeo && !liveNeo) return;
       if (isSwarm && !liveSwarm) return;
       if (isCartel) return; // CARTEL always off
     }
@@ -303,20 +300,21 @@ export class PaperTradeExecutor extends TradeExecutor {
       });
   }
 
-  // ═══ TIER EXIT: forward partial sells to LiveTradeExecutor ═══
+  // ═══ TIER EXIT: log to paper_trades + forward partial sell to LiveTradeExecutor ═══
   protected onTierExit(tokenAddress: string, pctToSell: number, reason: string, currentMC: number): void {
-    if (!this.liveExecutor) return;
-    if (this.liveExecutor.config?.dryRun) return;
-    
     const pos = this.openPositions?.get(tokenAddress);
+
+    // Log tier exit to paper_trades DB
+    this.logTierExit(tokenAddress, currentMC, reason, pctToSell).catch(() => {});
+
+    // Forward to live executor if enabled
+    if (!this.liveExecutor || this.liveExecutor.config?.dryRun) return;
     const isSwarm = pos?.swarmStrategy;
-    const isNeo = pos?.neoStrategy;
-    const isStd = !isSwarm && !isNeo;
-    
+    const isUltra = (pos as any)?.ultraStrategy;
+    const isStd = !isSwarm && !isUltra;
     if (isStd && process.env.LIVE_STD !== 'true') return;
-    if (isNeo && process.env.LIVE_NEO !== 'true') return;
+    if (isUltra && process.env.LIVE_STD !== 'true') return; // ULTRA uses LIVE_STD toggle
     if (isSwarm && process.env.LIVE_SWARM !== 'true') return;
-    
     this.liveExecutor.executePartialSell(tokenAddress, pctToSell, reason, currentMC)
       .then((result: any) => {
         if (result?.success) {
@@ -324,6 +322,35 @@ export class PaperTradeExecutor extends TradeExecutor {
         }
       })
       .catch((e: any) => logger.warn({ error: e.message }, '⚠️ Tier exit failed'));
+  }
+
+  private async logTierExit(tokenAddress: string, currentMC: number, reason: string, pctToSell: number): Promise<void> {
+    try {
+      // Fetch buy_strategy and entry MC from original BUY
+      const buyRow = await this.pool.query(
+        "SELECT buy_strategy, strategy_version, mc_usd FROM paper_trades WHERE token_address = $1 AND action = 'BUY' ORDER BY timestamp DESC LIMIT 1",
+        [tokenAddress]
+      );
+      const buyStrategy = buyRow.rows[0]?.buy_strategy || 'ULTRA';
+      const stratVersion = buyRow.rows[0]?.strategy_version || buyStrategy;
+      const entryMC = parseFloat(buyRow.rows[0]?.mc_usd) || currentMC;
+      const pnlPct = entryMC > 0 ? ((currentMC - entryMC) / entryMC * 100) : 0;
+
+      // Determine tier label from reason (e.g. "hit +30% tier" → TIER-30)
+      const tierMatch = reason.match(/\+(\d+)%\s+tier/i);
+      const tierLevel = tierMatch ? tierMatch[1] : '?';
+      const exitType = `TIER-${tierLevel}`;
+
+      await this.pool.query(
+        `INSERT INTO paper_trades (token_address, action, strategy, timestamp, mc_usd, pnl_pct, exit_type, reason, buy_strategy, strategy_version)
+         VALUES ($1, 'SELL', 'RIDE', NOW(), $2, $3, $4, $5, $6, $7)`,
+        [tokenAddress, currentMC, parseFloat(pnlPct.toFixed(2)), exitType,
+         reason.slice(0, 500), buyStrategy, stratVersion]
+      );
+      logger.info({ token: tokenAddress.slice(0, 8), tier: exitType, pnl: pnlPct.toFixed(1) + '%', mc: currentMC.toFixed(0) }, '🔶 TIER EXIT logged');
+    } catch (e: any) {
+      logger.warn({ error: e?.message }, '⚠️ Failed to log tier exit');
+    }
   }
 
   public onSweepClose(token: string, signal: TradeSignal, mc: number): void {

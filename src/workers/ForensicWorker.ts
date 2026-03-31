@@ -273,7 +273,7 @@ export class ForensicWorker {
       }
 
       // Force deep tracking for rugger priority wallets (5s poll instead of 30s)
-      const isRuggerPriority = this.tradeExecutor?.ruggerProfiler?.getProfile(creatorWallet) != null;
+      const isRuggerPriority = false; // ruggerProfiler removed
       if (isRuggerPriority && trackingMode !== 'deep') {
         trackingMode = 'deep';
       }

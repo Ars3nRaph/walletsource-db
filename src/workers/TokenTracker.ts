@@ -238,7 +238,7 @@ export class TokenTracker {
         // With 10min tracking + 30s polling: 135 slots × 6 cycles/h = 810 tokens/h capacity!
         if (activeCount >= 500 || remainingQuota < 10) { // v10.14.1: raised from 135 — fast_verdict uses WS not DexScreener
           // Check if this is a rugger priority token
-          const isRuggerToken = this.tradeExecutor?.ruggerProfiler?.getProfile(queueItem.creator_wallet) != null;
+          const isRuggerToken = false; // ruggerProfiler removed
           if (!isRuggerToken) {
             logger.warn({
               activeCount,
