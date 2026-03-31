@@ -363,7 +363,7 @@
       (function(){
         function v9set(id,txt){var e=document.getElementById(id);if(e)e.textContent=txt;}
         function v9load(){
-          fetch('/api/v9-stats').then(function(r){return r.json()}).then(function(d){
+          fetch('/api/stats').then(function(r){return r.json()}).then(function(d){
             if(!d.success)return;
             var r=d.ride||{},f=d.fade||{},h=d.recent_10h||{};
             v9set('v9-ride-wallets',Number(r.wallets||0).toLocaleString());
@@ -398,6 +398,25 @@
           });
         }
         v9load();
+
+        // Load strategy cards
+        function loadStratCards() {
+          fetch('/api/stats', { headers: { 'Authorization': 'Basic ' + btoa('raph:Saluts123') }})
+            .then(r => r.json()).then(d => {
+              if (!d.success) return;
+              ['ultra','swarm3','swarm'].forEach(s => {
+                const data = d.stats?.[s] || d[s] || {};
+                v9set('strat-'+s+'-trades', data.trades || '0');
+                v9set('strat-'+s+'-wr', (data.wr || '0') + '%');
+                const pnl = parseFloat(data.avg_pnl) || 0;
+                const el = document.getElementById('strat-'+s+'-pnl');
+                if (el) { el.textContent = (pnl>=0?'+':'') + pnl + '%'; el.className = 'value ' + (pnl>=0?'success':'danger'); }
+              });
+            }).catch(e => console.error('Strategy load error:', e));
+        }
+        loadStratCards();
+        setInterval(loadStratCards, 30000);
+
         setInterval(v9load,15000);
       })();
       </script>

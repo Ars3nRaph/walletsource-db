@@ -223,7 +223,7 @@ app.get('/api/stats', async (req, res) => {
         round(avg(pnl_pct) FILTER (WHERE action='SELL'), 1) as avg_pnl
       FROM paper_trades WHERE buy_strategy = 'ULTRA'
     `);
-    stats.std = stdStats.rows[0];
+    stats.ultra = stdStats.rows[0];
 
     // NEO stats
     const neoStats = await pool.query(`
@@ -233,7 +233,7 @@ app.get('/api/stats', async (req, res) => {
         round(avg(pnl_pct) FILTER (WHERE action='SELL'), 1) as avg_pnl
       FROM paper_trades WHERE buy_strategy = 'SWARM3'
     `);
-    stats.neo = neoStats.rows[0];
+    stats.swarm3 = neoStats.rows[0];
 
     // SWARM stats
     const swarmStats = await pool.query(`
