@@ -1303,7 +1303,7 @@ export class TradeExecutor {
 
     const ultraCount = Array.from(this.openPositions.values()).filter(p => (p as any).ultraStrategy).length;
     const MAX_ULTRA = 3; // ULTRA v7: SP<0.5 + Creator Score + Funder Chain
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 60) { // T=20-60s (was 90s — tokens at 90s are often end-of-pump)
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 40) { // T=20-40s — early pump zone
       const ultSbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       const ultAvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
       const ultSellVol = state?.sellVol || 0;
@@ -1428,7 +1428,7 @@ export class TradeExecutor {
     // Signal: masse retail (≥80 buyers, avg<$25, ratio 2.0-3.5x, T=20-90s)
     // Philosophy: not smart money, it's the crowd that makes fusées
     // ══════════════════════════════════════════════════════════════
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 60) { // T=20-60s
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 40 && elapsedSec <= 60) { // T=40-60s — mid pump zone (ULTRA takes 20-40s)
       const swarmSbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       // avgBuyUsd = buyVol (USD) / buyCount
       const swarmAvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
