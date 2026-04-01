@@ -1302,8 +1302,8 @@ export class TradeExecutor {
     const uniqueBuyerCount = state?.uniqueBuyers?.size ?? 0;
 
     const ultraCount = Array.from(this.openPositions.values()).filter(p => (p as any).ultraStrategy).length;
-    const MAX_ULTRA = 3; // ULTRA v7: SP<0.5 + Creator Score + Funder Chain
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 40) { // T=20-40s — early pump zone
+    const MAX_ULTRA = 1; // ULTRA v7: demoted to 1 slot — WR 30% on 10 trades
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 25 && elapsedSec <= 35) { // T=25-35s — narrow window, low priority
       const ultSbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       const ultAvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
       const ultSellVol = state?.sellVol || 0;
@@ -1370,9 +1370,9 @@ export class TradeExecutor {
     // Uses NEO's old slot (1 dedicated slot, separate from SWARM v1.2)
     // ══════════════════════════════════════════════════════════════
     const swarm3Count = Array.from(this.openPositions.values()).filter(p => (p as any).swarm3Strategy).length;
-    const MAX_SWARM3 = 2; // SWARM v3 "Wide Net" — backtested 66.8% WR@+30% on 1051 tokens
+    const MAX_SWARM3 = 3; // SWARM v3 "Wide Net" — promoted: backtested 66.8% WR@+30%
     const swarmCount = Array.from(this.openPositions.values()).filter(p => p.swarmStrategy && !(p as any).swarm3Strategy && !(p as any).ultraStrategy).length;
-    const MAX_SWARM = 2;
+    const MAX_SWARM = 3; // SWARM v1.2: promoted from 2 to 3 slots
     if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 60) { // SWARM v3: T=20-60s (full spectrum)
       const sw3SbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       const sw3AvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
@@ -1429,7 +1429,7 @@ export class TradeExecutor {
     // Signal: masse retail (≥80 buyers, avg<$25, ratio 2.0-3.5x, T=20-90s)
     // Philosophy: not smart money, it's the crowd that makes fusées
     // ══════════════════════════════════════════════════════════════
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 40 && elapsedSec <= 60) { // T=40-60s — mid pump zone (ULTRA takes 20-40s)
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 60) { // T=20-60s — full window (SWARM priority over ULTRA)
       const swarmSbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       // avgBuyUsd = buyVol (USD) / buyCount
       const swarmAvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
