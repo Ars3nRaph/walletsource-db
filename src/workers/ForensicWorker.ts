@@ -297,6 +297,15 @@ export class ForensicWorker {
       const tokenMint = message.mint;
       const creatorWallet = message.traderPublicKey;
 
+      // PRE-FILTER: reject clearly unviable tokens before any DB/Helius work
+      // Tokens with tiny initial buys are almost certainly sub-$3K rugs
+      const initBuySol = message.solAmount ?? 0;
+      const initMarketCapSol = message.marketCapSol ?? 0;
+      // Skip if initial buy < 0.02 SOL (micro-rug) or MC at creation < 2 SOL (~$300 at $150/SOL)
+      if (initBuySol < 0.02 && initMarketCapSol < 2) {
+        return; // Silent discard — saves tracking + Helius RPC
+      }
+
       // v10.14.4: Subscribe to trade stream IMMEDIATELY (before any DB work)
       // This minimizes the gap between detection and first trade data
       // Priority=true ensures ELITE-eligible tokens are never dropped at capacity

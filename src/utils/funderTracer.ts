@@ -13,6 +13,10 @@ const pool = new pg.Pool({
 const funderCache = new Map<string, { funder: string | null; rootFunder: string | null; cachedAt: number }>();
 const CACHE_TTL = 600_000; // 10 min
 
+// Rate limiter: max 60 NEW on-chain funder lookups/hour
+let funderCallsThisHour = 0;
+let funderRateLimitResetAt = Date.now() + 3600_000;
+
 /**
  * Trace who funded a wallet (find the first SOL transfer IN)
  * Returns the funder wallet address, or null if not found
@@ -48,17 +52,13 @@ async function traceFunder(wallet: string, maxDepth: number = 2): Promise<{
       let allSigs: any[] = [];
       let before: string | undefined;
       
-      // Max 5 pages (5000 TXs) to avoid credit burn on mega-active wallets
-      for (let page = 0; page < 5; page++) {
-        const sigs = await connection.getSignaturesForAddress(
-          new PublicKey(currentWallet),
-          { limit: 1000, before }
-        );
-        if (sigs.length === 0) break;
-        allSigs = sigs; // Keep last page (oldest)
-        if (sigs.length < 1000) break; // Reached the start
-        before = sigs[sigs.length - 1].signature;
-      }
+      // 1 page max (1000 TXs) — new deployer wallets rarely have >1000 TXs
+      // We want the OLDEST TX (first funding), which is at end of first page if wallet is new
+      const sigs = await connection.getSignaturesForAddress(
+        new PublicKey(currentWallet),
+        { limit: 200 }  // 200 is enough for new wallets, saves ~80% RPC credits vs 1000
+      );
+      if (sigs.length > 0) allSigs = sigs;
 
       if (allSigs.length === 0) break;
 
@@ -150,13 +150,13 @@ export async function getFunderScore(funderWallet: string): Promise<{
   } catch (e) {
     return null;
   }
-}
 
 /**
  * Check if a deployer's funder is a known rugger factory.
  * Returns { blocked: boolean, reason: string, funder: string | null }
  * 
  * Cost: ~2-6 RPC credits per new deployer (cached after first lookup)
+ * Rate limited: max 60 NEW checks/hour (cached lookups bypass limit)
  */
 export async function checkDeployerFunding(deployerWallet: string): Promise<{
   blocked: boolean;
@@ -168,6 +168,17 @@ export async function checkDeployerFunding(deployerWallet: string): Promise<{
   if (cached && Date.now() - cached.cachedAt < CACHE_TTL) {
     if (!cached.funder) return { blocked: false, reason: 'no funder found', funder: null, funderScore: null };
   }
+
+  // Rate limit: skip on-chain trace if over 60 NEW lookups/hour (DB cache bypasses this)
+  if (Date.now() > funderRateLimitResetAt) {
+    funderCallsThisHour = 0;
+    funderRateLimitResetAt = Date.now() + 3600_000;
+  }
+  if (funderCallsThisHour >= 60) {
+    logger.debug({ deployer: deployerWallet.slice(0,8) }, '⚡ Funder check rate-limited (60/hr cap)');
+    return { blocked: false, reason: 'rate_limit_skip', funder: null, funderScore: null };
+  }
+  funderCallsThisHour++;
 
   const { funder, rootFunder } = await traceFunder(deployerWallet, 2);
   funderCache.set(deployerWallet, { funder, rootFunder, cachedAt: Date.now() });
