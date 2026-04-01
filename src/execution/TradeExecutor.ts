@@ -1319,7 +1319,7 @@ export class TradeExecutor {
       ) {
         if (ultraCount >= MAX_ULTRA) {
           // Fall through to other strategies
-        } else if (this.openPositions.size >= 6) {
+        } else if (this.openPositions.size >= 7) {
           // Fall through
         } else {
           const ultPos = 0.35;
@@ -1370,15 +1370,15 @@ export class TradeExecutor {
     // Uses NEO's old slot (1 dedicated slot, separate from SWARM v1.2)
     // ══════════════════════════════════════════════════════════════
     const swarm3Count = Array.from(this.openPositions.values()).filter(p => (p as any).swarm3Strategy).length;
-    const MAX_SWARM3 = 0; // DISABLED — 2/2 HARD_STOP -66%, T=45-60s too late in cycle
+    const MAX_SWARM3 = 2; // SWARM v3 "Wide Net" — backtested 66.8% WR@+30% on 1051 tokens
     const swarmCount = Array.from(this.openPositions.values()).filter(p => p.swarmStrategy && !(p as any).swarm3Strategy && !(p as any).ultraStrategy).length;
     const MAX_SWARM = 2;
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 45 && elapsedSec <= 60) { // SWARM v3: T=45-60s
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 60) { // SWARM v3: T=20-60s (full spectrum)
       const sw3SbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       const sw3AvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
       if (
-        uniqueBuyerCount >= 80 &&
-        sw3AvgBuy < 25 &&
+        uniqueBuyerCount >= 60 &&         // Relaxed from 80 — backtest shows 60b WR is HIGHER
+        sw3AvgBuy < 50 &&                 // Relaxed from $25 — bigger buyers = more conviction
         mcRatio >= 2.0 && mcRatio <= 3.5 &&
         currentMC < 12000 &&
         !(currentMC >= 6000 && currentMC < 7000) &&  // skip 6-7K dead zone
@@ -1386,7 +1386,7 @@ export class TradeExecutor {
       ) {
         if (swarm3Count >= MAX_SWARM3) {
           // Don't return — fall through to SWARM v1.2
-        } else if (this.openPositions.size >= 6) {
+        } else if (this.openPositions.size >= 7) {
           // Don't return — fall through
         } else {
           const sw3Pos = 0.35;
@@ -1412,11 +1412,12 @@ export class TradeExecutor {
             const sw3Funder = await checkDeployerFunding(sw3Deployer);
             if (sw3Funder.blocked) { this.openPositions.delete(tokenAddress); return this.none(`🚫 SWARM3: ${sw3Funder.reason}`, 'RIDE'); }
           }
-          logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: sw3AvgBuy.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0) }, '🐝 SWARM v3 BUY');
+          const sw3ScoreLabel = sw3CS ? `cs=${sw3CS.score.toFixed(0)}` : 'cs=new';
+          logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: sw3AvgBuy.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0), creatorScore: sw3ScoreLabel }, '🐝 SWARM v3 BUY');
           return {
             action: 'BUY', confidence: 0.85, percentage: 100, playbook_strategy: 'RIDE',
             wallet_risk_score: 0.3, position_sol: sw3Pos,
-            reason: `🐝 SWARM v3 BUY — ${uniqueBuyerCount}b avg=$${sw3AvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x T=${elapsedSec.toFixed(0)}s (45-90s) | sb=${sw3SbRatio.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${sw3Pos}SOL`
+            reason: `🐝 SWARM v3 BUY — ${uniqueBuyerCount}b avg=$${sw3AvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x T=${elapsedSec.toFixed(0)}s | sb=${sw3SbRatio.toFixed(2)} ${sw3ScoreLabel} mc=$${currentMC.toFixed(0)} pos=${sw3Pos}SOL`
           };
         }
       }
@@ -1442,7 +1443,7 @@ export class TradeExecutor {
         if (swarmCount >= MAX_SWARM) {
           return this.none(`🚫 SWARM pool full (${swarmCount}/${MAX_SWARM})`, 'RIDE');
         }
-        if (this.openPositions.size >= 6) {
+        if (this.openPositions.size >= 7) {
           return this.none('🚫 Total pool full — skip', 'RIDE');
         }
         const swarmPos = 0.35; // slightly larger than STD min — crowd signal = higher conviction
