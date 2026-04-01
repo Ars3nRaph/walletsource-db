@@ -150,6 +150,7 @@ export async function getFunderScore(funderWallet: string): Promise<{
   } catch (e) {
     return null;
   }
+}
 
 /**
  * Check if a deployer's funder is a known rugger factory.
