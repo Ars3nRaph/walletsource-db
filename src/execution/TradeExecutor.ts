@@ -570,25 +570,26 @@ export class TradeExecutor {
       if (rtTiersSold >= 1) rtTrailTrigger = Math.min(rtTrailTrigger, 15); // activate trail earlier after first tier
       if (rtPeakPnl >= rtTrailTrigger) {
         if (rtIsSwarm || rtIsUltra) {
-          // SWARM/ULTRA: dynamic trail — tighter after tier exits lock in profit
+          // SWARM/ULTRA: progressive trail — starts -20% at low gains, tightens to -10% at +200%
+          // After tier exits, trail tightens further (protect locked profits)
           const swTiers = rtPos.tiersSold || 0;
-          if (swTiers >= 15) {        // all 4 tiers sold (20% left) → very tight
-            rtDropLimit = 0.06;
-          } else if (swTiers >= 7) {  // 3 tiers sold (40% left) → tight  
+          if (swTiers >= 31) {        // 5 tiers sold (T0-T4, 25% left) → very tight
             rtDropLimit = 0.08;
-          } else if (swTiers >= 3) {  // 2 tiers sold (60% left) → medium
+          } else if (swTiers >= 15) {  // 4 tiers sold (40% left) → tight  
+            rtDropLimit = 0.09;
+          } else if (swTiers >= 7) {  // 3 tiers sold (55% left) → moderate-tight
             rtDropLimit = 0.10;
-          } else if (swTiers >= 1) {  // 1 tier sold (80% left) → moderate
-            rtDropLimit = 0.13;
+          } else if (swTiers >= 3) {  // 2 tiers sold (70% left) → moderate
+            rtDropLimit = 0.12;
+          } else if (swTiers >= 1) {  // 1 tier sold (85% left) → moderate-wide
+            rtDropLimit = 0.15;
           } else {
-            // No tiers sold yet — original dynamic trail from runtime config
-            const sw = _rc?.strategies?.SWARM || {};
-            const swBase = (sw.trail_base_pct || 18) / 100;
-            const swMid = (sw.trail_mid_pct || 13) / 100;
-            const swMidAt = sw.trail_mid_at_pct || 50;
-            const swTight = (sw.trail_tight_pct || 8) / 100;
-            const swTightAt = sw.trail_tight_at_pct || 200;
-            rtDropLimit = rtPeakPnl >= swTightAt ? swTight : rtPeakPnl >= swMidAt ? swMid : swBase;
+            // Progressive trail based on peak P&L — starts wide, tightens with gains
+            // -20% at low gains → -10% at +200% (linear interpolation)
+            if (rtPeakPnl >= 200) rtDropLimit = 0.10;        // +200%+ → -10% trail
+            else if (rtPeakPnl >= 100) rtDropLimit = 0.10 + (200 - rtPeakPnl) / 100 * 0.03; // +100-200% → 10-13%
+            else if (rtPeakPnl >= 60) rtDropLimit = 0.13 + (100 - rtPeakPnl) / 40 * 0.04;   // +60-100% → 13-17%
+            else rtDropLimit = 0.20;                           // <+60% → -20% trail (wide)
           }
         } else if (rtIsCartel) {
           rtDropLimit = 0.20; // CARTEL: 20% trail
