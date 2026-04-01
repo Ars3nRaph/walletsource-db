@@ -282,61 +282,61 @@
         </div>
       </div>
 
-      <div class="strat-card" data-strat="std" onclick="toggleStrat('std')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #f0883e;border-radius:12px;padding:20px">
+      <div class="strat-card" data-strat="ultra" onclick="toggleStrat('ultra')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #f0883e;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#58a6ff">🚀 STANDARD (v10.21)</span>
-          <span class="strat-badge std">STD</span>
+          <span style="font-size:16px;font-weight:700;color:#f0883e">⚡ ULTRA v7</span>
+          <span style="background:rgba(240,136,62,0.15);color:#f0883e;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">ULTRA</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center">
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="std-count">0</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Win Rate</div><div style="font-size:20px;font-weight:700;color:#3fb950" id="std-wr">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Avg Net</div><div style="font-size:20px;font-weight:700" id="std-avg">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="ultra-count">0</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Win Rate</div><div style="font-size:20px;font-weight:700;color:#3fb950" id="ultra-wr">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Avg Net</div><div style="font-size:20px;font-weight:700" id="ultra-avg">—</div></div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;text-align:center;margin-top:10px">
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="std-sol">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="std-hs">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="ultra-sol">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="ultra-hs">—</div></div>
         </div>
         <div class="strat-controls" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
           <div style="display:flex;align-items:center;gap:4px">
-            <label class="toggle-switch sm"><input type="checkbox" id="std-paper-toggle" checked onchange="toggleStrategy('STD', this.checked)"><span class="slider"></span></label>
+            <label class="toggle-switch sm"><input type="checkbox" id="ultra-paper-toggle" checked onchange="toggleStrategy('ULTRA', this.checked)"><span class="slider"></span></label>
             <span style="color:#8b949e;font-size:10px">📄 Paper</span>
           </div>
           <div style="display:flex;align-items:center;gap:4px">
-            <label class="toggle-switch sm"><input type="checkbox" id="std-live-toggle" onchange="toggleLiveStrategy('STD', this.checked)"><span class="slider" style="background:#da3633"></span></label>
+            <label class="toggle-switch sm"><input type="checkbox" id="ultra-live-toggle" onchange="toggleLiveStrategy('ULTRA', this.checked)"><span class="slider" style="background:#da3633"></span></label>
             <span style="color:#8b949e;font-size:10px">💰 Live</span>
           </div>
-          <button class="btn-params" onclick="event.stopPropagation();openParams('STD')">⚙️</button>
+          <button class="btn-params" onclick="event.stopPropagation();openParams('ULTRA')">⚙️</button>
         </div>
-        <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="std-params">
+        <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="ultra-params">
           b≥80 • ratio 2.2-3.0x • d&lt;21 • avgBuy&lt;$50 • HS -20% • Trail 22%@+15% • 0.35 SOL
         </div>
       </div>
-      <div class="strat-card" data-strat="neo" onclick="toggleStrat('neo')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #da3633;border-radius:12px;padding:20px">
+      <div class="strat-card" data-strat="swarm3" onclick="toggleStrat('swarm3')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #da3633;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#da3633">🧠 NEO (v4.62)</span>
-          <span class="strat-badge neo">NEO</span>
+          <span style="font-size:16px;font-weight:700;color:#6e7681">🐝 SWARM v3 <span style="font-size:11px;color:#f85149">DÉSACTIVÉ</span></span>
+          <span style="background:rgba(248,81,73,0.15);color:#f85149;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">OFF</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center">
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="neo-count">0</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Win Rate</div><div style="font-size:20px;font-weight:700;color:#3fb950" id="neo-wr">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Avg Net</div><div style="font-size:20px;font-weight:700" id="neo-avg">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Trades</div><div style="font-size:20px;font-weight:700;color:#e6edf3" id="swarm3-count">0</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Win Rate</div><div style="font-size:20px;font-weight:700;color:#3fb950" id="swarm3-wr">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Avg Net</div><div style="font-size:20px;font-weight:700" id="swarm3-avg">—</div></div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;text-align:center;margin-top:10px">
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="neo-sol">—</div></div>
-          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="neo-hs">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Total SOL</div><div style="font-size:16px;font-weight:700" id="swarm3-sol">—</div></div>
+          <div><div style="color:#8b949e;font-size:10px;text-transform:uppercase">Hard Stops</div><div style="font-size:16px;font-weight:700" id="swarm3-hs">—</div></div>
         </div>
         <div class="strat-controls" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
           <div style="display:flex;align-items:center;gap:4px">
-            <label class="toggle-switch sm"><input type="checkbox" id="neo-paper-toggle" checked onchange="toggleStrategy('NEO', this.checked)"><span class="slider"></span></label>
+            <label class="toggle-switch sm"><input type="checkbox" id="neo-paper-toggle" checked onchange="toggleStrategy('SWARM3', this.checked)"><span class="slider"></span></label>
             <span style="color:#8b949e;font-size:10px">📄 Paper</span>
           </div>
           <div style="display:flex;align-items:center;gap:4px">
-            <label class="toggle-switch sm"><input type="checkbox" id="neo-live-toggle" onchange="toggleLiveStrategy('NEO', this.checked)"><span class="slider" style="background:#da3633"></span></label>
+            <label class="toggle-switch sm"><input type="checkbox" id="neo-live-toggle" onchange="toggleLiveStrategy('SWARM3', this.checked)"><span class="slider" style="background:#da3633"></span></label>
             <span style="color:#8b949e;font-size:10px">💰 Live</span>
           </div>
-          <button class="btn-params" onclick="event.stopPropagation();openParams('NEO')">⚙️</button>
+          <button class="btn-params" onclick="event.stopPropagation();openParams('SWARM3')">⚙️</button>
         </div>
-        <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="neo-params">
+        <div style="margin-top:10px;font-size:11px;color:#484f58;text-align:center" id="swarm3-params">
           Loading SWARM3 config...
         </div>
       </div>
