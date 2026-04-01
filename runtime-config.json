@@ -11,22 +11,18 @@
   "tiers": {
     "enabled": true,
     "levels": [
-      15,
       30,
       60,
       100,
-      150,
-      200
+      150
     ],
-    "sell_pct": 0.15,
+    "sell_pct": 0.25,
     "floor_offset_pct": 10,
     "sell_pcts": [
-      0.15,
       0.25,
-      0.15,
-      0.15,
-      0.15,
-      0.15
+      0.25,
+      0.25,
+      0.25
     ]
   },
   "strategies": {
