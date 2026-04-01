@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>v10.19 — Wallet Simulation</title>
+  <title>v10.21 — Wallet Simulation</title>
   <link rel="stylesheet" href="styles.css">
   <style>
     .wallet-header { display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:24px; }
@@ -167,7 +167,7 @@
 <body>
   <div class="container">
     <header>
-      <h1>🎩 v10.19 — Wallet</h1>
+      <h1>🎩 v10.21 — Wallet</h1>
       <p class="subtitle">Paper Portfolio — ⚡ ULTRA v7 • 🐝 SWARM v1.2 • 🐝 SWARM v3</p>
       <div class="nav-links">
         <a href="/">📊 Dashboard</a>
@@ -798,10 +798,10 @@ function renderWallet(d){
     // elite card removed — legacy trades classified as 'elite' exist but no DOM card
     const swarmTrades = stratSource.filter(t => getTradeStrat(t) === 'swarm');
     stratStats(swarmTrades, 'swarm');
-    // Load NEO config for dynamic params display
+    // Load SWARM3 config for dynamic params display
     fetch('/api/neo-config').then(r=>r.json()).then(nc=>{
       const e=nc.entry||{};const x=nc.exit||{};const sz=nc.sizing||{};
-      const paramsEl=document.getElementById('neo-params');
+      const paramsEl=document.getElementById('swarm3-params');
       if(paramsEl){
         const ratio=Array.isArray(e.mc_ratio)?e.mc_ratio[0]+'-'+e.mc_ratio[1]+'x':(e.min_ratio||e.mc_ratio_min||'?')+'-'+(e.max_ratio||e.mc_ratio_max||'?')+'x';
         paramsEl.innerHTML=`Ratio <b style="color:#e6edf3">${ratio}</b> • Buyers <b style="color:#e6edf3">≥${e.min_buyers||'?'}</b> • s/b <b style="color:#e6edf3">≤${e.max_sell_ratio||'?'}</b><br>topH <b style="color:#e6edf3">≤${e.max_top_holder?Math.round(e.max_top_holder*100)+'%':('?')}</b> • HS <b style="color:#e6edf3">${x.hard_stop||'?'}</b> • 🔶 <b style="color:#f59e0b">5-tier@+30/60/100/200</b> • Trail <b style="color:#e6edf3">${x.trail_drop||'?'}@${x.trail_trigger||'?'}</b>`;
@@ -823,12 +823,12 @@ function renderPage() {
     tbody.innerHTML=pageTrades.map((t,pi)=>{ const i = start + pi;
       const cls=t.action==='WIN'?'win':t.action==='LOSS'?'loss':t.action==='PARTIAL'?'partial':'open';
       const strat=t.buy_reason&&t.buy_reason.includes('ULTRA')?'ultra':t.buy_reason&&t.buy_reason.includes('SWARM v3')?'swarm3':t.buy_reason&&t.buy_reason.includes('SWARM')?'swarm':t.buy_reason&&t.buy_reason.includes('CARTEL')?'cartel':'std';
-      const stratLabel=strat==='ultra'?'⚡ ULTRA':strat==='swarm3'?'🐝 SWv3':strat==='swarm'?'🐝 SWARM':strat==='cartel'?'🎯 CARTEL':'🚀 STD';
+      const stratLabel=strat==='ultra'?'⚡ ULTRA':strat==='swarm3'?'🐝 SWv3':strat==='swarm'?'🐝 SWARM':strat==='cartel'?'🎯 CARTEL':strat==='elite'?'👑 ELITE':'⚡ STD';
       const stratCls='strat-'+strat;
       const totalF=t.fees_sol+t.slippage_sol;
       const pnlPct=t.pnl_pct!==null?(t.pnl_pct>=0?'+':'')+t.pnl_pct.toFixed(1)+'%':'—';
       const pnlSol=t.pnl_sol!==null?(t.pnl_sol>=0?'+':'')+t.pnl_sol.toFixed(4):'—';
-      const verShort=(t.strategy_version||'').replace('STD ','').replace('NEO ','').replace('CARTEL ','').replace('ELITE ','');
+      const verShort=(t.strategy_version||'').replace('STD ','').replace('NEO ','').replace('ULTRA ','').replace('SWARM ','').replace('CARTEL ','').replace('ELITE ','');
       const hasSells = t.sells && t.sells.length > 0;
       // Helper: exit type label + color
       const exitLabel = (et) => {
@@ -1350,8 +1350,8 @@ loadWallet();setInterval(loadWallet,10000);
       const config = currentConfig?.strategies?.[strat] || {};
       originalParams = { ...config };
       
-      const colors = { STD: '#f0883e', NEO: '#da3633', SWARM: '#f1c40f' };
-      const icons = { STD: '🚀', NEO: '🧠', SWARM: '🐝' };
+      const colors = { STD: '#f0883e', ULTRA: '#f0883e', NEO: '#da3633', SWARM3: '#da3633', SWARM: '#f1c40f' };
+      const icons = { STD: '⚡', ULTRA: '⚡', NEO: '🐝', SWARM3: '🐝', SWARM: '🐝' };
       document.getElementById('modal-title').innerHTML = icons[strat] + ' Paramètres ' + strat;
       document.getElementById('modal-title').style.color = colors[strat];
       
