@@ -1378,9 +1378,9 @@ export class TradeExecutor {
       const sw3SbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       const sw3AvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
       if (
-        uniqueBuyerCount >= 60 &&         // Relaxed from 80 — backtest shows 60b WR is HIGHER
+        uniqueBuyerCount >= 70 && // Tightened from 60 — 60% HS rate too high — backtest shows 60b WR is HIGHER
         sw3AvgBuy < 50 &&                 // Relaxed from $25 — bigger buyers = more conviction
-        mcRatio >= 2.0 && mcRatio <= 3.5 &&
+        mcRatio >= 2.2 && mcRatio <= 3.5 &&  // Tightened from 2.0 — low ratio = not enough momentum
         currentMC < 12000 &&
         !(currentMC >= 6000 && currentMC < 7000) &&  // skip 6-7K dead zone
         sw3SbRatio < 0.4
@@ -1437,7 +1437,7 @@ export class TradeExecutor {
       if (
         uniqueBuyerCount >= 80 &&          // masse retail
         swarmAvgBuy < 25 &&               // petits acheteurs ($25 avg = retail, not whale)
-        mcRatio >= 2.0 && mcRatio <= 3.5 && // pompe confirmée mais pas surachetée
+        mcRatio >= 2.2 && mcRatio <= 3.5 &&  // Tightened from 2.0 — low ratio = not enough momentum // pompe confirmée mais pas surachetée
         currentMC < 12000 &&              // encore tôt
         swarmSbRatio < 0.4                // peu de pression vendeuse
       ) {
