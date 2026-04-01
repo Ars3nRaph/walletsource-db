@@ -826,12 +826,12 @@ function renderPage() {
       // Helper: exit type label + color
       const exitLabel = (et) => {
         if(!et) return {l:'?', c:'#8b949e'};
-        if(et.startsWith('TIER-15')) return {l:'T0 +15%', c:'#238636'};
-        if(et.startsWith('TIER-30')) return {l:'T1 +30%', c:'#3fb950'};
-        if(et.startsWith('TIER-60')) return {l:'T2 +60%', c:'#3fb950'};
-        if(et.startsWith('TIER-100')) return {l:'T3 +100%', c:'#56d364'};
-        if(et.startsWith('TIER-150')) return {l:'T4 +150%', c:'#56d364'};
         if(et.startsWith('TIER-200')) return {l:'T5 +200%', c:'#7ee787'};
+        if(et.startsWith('TIER-150')) return {l:'T4 +150%', c:'#56d364'};
+        if(et.startsWith('TIER-100')) return {l:'T3 +100%', c:'#56d364'};
+        if(et.startsWith('TIER-60')) return {l:'T2 +60%', c:'#3fb950'};
+        if(et.startsWith('TIER-30')) return {l:'T1 +30%', c:'#3fb950'};
+        if(et.startsWith('TIER-15')) return {l:'T0 +15%', c:'#238636'};
         if(et.startsWith('TIER')) return {l:'TIER', c:'#3fb950'};
         if(et.includes('HARD_STOP')) return {l:'HARD_STOP', c:'#f85149'};
         if(et.includes('TRAIL')) return {l:'TRAIL', c:'#e3b341'};
