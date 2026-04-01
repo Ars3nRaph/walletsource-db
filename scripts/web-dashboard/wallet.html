@@ -2,6 +2,9 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>v10.21 — Wallet Simulation</title>
   <link rel="stylesheet" href="styles.css">
@@ -798,17 +801,7 @@ function renderWallet(d){
     // elite card removed — legacy trades classified as 'elite' exist but no DOM card
     const swarmTrades = stratSource.filter(t => getTradeStrat(t) === 'swarm');
     stratStats(swarmTrades, 'swarm');
-    // Load SWARM3 config for dynamic params display
-    fetch('/api/neo-config').then(r=>r.json()).then(nc=>{
-      const e=nc.entry||{};const x=nc.exit||{};const sz=nc.sizing||{};
-      const paramsEl=document.getElementById('swarm3-params');
-      if(paramsEl){
-        const ratio=Array.isArray(e.mc_ratio)?e.mc_ratio[0]+'-'+e.mc_ratio[1]+'x':(e.min_ratio||e.mc_ratio_min||'?')+'-'+(e.max_ratio||e.mc_ratio_max||'?')+'x';
-        paramsEl.innerHTML=`Ratio <b style="color:#e6edf3">${ratio}</b> • Buyers <b style="color:#e6edf3">≥${e.min_buyers||'?'}</b> • s/b <b style="color:#e6edf3">≤${e.max_sell_ratio||'?'}</b><br>topH <b style="color:#e6edf3">≤${e.max_top_holder?Math.round(e.max_top_holder*100)+'%':('?')}</b> • HS <b style="color:#e6edf3">${x.hard_stop||'?'}</b> • 🔶 <b style="color:#f59e0b">5-tier@+30/60/100/200</b> • Trail <b style="color:#e6edf3">${x.trail_drop||'?'}@${x.trail_trigger||'?'}</b>`;
-      }
-      const updEl=document.getElementById('neo-updated');
-      if(updEl)updEl.textContent=nc.version+' — '+(nc.note||'').slice(0,80);
-    }).catch(()=>{});
+    // SWARM3 params are hardcoded in HTML (no dynamic config API)
     _currentFilteredTrades = filteredTrades;
     currentPage = Math.min(currentPage, Math.max(0, Math.ceil(filteredTrades.length / PAGE_SIZE) - 1));
     buildEquityChart(filteredTrades, cfg.initial_sol);
