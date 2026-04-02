@@ -1437,7 +1437,7 @@ export class TradeExecutor {
       if (
         uniqueBuyerCount >= 80 &&          // masse retail
         swarmAvgBuy < 25 &&               // petits acheteurs ($25 avg = retail, not whale)
-        mcRatio >= 2.2 && mcRatio <= 3.5 &&  // Tightened from 2.0 — low ratio = not enough momentum // pompe confirmée mais pas surachetée
+        mcRatio >= 2.0 && mcRatio <= 3.5 &&  // 2.0x minimum — SWARM v1.2 keeps original threshold
         currentMC < 12000 &&              // encore tôt
         swarmSbRatio < 0.4                // peu de pression vendeuse
       ) {
