@@ -316,7 +316,7 @@
       </div>
       <div class="strat-card" data-strat="swarm3" onclick="toggleStrat('swarm3')" style="background:linear-gradient(135deg,#0d1117,#161b22);border:1px solid #da3633;border-radius:12px;padding:20px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-          <span style="font-size:16px;font-weight:700;color:#6e7681">🐝 SWARM v3 "Wide Net"</span>
+          <span style="font-size:16px;font-weight:700;color:#6e7681">🐝 CHICKEN "Wide Net"</span>
           <span style="background:rgba(34,197,94,0.15);color:#22c55e;padding:2px 8px;border-radius:6px;font-size:11px;font-weight:700">SWv3</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center">
@@ -750,7 +750,7 @@ function applyAdvancedFilters(trades) {
 function getTradeStrat(t) {
   const r = t.buy_reason || '';
   if (r.includes('ULTRA')) return 'ultra';
-  if (r.includes('SWARM v3')) return 'swarm3';
+  if (r.includes('CHICKEN')) return 'swarm3';
   if (r.includes('SWARM')) return 'swarm';
   if (r.includes('ELITE')) return 'elite';
   if (r.includes('CARTEL')) return 'cartel';

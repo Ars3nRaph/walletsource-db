@@ -1421,22 +1421,22 @@ export class TradeExecutor {
 
 
     // ══════════════════════════════════════════════════════════════
-    // SWARM v3 — Optimized variant (replaces NEO slot)
-    // Backtest: Window≥45s + skip MC 6-7K dead zone → +36.5% avg vs +28% baseline
-    // Uses NEO's old slot (1 dedicated slot, separate from SWARM v1.2)
+    // CHICKEN STRATEGY — "Chickenological" anti-bot filter
+    // Replaces SWARM v3. Backtest: 59.1% WR@+30% on 978 tokens (3d)
+    // Filters: MC≥$4750 (pump.fun floor), vol≥$5K (alive), avg_buy≥$10 (no bots),
+    //          buyers≥10 (real distribution), ratio 2.0-3.5x (momentum)
+    // Philosophy: filter DEAD coins and BOT coins, let everything else through
     // ══════════════════════════════════════════════════════════════
     const swarm3Count = Array.from(this.openPositions.values()).filter(p => (p as any).swarm3Strategy).length;
-    const MAX_SWARM3 = 3; // SWARM v3 "Wide Net" — promoted: backtested 66.8% WR@+30%
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 60) { // SWARM v3: T=20-60s (full spectrum)
-      const sw3SbRatio = buyCount > 0 ? sellCount / buyCount : 0;
+    const MAX_SWARM3 = 3; // CHICKEN: 3 slots
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 20 && elapsedSec <= 60) { // T=20-60s
       const sw3AvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
       if (
-        uniqueBuyerCount >= 70 && // Tightened from 60 — 60% HS rate too high — backtest shows 60b WR is HIGHER
-        sw3AvgBuy < 50 &&                 // Relaxed from $25 — bigger buyers = more conviction
-        mcRatio >= 2.2 && mcRatio <= 3.5 &&  // Tightened from 2.0 — low ratio = not enough momentum
-        currentMC < 12000 &&
-        !(currentMC >= 6000 && currentMC < 7000) &&  // skip 6-7K dead zone
-        sw3SbRatio < 0.4
+        currentMC >= 4750 &&                  // pump.fun floor — below this = dead
+        buyVol >= 5000 &&                     // $5K min volume — filters dead coins
+        uniqueBuyerCount >= 10 &&             // min 10 buyers — filters bot/dev coins
+        sw3AvgBuy >= 10 &&                    // avg buy ≥$10 — filters wash trading bots
+        mcRatio >= 2.0 && mcRatio <= 3.5      // momentum confirmed but not overbought
       ) {
         if (swarm3Count >= MAX_SWARM3) {
           // Don't return — fall through to SWARM v1.2
@@ -1467,11 +1467,11 @@ export class TradeExecutor {
             if (sw3Funder.blocked) { this.openPositions.delete(tokenAddress); return this.none(`🚫 SWARM3: ${sw3Funder.reason}`, 'RIDE'); }
           }
           const sw3ScoreLabel = sw3CS ? `cs=${sw3CS.score.toFixed(0)}` : 'cs=new';
-          logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: sw3AvgBuy.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0), creatorScore: sw3ScoreLabel }, '🐝 SWARM v3 BUY');
+          logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: sw3AvgBuy.toFixed(0), vol: buyVol.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0), creatorScore: sw3ScoreLabel }, '🐔 CHICKEN BUY');
           return {
             action: 'BUY', confidence: 0.85, percentage: 100, playbook_strategy: 'RIDE',
             wallet_risk_score: 0.3, position_sol: sw3Pos,
-            reason: `🐝 SWARM v3 BUY — ${uniqueBuyerCount}b avg=$${sw3AvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x T=${elapsedSec.toFixed(0)}s | sb=${sw3SbRatio.toFixed(2)} ${sw3ScoreLabel} mc=$${currentMC.toFixed(0)} pos=${sw3Pos}SOL`
+            reason: `🐔 CHICKEN BUY — ${uniqueBuyerCount}b avg=$${sw3AvgBuy.toFixed(0)} vol=$${buyVol.toFixed(0)} ${mcRatio.toFixed(2)}x T=${elapsedSec.toFixed(0)}s | ${sw3ScoreLabel} mc=$${currentMC.toFixed(0)} pos=${sw3Pos}SOL`
           };
         }
       }
