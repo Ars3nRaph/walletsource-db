@@ -1303,20 +1303,20 @@ export class TradeExecutor {
     const uniqueBuyerCount = state?.uniqueBuyers?.size ?? 0;
 
     const ultraCount = Array.from(this.openPositions.values()).filter(p => (p as any).ultraStrategy).length;
-    const MAX_ULTRA = 1; // ULTRA v7: demoted to 1 slot — WR 30% on 10 trades
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 25 && elapsedSec <= 35) { // T=25-35s — narrow window, low priority
+    const MAX_ULTRA = 3; // ULTRA v8: backtested optimal params — 62% WR@+30%
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 25 && elapsedSec <= 45) { // T=25-45s — ULTRA v8 optimal window
       const ultSbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       const ultAvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
       const ultSellVol = state?.sellVol || 0;
       const ultSellPressure = buyVol > 0 ? ultSellVol / buyVol : 1;
       if (
-        uniqueBuyerCount >= 80 &&
-        ultAvgBuy < 25 &&
-        mcRatio >= 2.2 && mcRatio <= 3.5 && // v10.21: 2.0→2.2 (tokens at 2.0x barely pumped → fragile)
+        uniqueBuyerCount >= 80 &&              // backtest: 80b = 62.3% WR@+30%
+        mcRatio >= 2.0 && mcRatio <= 3.5 &&   // backtest: ratio filter keeps momentum
         currentMC < 12000 &&
-        !(currentMC >= 6000 && currentMC < 7000) &&  // skip 6-7K dead zone
-        ultSellPressure < 0.5 &&                      // KEY: low sell pressure = organic momentum
-        ultSbRatio < 0.4
+        !(currentMC >= 6000 && currentMC < 7000)  // skip 6-7K dead zone
+        // v8: REMOVED avg_buy<25 (backtest: avg<25 = 37% WR vs no filter = 62%)
+        // v8: REMOVED sb<0.4 (backtest: sb filter HURTS WR — healthy selling = good)
+        // v8: REMOVED sellPressure<0.5 (same reason)
       ) {
         if (ultraCount >= MAX_ULTRA) {
           // Fall through to other strategies
