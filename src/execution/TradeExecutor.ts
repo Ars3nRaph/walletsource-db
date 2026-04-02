@@ -1310,11 +1310,11 @@ export class TradeExecutor {
       const ultSellVol = state?.sellVol || 0;
       const ultSellPressure = buyVol > 0 ? ultSellVol / buyVol : 1;
       if (
-        uniqueBuyerCount >= 80 &&              // backtest: 80b = 62.3% WR@+30%
-        mcRatio >= 2.0 && mcRatio <= 3.5 &&   // backtest: ratio filter keeps momentum
-        currentMC < 12000 &&
+        uniqueBuyerCount >= 80 &&              // backtest: 80b optimal
+        mcRatio >= 2.0 && mcRatio <= 3.5 &&   // momentum confirmed but not overbought
+        currentMC < 8000 &&                    // backtest: mc<8K = 63.9% WR vs mc<12K = 52%
         !(currentMC >= 6000 && currentMC < 7000) &&  // skip 6-7K dead zone
-        ultSbRatio >= 0.40                     // v8: REQUIRE sells — sb≥40% = 69% WR vs sb<10% = 22% WR
+        ultSbRatio >= 0.60                     // v8: REQUIRE healthy selling — sb≥0.60 = 61-64% WR
       ) {
         if (ultraCount >= MAX_ULTRA) {
           // Fall through to other strategies
