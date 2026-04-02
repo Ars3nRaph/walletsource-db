@@ -1385,11 +1385,10 @@ export class TradeExecutor {
         swarmSbRatio < 0.4                // peu de pression vendeuse
       ) {
         if (swarmCount >= MAX_SWARM) {
-          return this.none(`🚫 SWARM pool full (${swarmCount}/${MAX_SWARM})`, 'RIDE');
-        }
-        if (this.openPositions.size >= 7) {
-          return this.none('🚫 Total pool full — skip', 'RIDE');
-        }
+          // Don't return — fall through to CHICKEN
+        } else if (this.openPositions.size >= 7) {
+          // Don't return — fall through to CHICKEN
+        } else {
         const swarmPos = 0.35; // slightly larger than STD min — crowd signal = higher conviction
         this.lastBuyTimestamp = Date.now();
         this.openPositions.set(tokenAddress, {
@@ -1419,6 +1418,7 @@ export class TradeExecutor {
             reason: `🐝 SWARM v1.2 BUY — ${uniqueBuyerCount}b avg=$${swarmAvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x T=${elapsedSec.toFixed(0)}s | sb=${swarmSbRatio.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${swarmPos}SOL`
           };
         }
+        } // close else (pool not full)
       }
     }
 
