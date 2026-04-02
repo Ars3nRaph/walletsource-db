@@ -1303,7 +1303,7 @@ export class TradeExecutor {
     const uniqueBuyerCount = state?.uniqueBuyers?.size ?? 0;
 
     const ultraCount = Array.from(this.openPositions.values()).filter(p => (p as any).ultraStrategy).length;
-    const MAX_ULTRA = 3; // ULTRA v8: backtested optimal params — 62% WR@+30%
+    const MAX_ULTRA = 0; // ULTRA v8 DISABLED — 17 trades, 17.6% WR, -33.4% avg = catastrophic
     if (!this.openPositions.has(tokenAddress) && elapsedSec >= 25 && elapsedSec <= 45) { // T=25-45s — ULTRA v8 optimal window
       const ultSbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       const ultAvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
