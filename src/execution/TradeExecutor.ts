@@ -1436,9 +1436,9 @@ export class TradeExecutor {
       const sw3AvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
       if (
         currentMC >= 4750 &&                  // pump.fun floor — below this = dead
-        buyVol >= 5000 &&                     // $5K min volume — filters dead coins
+        buyVol >= 1500 &&                     // $1.5K min volume — realistic for T=20-60s (was $5K = too strict)
         uniqueBuyerCount >= 10 &&             // min 10 buyers — filters bot/dev coins
-        sw3AvgBuy >= 10 &&                    // avg buy ≥$10 — filters wash trading bots
+        sw3AvgBuy >= 5 &&                     // avg buy ≥$5 — filters wash bots (was $10 = too strict)
         mcRatio >= 2.0 && mcRatio <= 3.5      // momentum confirmed but not overbought
       ) {
         if (swarm3Count >= MAX_SWARM3) {
