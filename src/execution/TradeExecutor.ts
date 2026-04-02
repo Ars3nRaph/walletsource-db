@@ -1303,18 +1303,18 @@ export class TradeExecutor {
     const uniqueBuyerCount = state?.uniqueBuyers?.size ?? 0;
 
     const ultraCount = Array.from(this.openPositions.values()).filter(p => (p as any).ultraStrategy).length;
-    const MAX_ULTRA = 0; // ULTRA v8 DISABLED — 17 trades, 17.6% WR, -33.4% avg = catastrophic
-    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 25 && elapsedSec <= 45) { // T=25-45s — ULTRA v8 optimal window
+    const MAX_ULTRA = 3; // ULTRA v9: sequential backtest — 52.8% WR, ≥20b ratio≥3.0x
+    if (!this.openPositions.has(tokenAddress) && elapsedSec >= 30 && elapsedSec <= 50) { // T=30-50s — ULTRA v9: ratio 3.0x needs time to develop
       const ultSbRatio = buyCount > 0 ? sellCount / buyCount : 0;
       const ultAvgBuy = buyCount > 0 ? buyVol / buyCount : 999;
       const ultSellVol = state?.sellVol || 0;
       const ultSellPressure = buyVol > 0 ? ultSellVol / buyVol : 1;
       if (
-        uniqueBuyerCount >= 80 &&              // backtest: 80b optimal
-        mcRatio >= 2.0 && mcRatio <= 3.5 &&   // momentum confirmed but not overbought
-        currentMC < 8000 &&                    // backtest: mc<8K = 63.9% WR vs mc<12K = 52%
-        !(currentMC >= 6000 && currentMC < 7000) &&  // skip 6-7K dead zone
-        ultSbRatio >= 0.60                     // v8: REQUIRE healthy selling — sb≥0.60 = 61-64% WR
+        uniqueBuyerCount >= 20 &&              // seq backtest: ≥20b = sufficient distribution
+        mcRatio >= 3.0 && mcRatio <= 5.0       // seq backtest: ratio≥3.0 = 52.8% WR, 45.6% HS-first
+        // v9: REMOVED sb filter (seq backtest: sb≥0.60 INCREASES HS from 50%→61%)
+        // v9: REMOVED mc cap (no improvement in seq backtest)
+        // v9: KEY INSIGHT: ratio≥3.0 means token SURVIVED first minutes = real momentum
       ) {
         if (ultraCount >= MAX_ULTRA) {
           // Fall through to other strategies
