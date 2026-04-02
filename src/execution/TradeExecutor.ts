@@ -1337,7 +1337,7 @@ export class TradeExecutor {
           // Block serial ruggers: if deployer known AND (rug_rate >= 50% OR avg_peak_mc < 8K)
           if (ultCreatorScore && (ultCreatorScore.rugRate >= 50 || ultCreatorScore.avgPeakMC < 8000)) {
             this.openPositions.delete(tokenAddress);
-            return this.none(`🚫 ULTRA: deployer rug_rate=${ultCreatorScore.rugRate.toFixed(0)}% avgPeak=$${ultCreatorScore.avgPeakMC.toFixed(0)} — serial rugger`, 'RIDE');
+            // Fall through to CHICKEN/SWARM — they have relaxed CS
           }
           // Funder chain check — is this deployer funded by a known rugger?
           // Only check for NEW deployers (unknown to creator_scores) to save RPC credits
@@ -1345,19 +1345,20 @@ export class TradeExecutor {
             const funderCheck = await checkDeployerFunding(ultDeployer);
             if (funderCheck.blocked) {
               this.openPositions.delete(tokenAddress);
-              logger.info({ token: tokenAddress.slice(0,8), deployer: ultDeployer.slice(0,8), reason: funderCheck.reason }, '🚫 ULTRA: funder chain blocked');
-              return this.none(`🚫 ULTRA: ${funderCheck.reason}`, 'RIDE');
+              // Fall through to CHICKEN/SWARM
             }
           }
-          const ultScoreLabel = ultCreatorScore ? `cs=${ultCreatorScore.score.toFixed(0)}` : 'cs=new';
-
-          (this.openPositions.get(tokenAddress) as any).ultraStrategy = true;
-          logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: ultAvgBuy.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0), sp: ultSellPressure.toFixed(2), creatorScore: ultCreatorScore?.score?.toFixed(0) || 'new' }, '⚡ ULTRA BUY');
-          return {
-            action: 'BUY', confidence: 0.90, percentage: 100, playbook_strategy: 'RIDE',
-            wallet_risk_score: 0.2, position_sol: ultPos,
-            reason: `⚡ ULTRA v7 BUY — ${uniqueBuyerCount}b avg=$${ultAvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x T=${elapsedSec.toFixed(0)}s | sp=${ultSellPressure.toFixed(2)} ${ultScoreLabel} mc=$${currentMC.toFixed(0)} pos=${ultPos}SOL`
-          };
+          // Only proceed with BUY if position wasn't deleted by CS check
+          if (this.openPositions.has(tokenAddress)) {
+            const ultScoreLabel = ultCreatorScore ? `cs=${ultCreatorScore.score.toFixed(0)}` : 'cs=new';
+            (this.openPositions.get(tokenAddress) as any).ultraStrategy = true;
+            logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: ultAvgBuy.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0), sp: ultSellPressure.toFixed(2), creatorScore: ultCreatorScore?.score?.toFixed(0) || 'new' }, '⚡ ULTRA BUY');
+            return {
+              action: 'BUY', confidence: 0.90, percentage: 100, playbook_strategy: 'RIDE',
+              wallet_risk_score: 0.2, position_sol: ultPos,
+              reason: `⚡ ULTRA v9 BUY — ${uniqueBuyerCount}b avg=$${ultAvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x T=${elapsedSec.toFixed(0)}s | sp=${ultSellPressure.toFixed(2)} ${ultScoreLabel} mc=$${currentMC.toFixed(0)} pos=${ultPos}SOL`
+            };
+          }
         }
       }
     }
@@ -1404,18 +1405,20 @@ export class TradeExecutor {
         const swCS = swDeployer ? await getCreatorScore(swDeployer) : null;
         if (swCS && (swCS.rugRate >= 50 || swCS.avgPeakMC < 8000)) {
           this.openPositions.delete(tokenAddress);
-          return this.none(`🚫 SWARM: deployer rug_rate=${swCS.rugRate.toFixed(0)}% avgPeak=$${swCS.avgPeakMC.toFixed(0)} — serial rugger`, 'RIDE');
+          // Fall through to CHICKEN (relaxed CS)
         }
         if (!swCS && swDeployer) {
           const swFunder = await checkDeployerFunding(swDeployer);
-          if (swFunder.blocked) { this.openPositions.delete(tokenAddress); return this.none(`🚫 SWARM: ${swFunder.reason}`, 'RIDE'); }
+          if (swFunder.blocked) { this.openPositions.delete(tokenAddress); /* Fall through to CHICKEN */ }
         }
-        logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: swarmAvgBuy.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0) }, '🐝 SWARM BUY');
-        return {
-          action: 'BUY', confidence: 0.82, percentage: 100, playbook_strategy: 'RIDE',
-          wallet_risk_score: 0.3, position_sol: swarmPos,
-          reason: `🐝 SWARM v1.2 BUY — ${uniqueBuyerCount}b avg=$${swarmAvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x T=${elapsedSec.toFixed(0)}s | sb=${swarmSbRatio.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${swarmPos}SOL`
-        };
+        if (this.openPositions.has(tokenAddress)) {
+          logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: swarmAvgBuy.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0) }, '🐝 SWARM BUY');
+          return {
+            action: 'BUY', confidence: 0.82, percentage: 100, playbook_strategy: 'RIDE',
+            wallet_risk_score: 0.3, position_sol: swarmPos,
+            reason: `🐝 SWARM v1.2 BUY — ${uniqueBuyerCount}b avg=$${swarmAvgBuy.toFixed(0)} ${mcRatio.toFixed(2)}x T=${elapsedSec.toFixed(0)}s | sb=${swarmSbRatio.toFixed(2)} mc=$${currentMC.toFixed(0)} pos=${swarmPos}SOL`
+          };
+        }
       }
     }
 
