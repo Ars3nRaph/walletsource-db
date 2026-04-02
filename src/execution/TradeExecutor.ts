@@ -1458,13 +1458,14 @@ export class TradeExecutor {
           // Creator Score + Funder chain check
           const sw3Deployer = await getTokenDeployer(tokenAddress);
           const sw3CS = sw3Deployer ? await getCreatorScore(sw3Deployer) : null;
-          if (sw3CS && (sw3CS.rugRate >= 50 || sw3CS.avgPeakMC < 8000)) {
+          if (sw3CS && (sw3CS.rugRate >= 80 || sw3CS.avgPeakMC < 5000)) {
+            // CHICKEN: relaxed CS — only block extreme ruggers (80%+ rug rate or avg peak < $5K)
             this.openPositions.delete(tokenAddress);
-            return this.none(`🚫 SWARM3: deployer rug_rate=${sw3CS.rugRate.toFixed(0)}% avgPeak=$${sw3CS.avgPeakMC.toFixed(0)} — serial rugger`, 'RIDE');
+            return this.none(`🚫 CHICKEN: deployer rug_rate=${sw3CS.rugRate.toFixed(0)}% avgPeak=$${sw3CS.avgPeakMC.toFixed(0)} — serial rugger`, 'RIDE');
           }
           if (!sw3CS && sw3Deployer) {
             const sw3Funder = await checkDeployerFunding(sw3Deployer);
-            if (sw3Funder.blocked) { this.openPositions.delete(tokenAddress); return this.none(`🚫 SWARM3: ${sw3Funder.reason}`, 'RIDE'); }
+            if (sw3Funder.blocked) { this.openPositions.delete(tokenAddress); return this.none(`🚫 CHICKEN: ${sw3Funder.reason}`, 'RIDE'); }
           }
           const sw3ScoreLabel = sw3CS ? `cs=${sw3CS.score.toFixed(0)}` : 'cs=new';
           logger.info({ token: tokenAddress.slice(0,8), buyers: uniqueBuyerCount, avgBuy: sw3AvgBuy.toFixed(0), vol: buyVol.toFixed(0), ratio: mcRatio.toFixed(2), mc: currentMC.toFixed(0), creatorScore: sw3ScoreLabel }, '🐔 CHICKEN BUY');
