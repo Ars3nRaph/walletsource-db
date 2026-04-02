@@ -1313,10 +1313,8 @@ export class TradeExecutor {
         uniqueBuyerCount >= 80 &&              // backtest: 80b = 62.3% WR@+30%
         mcRatio >= 2.0 && mcRatio <= 3.5 &&   // backtest: ratio filter keeps momentum
         currentMC < 12000 &&
-        !(currentMC >= 6000 && currentMC < 7000)  // skip 6-7K dead zone
-        // v8: REMOVED avg_buy<25 (backtest: avg<25 = 37% WR vs no filter = 62%)
-        // v8: REMOVED sb<0.4 (backtest: sb filter HURTS WR — healthy selling = good)
-        // v8: REMOVED sellPressure<0.5 (same reason)
+        !(currentMC >= 6000 && currentMC < 7000) &&  // skip 6-7K dead zone
+        ultSbRatio >= 0.40                     // v8: REQUIRE sells — sb≥40% = 69% WR vs sb<10% = 22% WR
       ) {
         if (ultraCount >= MAX_ULTRA) {
           // Fall through to other strategies
